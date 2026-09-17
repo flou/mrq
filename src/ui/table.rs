@@ -40,9 +40,31 @@ pub const GUTTER_WIDTH: u16 = 1;
 /// Allocate column widths for a table drawn into `width` cells.
 ///
 /// The only correct way to build an [`Allocation`] for [`build`]; calling
-/// [`columns::allocate`] with the raw area width silently overcommits by [`GUTTER_WIDTH`].
-pub fn allocate(columns: &[Column], width: u16) -> Allocation {
-    columns::allocate(columns, width.saturating_sub(GUTTER_WIDTH))
+/// [`columns::allocate`] with the raw area width silently overcommits by [`GUTTER_WIDTH`],
+/// and skips the `author` measurement below.
+///
+/// `rows` should be the tab's full row set, not the visible window — measuring only what
+/// is on screen would make the column resize while scrolling.
+pub fn allocate(columns: &[Column], width: u16, rows: &[&MergeRequest]) -> Allocation {
+    let fitted = columns::Fitted {
+        author: author_fit(rows),
+    };
+    columns::allocate(columns, width.saturating_sub(GUTTER_WIDTH), fitted)
+}
+
+/// The `author` column's content width: the widest author name on `rows`, floored at the
+/// header so `AUTHOR` is never truncated and capped at [`columns::AUTHOR_MAX`].
+///
+/// `None` for an empty table — there is nothing to measure, and collapsing to the header
+/// width would make the column jump the moment the first row arrives.
+///
+/// Measured in display cells, not bytes or code points, for the reason the module doc
+/// gives: a username can contain CJK or combining marks just as a title can.
+fn author_fit(rows: &[&MergeRequest]) -> Option<u16> {
+    let widest = rows.iter().map(|mr| mr.author.username.width()).max()?;
+    let header = Column::Author.header().width();
+    let clamped = widest.max(header).min(columns::AUTHOR_MAX as usize);
+    u16::try_from(clamped).ok()
 }
 
 /// Compact relative time: `45s`, `12m`, `6h`, `3d`.
@@ -466,8 +488,8 @@ mod tests {
     fn render(rows: &[MergeRequest], tab: &Tab, width: u16, height: u16) -> Vec<String> {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let theme = theme(false);
-        let allocation = allocate(&Column::DEFAULT, width);
         let refs: Vec<&MergeRequest> = rows.iter().collect();
+        let allocation = allocate(&Column::DEFAULT, width, &refs);
 
         terminal
             .draw(|frame| {
@@ -560,6 +582,68 @@ mod tests {
         assert_eq!(pad("ab", 5).width(), 5);
         assert_eq!(pad("データ", 8).width(), 8, "wide characters counted");
         assert_eq!(pad("too long for this", 5).width(), 5);
+    }
+
+    /// No rows, nothing to measure — falls back to the fixed width in `columns::rules`
+    /// rather than collapsing to the header, which would make the column jump the moment
+    /// the first row arrives.
+    #[test]
+    fn author_fit_has_no_opinion_on_an_empty_table() {
+        assert_eq!(author_fit(&[]), None);
+    }
+
+    /// Shorter than the header never shrinks the column below `AUTHOR` itself.
+    #[test]
+    fn author_fit_is_floored_at_the_header_width() {
+        let short = mr("a", "bo");
+        assert_eq!(
+            author_fit(&[&short]),
+            Some(Column::Author.header().width() as u16)
+        );
+    }
+
+    /// Longer than `AUTHOR_MAX` is capped, so one outlier username cannot eat the title.
+    #[test]
+    fn author_fit_is_capped_at_the_maximum() {
+        let long = mr("a", &"x".repeat(40));
+        assert_eq!(author_fit(&[&long]), Some(columns::AUTHOR_MAX));
+    }
+
+    /// The widest name wins, not the first or the last.
+    #[test]
+    fn author_fit_measures_the_widest_name_on_the_rows() {
+        let short = mr("a", "bo");
+        let long = mr("b", "a-longer-username");
+        assert_eq!(
+            author_fit(&[&short, &long]),
+            Some("a-longer-username".width() as u16)
+        );
+    }
+
+    /// A CJK username occupies two cells per character, not one — the same rule as titles.
+    #[test]
+    fn author_fit_measures_display_width_not_characters() {
+        let m = mr("a", "データ");
+        assert_eq!(author_fit(&[&m]), Some("データ".width() as u16));
+    }
+
+    /// Between the header floor and `AUTHOR_MAX`, TITLE gets back whatever AUTHOR does not
+    /// need — the point of fitting the column to its content in the first place.
+    #[test]
+    fn a_short_author_leaves_more_room_for_the_title() {
+        let short = mr("a", "bo");
+        let long = mr("b", &"x".repeat(25));
+
+        let narrow_author = allocate(&Column::DEFAULT, 120, &[&short]);
+        let wide_author = allocate(&Column::DEFAULT, 120, &[&long]);
+
+        let narrow_title = narrow_author.width_of(Column::Title).unwrap();
+        let wide_title = wide_author.width_of(Column::Title).unwrap();
+
+        assert!(
+            narrow_title > wide_title,
+            "a short author ({narrow_title}) should leave more room for the title than a long one ({wide_title})"
+        );
     }
 
     /// Two modes.
@@ -777,12 +861,13 @@ mod tests {
         let width = 120u16;
         let mut terminal = Terminal::new(TestBackend::new(width, 4)).unwrap();
         let theme = theme(false);
-        let allocation = allocate(&Column::DEFAULT, width);
+        let rows: [&MergeRequest; 2] = [&wide, &plain];
+        let allocation = allocate(&Column::DEFAULT, width, &rows);
         let tab = tab();
 
         terminal
             .draw(|frame| {
-                let table = build(&[&wide, &plain], &tab, &allocation, &theme, now());
+                let table = build(&rows, &tab, &allocation, &theme, now());
                 frame.render_widget(table, frame.area());
             })
             .unwrap();
@@ -826,7 +911,7 @@ mod tests {
 
         let mut terminal = Terminal::new(TestBackend::new(120, 4)).unwrap();
         let theme = theme(true);
-        let allocation = allocate(&Column::DEFAULT, 120);
+        let allocation = allocate(&Column::DEFAULT, 120, &[&m]);
         let tab = tab();
 
         terminal
@@ -862,10 +947,15 @@ mod tests {
     /// nothing else here notices.
     #[test]
     fn every_column_renders_at_its_allocated_position_and_width() {
+        // A long author, so the guard also covers the fitted `author` column, not just
+        // the fixed-width ones.
+        let m = mr("a", "a-fairly-long-username");
+        let rows = [&m];
+
         for width in [80u16, 120, 200] {
             let mut terminal = Terminal::new(TestBackend::new(width, 3)).unwrap();
             let theme = theme(false);
-            let allocation = allocate(&Column::DEFAULT, width);
+            let allocation = allocate(&Column::DEFAULT, width, &rows);
             let area = Rect {
                 x: 0,
                 y: 0,
@@ -875,7 +965,7 @@ mod tests {
 
             terminal
                 .draw(|frame| {
-                    let table = build(&[], &tab(), &allocation, &theme, now());
+                    let table = build(&rows, &tab(), &allocation, &theme, now());
                     frame.render_widget(table, area);
                 })
                 .unwrap();
@@ -911,14 +1001,14 @@ mod tests {
     ) -> ratatui::buffer::Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let theme = theme(false);
-        let allocation = allocate(&Column::DEFAULT, width);
+        let refs: Vec<&MergeRequest> = rows.iter().collect();
+        let allocation = allocate(&Column::DEFAULT, width, &refs);
         let area = Rect {
             x: 0,
             y: 0,
             width,
             height,
         };
-        let refs: Vec<&MergeRequest> = rows.iter().collect();
 
         terminal
             .draw(|frame| {
@@ -949,7 +1039,8 @@ mod tests {
     fn titles_are_emitted_as_hyperlinks_to_their_merge_request() {
         let rows = linked_rows();
         let buffer = buffer_of(&rows, 120, 4, true);
-        let allocation = allocate(&Column::DEFAULT, 120);
+        let refs: Vec<&MergeRequest> = rows.iter().collect();
+        let allocation = allocate(&Column::DEFAULT, 120, &refs);
         let x = column_x(
             &allocation,
             Rect {
@@ -1014,7 +1105,8 @@ mod tests {
             height: 4,
         };
         let linked = buffer_of(&rows, width, 4, true);
-        let allocation = allocate(&Column::DEFAULT, width);
+        let refs: Vec<&MergeRequest> = rows.iter().collect();
+        let allocation = allocate(&Column::DEFAULT, width, &refs);
 
         let blank = ratatui::buffer::Buffer::empty(area);
         let updates = blank.diff(&linked);
@@ -1060,7 +1152,7 @@ mod tests {
         };
         let rows = linked_rows();
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, width);
+        let allocation = allocate(&Column::DEFAULT, width, &refs);
 
         let sink = Sink::default();
         let mut terminal = Terminal::with_options(
@@ -1126,7 +1218,12 @@ mod tests {
         let mut empty = ratatui::buffer::Buffer::empty(narrow);
         let rows = linked_rows();
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        link_titles(&mut empty, narrow, &refs, &allocate(&[Column::Author], 10));
+        link_titles(
+            &mut empty,
+            narrow,
+            &refs,
+            &allocate(&[Column::Author], 10, &refs),
+        );
         assert!((0..10).all(|x| !empty[(x, 1)].symbol().contains('\x1b')));
     }
 
