@@ -116,9 +116,11 @@ const fn keep_priority(column: Column) -> u8 {
 const fn rules(column: Column, fitted: Fitted) -> Rules {
     // `preferred == minimum` means fixed; a larger preferred means shrinkable.
     match column {
+        // Wide enough for the mark plus one cell of padding; there is no header text to
+        // fit any more.
         Column::Approved => Rules {
-            preferred: 4,
-            minimum: 4,
+            preferred: 2,
+            minimum: 2,
             flex: false,
         },
         // `preferred` comes from the caller's measurement, falling back to the old fixed
@@ -391,7 +393,7 @@ mod tests {
         assert!(allocation.dropped.is_empty());
         assert_eq!(allocation.width_of(Column::Author), Some(12));
         assert_eq!(allocation.width_of(Column::Repo), Some(20));
-        assert_eq!(allocation.width_of(Column::Approved), Some(4));
+        assert_eq!(allocation.width_of(Column::Approved), Some(2));
         assert_eq!(allocation.width_of(Column::Pipeline), Some(2));
         assert_eq!(allocation.width_of(Column::Diff), Some(11));
     }
