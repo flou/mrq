@@ -1,0 +1,76 @@
+{
+  "data": {
+    "currentUser": {
+      "assignedMergeRequests": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
+        "nodes": [
+          {
+            "id": "gid://gitlab/MergeRequest/177007",
+            "iid": "3657",
+            "title": "Fixture merge request 7",
+            "webUrl": "https://gitlab.example.com/group1/sub/project-1/-/merge_requests/3657",
+            "draft": false,
+            "state": "opened",
+            "createdAt": "2026-09-08T09:00:00Z",
+            "updatedAt": "2026-09-10T17:26:00Z",
+            "sourceBranch": "feature/branch-7",
+            "targetBranch": "main",
+            "conflicts": false,
+            "mergeStatusEnum": "CAN_BE_MERGED",
+            "author": {
+              "username": "user7",
+              "name": "User 7"
+            },
+            "project": {
+              "fullPath": "group1/sub/project-1",
+              "webUrl": "https://gitlab.example.com/group1/sub/project-1"
+            },
+            "diffStatsSummary": {
+              "additions": 140,
+              "deletions": 7,
+              "fileCount": 8
+            },
+            "resolvableDiscussionsCount": 1,
+            "resolvedDiscussionsCount": 0,
+            "userNotesCount": 7,
+            "headPipeline": null,
+            "approvalsRequired": 2,
+            "approvalsLeft": 2,
+            "approved": false,
+            "approvedBy": {
+              "nodes": []
+            },
+            "assignees": {
+              "nodes": [
+                {
+                  "username": "user1"
+                }
+              ]
+            },
+            "reviewers": {
+              "nodes": [
+                {
+                  "username": "user2"
+                },
+                {
+                  "username": "user3"
+                }
+              ]
+            },
+            "labels": {
+              "nodes": [
+                {
+                  "title": "label-7",
+                  "color": "#be2727"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

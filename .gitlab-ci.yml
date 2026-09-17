@@ -1,0 +1,61 @@
+# CI for mrq.
+#
+# Every gate runs through `scripts/check.sh`, which is also what a developer runs
+# locally — one script is the single source of truth for what "passing" means, so this
+# file cannot drift from local checks the way a hand-duplicated list of `cargo` commands
+# would. No job needs a GitLab token or network access to a live instance — mrq's tests
+# never reach one, and the mock server used by the integration tests binds to localhost.
+#
+# Both target platforms are built because mrq is scoped to macOS and Linux and the
+# terminal layer differs between them: the clipboard and notification fallbacks are
+# selected at compile time per OS, so a Linux-only pipeline would not compile the macOS
+# paths at all.
+
+stages:
+  - check
+
+variables:
+  # Vendored under the project so the cache key is stable across runners.
+  CARGO_HOME: $CI_PROJECT_DIR/.cargo
+  # Fail fast rather than retrying a network hiccup for minutes.
+  CARGO_NET_RETRY: "2"
+  # Backtraces cost nothing here and turn an opaque test failure into a located one.
+  RUST_BACKTRACE: "1"
+
+.rust-cache: &rust-cache
+  key:
+    files:
+      - Cargo.lock
+    prefix: $CI_JOB_NAME
+  paths:
+    - .cargo/registry/index
+    - .cargo/registry/cache
+    - target/
+
+.checks: &checks
+  stage: check
+  script:
+    - rustc --version && cargo --version
+    - ./scripts/check.sh
+
+linux:
+  <<: *checks
+  image: rust:1.93
+  cache:
+    <<: *rust-cache
+  tags:
+    - docker
+
+macos:
+  <<: *checks
+  # Requires a runner tagged `macos` with a Rust toolchain. Allowed to fail for now
+  # because the shared runner fleet may not have one: a red pipeline nobody can fix
+  # teaches people to ignore the pipeline. Flip `allow_failure` to false once a macOS
+  # runner is available — the macOS-specific code paths are otherwise never compiled.
+  allow_failure: true
+  cache:
+    <<: *rust-cache
+  tags:
+    - macos
+  before_script:
+    - rustup show

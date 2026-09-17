@@ -1,0 +1,202 @@
+# mrq configuration
+#
+# Every key below is commented out and shows mrq's built-in default, so this file as
+# written behaves exactly as if it did not exist. Uncomment a line to change it.
+#
+# Unknown keys are a hard error rather than being ignored, so a typo tells you about
+# itself at startup instead of looking like a bug in mrq.
+
+[gitlab]
+# url = "https://gitlab.com"
+
+# The token needs the `read_api` scope. mrq looks for it in this order and takes the
+# first hit: $MRQ_TOKEN, $GITLAB_TOKEN, `token_command` below, `token` below.
+#
+# `token_command` is the preferred way to keep a token out of this file: its stdout,
+# trimmed, is the token, and a non-zero exit is a startup error.
+# token_command = "security find-generic-password -s gitlab-pat -w"
+#
+# A literal token works but means this file holds a credential. mrq warns at startup if
+# the file is readable by anyone but you.
+# token = "glpat-..."
+
+# timeout_secs = 20
+# max_concurrent_requests = 4
+
+[refresh]
+# Seconds between refresh cycles. The minimum is 30 — below that mrq refuses to start
+# rather than quietly correcting you, because the cost lands on a shared instance.
+# interval_secs = 300
+
+# Random 0..=jitter_secs added to each cycle, so many mrq instances do not all poll on
+# the same second.
+# jitter_secs = 15
+
+# refresh_on_focus = true
+# pause_when_unfocused = false
+
+[ui]
+# Substitute ASCII for every glyph, for terminals without a Unicode-capable font. This is
+# the font question only; colours come from [skin] below.
+# ascii = false
+
+# show_drafts = false
+# relative_times = true
+
+# Mouse capture. Off by default so the terminal keeps its native selection and copy.
+# mouse = false
+
+# set_terminal_title = true
+
+# Display order, left to right. Any subset of these keys, each at most once; `sort.column`
+# below has to be one of them.
+# columns = ["approved", "author", "repo", "title", "pipeline", "assigned", "age", "updated", "diff"]
+
+# Columns hidden until wide mode (w) is toggled on, in addition to diff, which is always
+# wide-only. Must be a subset of columns above; approved, author, repo, title and pipeline
+# identify a row and can never be listed here.
+# wide_columns = []
+
+[skin]
+# The colour palette. One of:
+#
+#   catppuccin-mocha  catppuccin-macchiato  catppuccin-frappe  dracula
+#   flexoki-dark      gruvbox-dark          monokai            nord
+#   one-dark          rose-pine             solarized-dark     tokyo-night
+#
+# `auto` is the shipped dark default, catppuccin-mocha; there is no light skin to fall
+# back to. Short names work too: `mocha`, `gruvbox`, `solarized`.
+# ctrl-t switches skin from inside mrq, for this session only — this file is what persists.
+# name = "catppuccin-mocha"
+
+# Individual swatches, applied over the named skin. The 25 names are the Catppuccin ones:
+# rosewater, flamingo, pink, mauve, red, maroon, peach, yellow, green, teal, sky, sapphire,
+# blue, lavender, text, subtext1, subtext0, overlay1, overlay0, surface2, surface1,
+# surface0, base, mantle, crust.
+[skin.colors]
+# red = "#ff5555"
+
+[sort]
+# column = "updated"                # any key from [ui].columns
+# order = "desc"                    # asc | desc
+
+# Sink drafts below non-drafts when drafts are shown.
+# drafts_last = true
+
+[notifications]
+# enabled = true
+
+# auto | osc9 | osc777 | command | none
+# backend = "auto"
+
+# Used when backend = "command"; {title} and {body} are substituted.
+# command = ""
+
+# bell = true
+
+# on_new_mr = true
+# on_approval = true
+# on_new_discussion = true
+
+# These two fire far more often than the three above, so they are off by default rather
+# than training you to ignore notifications.
+# on_pipeline_change = false
+#
+# on_merged_or_closed needs a filter whose state is "all", "merged" or "closed" — one
+# stuck at the default "opened" never sees the transition, it just drops the merge
+# request from the result set, so mrq rejects the combination at startup.
+# on_merged_or_closed = false
+
+# only_when_unfocused = true
+
+[browser]
+# Empty means `open` on macOS and `xdg-open` on Linux.
+# command = ""
+
+# ---- filters ----------------------------------------------------------------------
+#
+# Each [[filter]] is a tab. The order here is the tab order and the 1..9 shortcuts.
+#
+# scope is one of:
+#
+#   assigned          merge requests assigned to you
+#   review_requested  merge requests where you are a reviewer
+#   authored          merge requests you opened
+#   group             everything under a group, needs `path`
+#   project           one project, needs `path`
+#   instance          every merge request the token can see, no `path`
+#
+# The narrowing arguments below — labels, author, milestone, target_branch and friends —
+# are only accepted by the group, project and instance scopes. Setting one on assigned,
+# review_requested or authored is a startup error rather than a filter that silently does
+# nothing.
+
+[[filter]]
+name = "Assigned"
+scope = "assigned"
+# state = "opened"                  # opened | merged | closed | all
+# show_drafts = false               # per-filter override of [ui].show_drafts
+# max_results = 100                 # 1..=500
+
+# [[filter]]
+# name = "Reviewing"
+# scope = "review_requested"
+
+# [[filter]]
+# name = "Platform"
+# scope = "group"
+# path = "acme/platform"            # a GitLab full path, no leading or trailing slash
+# include_subgroups = true          # group scope only
+# labels = ["team::platform"]       # AND-ed
+# not_labels = ["wip"]
+# author = "someuser"
+# assignee = "someuser"
+# reviewer = "someuser"
+# has_reviewer = false             # true = has a reviewer, false = has none; mutually exclusive with reviewer
+# milestone = "24.Q3"
+# target_branch = "main"
+# updated_after_days = 30           # bounds the result set for large groups
+
+# [[filter]]
+# name = "Waiting"
+# scope = "instance"                # every group and project the token can see; no `path`
+# labels = ["sre-review::ask"]
+# has_reviewer = false
+
+# ---- keybinds ---------------------------------------------------------------------
+#
+# Key specs are `[modifier-]*key`. Modifiers are ctrl, alt, shift and super, and are
+# case-insensitive. Keys are a single printable character or one of: enter esc tab
+# backspace space up down left right home end pagedown pageup insert delete f1..f12.
+# For letters `shift-S` and `S` are the same binding.
+#
+# This table merges over the defaults, so naming one action leaves the rest alone.
+# Setting an action to [] unbinds it. A key claimed by two actions is a startup error.
+
+[keys]
+# quit            = ["q", "ctrl-c"]
+# refresh         = ["ctrl-r"]
+# refresh_visible = []              # ships unbound
+# down            = ["j", "down"]
+# up              = ["k", "up"]
+# page_down       = ["ctrl-d", "pagedown"]
+# page_up         = ["ctrl-u", "pageup"]
+# top             = ["g", "home"]
+# bottom          = ["shift-G", "end"]
+# open_mr         = ["o", "enter"]
+# open_pipeline   = ["p"]
+# open_project    = ["shift-O"]
+# copy_url        = ["y"]
+# copy_branch     = ["shift-Y"]
+# toggle_drafts   = ["d"]
+# toggle_wide     = ["w"]
+# sort_menu       = ["shift-S"]
+# invert_sort     = ["shift-I"]
+# skin_menu       = ["ctrl-t"]
+# next_filter     = ["]", "right"]
+# prev_filter     = ["[", "left"]
+# filter_menu     = ["f"]
+# search          = ["/"]
+# clear_search    = ["esc"]
+# help            = ["?", "f1"]
+# log_menu        = []              # ships unbound
