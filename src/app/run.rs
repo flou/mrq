@@ -144,6 +144,18 @@ impl App {
             return Vec::new();
         };
 
+        // The per-filter override wins over the global default, which is what makes a
+        // noisy filter's notifications turn-off-able without silencing every other tab.
+        let notify_enabled = self
+            .config
+            .filters
+            .get(filter)
+            .and_then(|f| f.notify)
+            .unwrap_or(self.config.notifications.enabled);
+        if !notify_enabled {
+            return Vec::new();
+        }
+
         diff(
             filter,
             &tab.name,
