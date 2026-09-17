@@ -1,13 +1,19 @@
 //! The startup identity probe.
 //!
-//! Runs once, before any filter is fetched, for one reason that cannot be deferred: the
-//! ASSIGNED and APRV columns are defined relative to the current user, so no row can
-//! be rendered correctly until the username is known. Everything else it returns — the
-//! instance version, the display name — is incidental.
+//! Runs once, for one reason that cannot be skipped: the ASSIGNED and APRV columns are
+//! defined relative to the current user, so no *live* fetch can be rendered correctly
+//! until the username is known — every filter's worker waits for it (`app::identity`).
+//! Everything else it returns — the instance version, the display name — is incidental.
+//!
+//! It runs concurrently with the warm start and the first frames rather than blocking
+//! ahead of them (`app::run`, `app::identity`): the cached rows on screen already carry
+//! last run's derived flags, which the probe's result corrects once it lands.
 //!
 //! It is also the first request of the session, which makes it where a wrong token is
-//! discovered. Failing here is fatal and exits 2, because there is nothing to show and
-//! no reason to let the TUI start and then sit empty.
+//! discovered. A failure here is still fatal and exits 2 — there is nothing to show and
+//! no reason to let the TUI keep running — but the failure is now reported through the
+//! event loop instead of before the terminal is taken over, since the request itself no
+//! longer blocks that.
 
 use crate::error::{Error, Phase, Recovery, Result};
 use crate::gitlab::client::Client;
@@ -106,8 +112,9 @@ mod tests {
         server
     }
 
-    /// The probe asks for exactly what it needs and nothing more, so it cannot be the
-    /// thing that delays the first paint.
+    /// The probe asks for exactly what it needs and nothing more. It no longer sits on
+    /// the first-paint path at all, but a small, fast request is still worth keeping —
+    /// it is what every refresh worker waits on before its own first fetch.
     #[test]
     fn the_probe_query_is_small() {
         assert!(CURRENT_USER_QUERY.contains("currentUser"));

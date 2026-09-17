@@ -289,6 +289,27 @@ impl MergeRequest {
         self.authored_by_me = eq_user(&self.author.username, current_user);
     }
 
+    /// Re-derive the flags once the identity probe lands, reporting whether any of them
+    /// changed.
+    ///
+    /// The change bit is what the caller redraws on: a cache written by this same
+    /// account — overwhelmingly the common case — re-derives to exactly what is already
+    /// on screen, and repainting for that is a frame nobody asked for.
+    pub fn rederive(&mut self, current_user: &str) -> bool {
+        let before = (
+            self.approved_by_me,
+            self.assigned_to_me,
+            self.authored_by_me,
+        );
+        self.recompute_derived(current_user);
+        before
+            != (
+                self.approved_by_me,
+                self.assigned_to_me,
+                self.authored_by_me,
+            )
+    }
+
     #[cfg(test)]
     pub const fn approved_by_me(&self) -> bool {
         self.approved_by_me
@@ -402,6 +423,20 @@ mod tests {
 
         m.recompute_derived("nobody");
         assert!(!m.authored_by_me() && !m.assigned_to_me() && !m.approved_by_me());
+    }
+
+    /// `rederive` is what the identity handler redraws on: a no-op recompute must report
+    /// no change, and an actual account switch must report one.
+    #[test]
+    fn rederive_reports_whether_a_flag_changed() {
+        let mut m = mr("1", "asmith");
+        m.recompute_derived("asmith");
+
+        assert!(!m.rederive("asmith"), "the same account changes nothing");
+        assert!(
+            m.rederive("someone-else"),
+            "a different account must be reported as a change"
+        );
     }
 
     /// The casing GraphQL returns for `currentUser` does not reliably match the casing in

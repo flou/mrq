@@ -312,6 +312,25 @@ impl ViewState {
         arrived
     }
 
+    /// Re-derive every tab's per-user flags once the identity probe lands, reporting
+    /// whether anything changed.
+    ///
+    /// Every tab, not only cache-warmed ones: a live snapshot fetched before the probe
+    /// landed was already derived correctly in the fetch path, so re-deriving it here is
+    /// a no-op that reports no change — and the handler stays correct whatever order the
+    /// events arrive in.
+    ///
+    /// No re-sort call: [`Self::rows_of`] sorts on every call and the draw path asks for
+    /// it every frame, so returning `true` here — which marks the frame dirty — *is* the
+    /// re-sort. Selection is tracked by id, so a reorder cannot lose it.
+    pub fn identify(&mut self, current_user: &str) -> bool {
+        let mut changed = false;
+        for tab in self.tabs.iter_mut() {
+            changed |= tab.rederive(current_user);
+        }
+        changed
+    }
+
     fn reconcile_selection(
         &mut self,
         filter: usize,
@@ -1176,6 +1195,57 @@ mod tests {
             partial: false,
             anomalies: crate::gitlab::wire::Anomalies::default(),
         }
+    }
+
+    /// The identity probe landing must re-derive cached flags and reorder an ASSIGNED
+    /// sort with no explicit sort call: marking the frame dirty is the entire mechanism,
+    /// because `rows_of` sorts on every call.
+    #[test]
+    fn identifying_rederives_cached_flags_and_reorders_an_assigned_sort() {
+        // Written as if cached by "asmith": only "a" is assigned to that account.
+        let mut a = mr("a", "someone");
+        a.assignees = vec!["carol".to_owned()];
+        a.recompute_derived("asmith");
+        let mut b = mr("b", "someone");
+        b.assignees = vec!["asmith".to_owned()];
+        b.recompute_derived("asmith");
+
+        let mut state = state_with(vec![a, b]);
+        let tab = state.tabs.active_mut().unwrap();
+        tab.sort_column = Column::Assigned;
+        tab.sort_order = crate::config::schema::Order::Asc;
+
+        // "asmith" is assigned "b", so it sorts first.
+        assert_eq!(
+            state
+                .visible_rows()
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            ["b", "a"]
+        );
+
+        let changed = state.identify("carol");
+        assert!(changed, "switching accounts must report a change");
+
+        // "carol" is assigned "a" instead, and no sort was called explicitly.
+        assert_eq!(
+            state
+                .visible_rows()
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+    }
+
+    #[test]
+    fn identifying_with_the_same_account_reports_no_change() {
+        let mut a = mr("a", "someone");
+        a.recompute_derived("asmith");
+        let mut state = state_with(vec![a]);
+
+        assert!(!state.identify("asmith"));
     }
 
     fn selected_id(state: &ViewState) -> Option<String> {

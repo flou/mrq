@@ -177,14 +177,23 @@ fn discard(path: &Path, reason: &str) {
 /// Load every filter's cache into its tab, for the first paint.
 ///
 /// `current_user` re-derives the per-user flags: an entry may have been written by a
-/// different account, and stale flags would make the ASSIGNED column lie.
+/// different account, and stale flags would make the ASSIGNED column lie. It is `None`
+/// before the identity probe has landed, which is the normal case: the first frame must
+/// not wait on a round trip. The flags in the file were derived by the run that wrote
+/// it and are this account's unless the token changed between runs; `AppEvent::Identified`
+/// re-derives them once the probe lands, so a mismatch lasts one round trip rather than
+/// the session.
+///
+/// A rejected alternative worth recording: blanking the ASSIGNED column until the probe
+/// lands. It makes the common case — same account, flags already correct — flicker to
+/// fix a case that essentially never happens.
 ///
 /// Returns how many tabs were populated, for the startup log line.
 pub fn warm(
     tabs: &mut Tabs,
     filters: &[Filter],
     dir: &Path,
-    current_user: &str,
+    current_user: Option<&str>,
     now: Timestamp,
 ) -> usize {
     let mut warmed = 0;
@@ -202,8 +211,10 @@ pub fn warm(
         let age = entry.age(now).unsigned_abs();
 
         let mut rows = entry.merge_requests;
-        for row in &mut rows {
-            row.recompute_derived(current_user);
+        if let Some(current_user) = current_user {
+            for row in &mut rows {
+                row.recompute_derived(current_user);
+            }
         }
 
         tab.apply_cached(rows, age, entry.truncated, entry.fragment);
@@ -493,7 +504,7 @@ mod tests {
             .unwrap();
 
         let mut tabs = tabs_for(&filters);
-        let warmed = warm(&mut tabs, &filters, tmp.path(), ME, now());
+        let warmed = warm(&mut tabs, &filters, tmp.path(), Some(ME), now());
 
         assert_eq!(warmed, 2);
         assert_eq!(tabs.get(0).unwrap().all().len(), 2);
@@ -510,7 +521,7 @@ mod tests {
             .unwrap();
 
         let mut tabs = tabs_for(&filters);
-        assert_eq!(warm(&mut tabs, &filters, tmp.path(), ME, now()), 1);
+        assert_eq!(warm(&mut tabs, &filters, tmp.path(), Some(ME), now()), 1);
 
         assert!(tabs.get(0).unwrap().all().is_empty());
         assert!(tabs.get(0).unwrap().cached_age().is_none());
@@ -535,7 +546,7 @@ mod tests {
             .unwrap();
 
         let mut tabs = tabs_for(&filters);
-        warm(&mut tabs, &filters, tmp.path(), ME, now());
+        warm(&mut tabs, &filters, tmp.path(), Some(ME), now());
 
         let loaded = &tabs.get(0).unwrap().all()[0];
         assert!(
@@ -543,6 +554,33 @@ mod tests {
             "flags must be for the running user"
         );
         assert!(!loaded.assigned_to_me());
+    }
+
+    /// Before the identity probe has landed there is no username to recompute against,
+    /// and the first paint must not wait on one — so the flags in the file are trusted
+    /// as they are. The inverse of the test above.
+    #[tokio::test]
+    async fn warming_without_an_identity_trusts_the_flags_as_cached() {
+        let tmp = dir();
+        let filters = vec![filter("Assigned")];
+
+        let mut row = mr("a", "someone-else");
+        row.assignees = vec!["someone-else".to_owned()];
+        row.recompute_derived("someone-else");
+        assert!(row.authored_by_me(), "the fixture is set up wrong");
+
+        write(tmp.path(), &filters[0], &entry(vec![row], now()))
+            .await
+            .unwrap();
+
+        let mut tabs = tabs_for(&filters);
+        warm(&mut tabs, &filters, tmp.path(), None, now());
+
+        let loaded = &tabs.get(0).unwrap().all()[0];
+        assert!(
+            loaded.authored_by_me(),
+            "no identity yet, so the cached flags are left untouched"
+        );
     }
 
     /// The rows are on screen but marked, and no live fetch has landed, so
@@ -561,7 +599,7 @@ mod tests {
         .unwrap();
 
         let mut tabs = tabs_for(&filters);
-        warm(&mut tabs, &filters, tmp.path(), ME, now());
+        warm(&mut tabs, &filters, tmp.path(), Some(ME), now());
         let tab = tabs.get(0).unwrap();
 
         assert_eq!(tab.all().len(), 1, "rows are on screen");
@@ -596,7 +634,7 @@ mod tests {
         .unwrap();
 
         let mut tabs = tabs_for(&filters);
-        warm(&mut tabs, &filters, tmp.path(), ME, now());
+        warm(&mut tabs, &filters, tmp.path(), Some(ME), now());
         let tab = tabs.get(0).unwrap();
 
         assert!(!tab.is_new("a"));
@@ -615,7 +653,7 @@ mod tests {
             .unwrap();
 
         let mut tabs = tabs_for(&filters);
-        warm(&mut tabs, &filters, tmp.path(), ME, now());
+        warm(&mut tabs, &filters, tmp.path(), Some(ME), now());
 
         let tab = tabs.get_mut(0).unwrap();
         let arrived = tab.apply_rows(vec![mr("a", ME), mr("b", ME)], std::time::Instant::now());
@@ -635,7 +673,7 @@ mod tests {
             .unwrap();
 
         let mut tabs = tabs_for(&filters);
-        warm(&mut tabs, &filters, tmp.path(), ME, now());
+        warm(&mut tabs, &filters, tmp.path(), Some(ME), now());
         assert!(tabs.get(0).unwrap().cached_age().is_some());
 
         let tab = tabs.get_mut(0).unwrap();
@@ -658,13 +696,14 @@ mod tests {
         let filters = vec![filter("Assigned")];
         let mut tabs = tabs_for(&filters);
 
-        assert_eq!(warm(&mut tabs, &filters, tmp.path(), ME, now()), 0);
+        assert_eq!(warm(&mut tabs, &filters, tmp.path(), Some(ME), now()), 0);
         assert!(tabs.get(0).unwrap().all().is_empty());
     }
 
     /// Cold start to first painted frame from cache, under 50 ms. The point
     /// of the cache is that the first frame does not wait on a round trip, so the budget
-    /// covers reading 10 filters and rendering one of them.
+    /// covers reading 10 filters and rendering one of them — with no identity in scope
+    /// at all, since the probe that would provide one is no longer on this path.
     #[tokio::test]
     async fn a_warm_start_loads_and_paints_within_the_frame_budget() {
         use ratatui::Terminal;
@@ -688,7 +727,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
 
         let started = std::time::Instant::now();
-        let warmed = warm(&mut tabs, &filters, tmp.path(), ME, now());
+        let warmed = warm(&mut tabs, &filters, tmp.path(), None, now());
         let rows = tabs.active().unwrap().all().to_vec();
         terminal
             .draw(|frame| {

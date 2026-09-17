@@ -308,5 +308,9 @@ fn tui(loaded: load::Loaded, log: logging::LogBuffer) -> Result<ExitCode, Error>
         QuitReason::User => ExitCode::SUCCESS,
         QuitReason::Signal(signal) => ExitCode::from(signal.exit_code()),
         QuitReason::TaskPanicked => ExitCode::from(crate::error::EXIT_FAILURE),
+        // Unreachable in practice: `run` returns `Err` whenever it quits for this
+        // reason, and the `?` above has already taken that branch. The arm exists
+        // because `QuitReason` cannot say so at the type level.
+        QuitReason::Fatal => ExitCode::from(crate::error::EXIT_FAILURE),
     })
 }

@@ -6,9 +6,17 @@
 //!
 //! # Startup order
 //!
-//! Config and the identity probe both run *before* the terminal guard. Both can fail
-//! fatally, and a failure reported onto the alternate screen is destroyed the moment the
-//! screen is restored — the user sees the program exit with no explanation.
+//! Config runs *before* the terminal guard: it can fail fatally, and a failure reported
+//! onto the alternate screen is destroyed the moment the screen is restored — the user
+//! sees the program exit with no explanation.
+//!
+//! The identity probe used to run there too, but it is a network round trip and the
+//! cache's whole reason to exist is a first frame that does not wait on one. It now runs
+//! concurrently with the warm start and the first frames, reporting through the event
+//! loop instead: a success re-derives the cached rows' per-user flags
+//! ([`AppEvent::Identified`]), and a failure quits the loop and is returned from `run` as
+//! an `Err` once the guard has dropped — reaching the same `main` path, and the same exit
+//! codes, that a pre-guard failure always did.
 
 use std::time::{Duration, Instant};
 
@@ -66,6 +74,12 @@ pub struct App {
     /// When the session began, as the spinner's phase reference.
     started: Instant,
     quit: bool,
+    /// The startup failure that is quitting this session, if one is.
+    ///
+    /// Carried here rather than in `QuitReason` so that enum stays `Copy`: `run` takes
+    /// this after the loop returns and returns it as the `Err`, once the guard has
+    /// dropped and `main` can print it to the restored terminal.
+    fatal: Option<Box<Error>>,
 }
 
 /// How long a spinner frame is shown. Fast enough to read as motion, slow enough that
@@ -529,6 +543,20 @@ impl Application for App {
                 true
             }
 
+            AppEvent::Identified { username } => self.view.identify(&username),
+
+            AppEvent::IdentityFailed { error } => {
+                // The same invariant that made plain propagation correct before the
+                // guard existed: the recovery taxonomy agrees every failure this probe
+                // can produce is fatal.
+                debug_assert!(crate::gitlab::probe::is_fatal(&error));
+                tracing::error!(%error, "identity probe failed");
+                self.fatal = Some(error);
+                // Quit on the event itself, not on the next render tick, so the
+                // alternate screen is up for no longer than the probe's own latency.
+                return (Flow::Quit(QuitReason::Fatal), false);
+            }
+
             // Relative times are recomputed on draw, so a clock tick is a change.
             AppEvent::ClockTick => true,
             // Idle, a render tick changes nothing. While a fetch is in flight it is what
@@ -627,16 +655,20 @@ pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> 
     }
 
     let client = Client::new(&config.gitlab, token.token)?;
-    let identity = match crate::gitlab::probe::identify_and_log(&client).await {
-        Ok(identity) => identity,
-        Err(error) => {
-            // The invariant that makes plain propagation correct here: the recovery
-            // taxonomy already agrees every failure this probe can produce is fatal
-            // before the alternate screen exists.
-            debug_assert!(crate::gitlab::probe::is_fatal(&error));
-            return Err(error);
-        }
-    };
+
+    // Moved up from just before the guard: the identity probe below needs somewhere to
+    // publish onto, and `events` is cheap to clone into it now rather than restructured
+    // later. The input/tick/signal tasks that also send on it are still spawned after
+    // the guard, once raw mode is up.
+    let (events, mut receiver) = channel();
+    let mut tasks = Tasks::new();
+
+    let (identity_tx, identity_rx) = crate::app::identity::channel();
+    // Spawned here — before the cache read, the keyboard-enhancement query and the
+    // guard — so the round trip overlaps every one of them instead of blocking ahead of
+    // all of them, which is the whole point of this change. A failure surfaces later,
+    // through the event loop, as `AppEvent::IdentityFailed`.
+    crate::app::identity::spawn(&mut tasks, events.clone(), client.clone(), identity_tx);
 
     let caps = Capabilities::detect(&TermEnv::from_process());
     let mut tabs = Tabs::new(
@@ -648,6 +680,9 @@ pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> 
 
     // The warm start. Local disk and before the guard, so the very first
     // frame the user sees already has rows in it instead of an empty table.
+    //
+    // No identity yet — the probe is still in flight — so the flags in the file are
+    // trusted as they are; `AppEvent::Identified` re-derives them once it lands.
     //
     // A cache directory that cannot be created disables caching rather than failing: a
     // warm start is an optimisation, and refusing to run without one would be absurd.
@@ -663,7 +698,7 @@ pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> 
             &mut tabs,
             &config.filters,
             dir,
-            &identity.username,
+            None,
             jiff::Timestamp::now(),
         );
         tracing::info!(warmed, filters = config.filters.len(), "warm start");
@@ -708,8 +743,6 @@ pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> 
     let terminal = Terminal::new(CrosstermBackend::new(std::io::stdout()))
         .map_err(|e| Error::Other(format!("could not initialise the terminal: {e}")))?;
 
-    let (events, mut receiver) = channel();
-    let mut tasks = Tasks::new();
     app_event::spawn_input(&mut tasks, events.clone());
     app_event::spawn_ticks(&mut tasks, events.clone());
     app_event::spawn_signals(&mut tasks, events.clone(), signals);
@@ -718,7 +751,8 @@ pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> 
     // An undetected terminal must be treated as always focused rather than silently
     // suppressing things the user asked for.
     let focus_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-    // Starts unpaused: the identity probe already ruled out a startup auth failure.
+    // Starts unpaused: the identity probe is still in flight, and a runtime 401/403 is
+    // what sets this — the same as before, since the probe never covered this flag.
     let pause_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     if !caps.focus_events
         && (config.refresh.refresh_on_focus || config.refresh.pause_when_unfocused)
@@ -792,7 +826,7 @@ pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> 
         events.clone(),
         client,
         &config,
-        identity.username.clone(),
+        identity_rx,
         cache_dir,
         scheduler::Flags {
             focused: std::sync::Arc::clone(&focus_flag),
@@ -829,6 +863,7 @@ pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> 
         hyperlinks: caps.hyperlinks,
         started: Instant::now(),
         quit: false,
+        fatal: None,
     };
     // A key queued at startup could be handled before the first draw; give it the real
     // window rather than the fallback.
@@ -836,12 +871,17 @@ pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> 
 
     let reason = crate::app::app_loop::run(&mut app, &mut receiver, tasks).await;
 
-    // Explicit rather than relying on the drop order at the end of the function: the
-    // terminal must be restored before anything is printed about why we exited.
+    // Taken before `app` drops: the guard must restore the terminal before `main` prints
+    // anything about why we exited, and the fatal error travels here rather than in
+    // `reason` so that `QuitReason` can stay `Copy`.
+    let fatal = app.fatal.take();
     drop(app);
     drop(guard);
 
-    Ok(reason)
+    match fatal {
+        Some(error) => Err(*error),
+        None => Ok(reason),
+    }
 }
 
 /// Keeps the sender type referenced for readers of the signature above.
