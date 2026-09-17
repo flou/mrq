@@ -7,6 +7,11 @@ repository = "https://github.com/flou/mrq"
 license = "MIT"
 rust-version = "1.98"
 
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
+
 [lints.rust]
 unsafe_code = "forbid"
 
