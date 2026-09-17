@@ -38,6 +38,19 @@ pub enum Popup {
     Log,
 }
 
+impl Popup {
+    /// The action that opens this popup, so the same key can close it again.
+    const fn opening_action(self) -> Action {
+        match self {
+            Self::Help => Action::Help,
+            Self::Sort => Action::SortMenu,
+            Self::Filter => Action::FilterMenu,
+            Self::Skin => Action::SkinMenu,
+            Self::Log => Action::LogMenu,
+        }
+    }
+}
+
 /// An open popup: which one, and where the user is inside it.
 ///
 /// One struct for all of them rather than a variant each. `cursor`, `scroll` and `query`
@@ -745,6 +758,17 @@ pub fn handle_key(state: &mut ViewState, keymap: &Keymap, key: KeyEvent) -> KeyO
             // Quit must work from inside a popup, or a modal bug traps the user.
             if keymap.action_for(key) == Some(Action::Quit) {
                 return dispatch_key(state, keymap, key);
+            }
+            // The key that opened this popup closes it again, same as Esc — except
+            // Filter, whose key doubles as ordinary query text and must keep typing.
+            if popup.kind != Popup::Filter
+                && keymap.action_for(key) == Some(popup.kind.opening_action())
+            {
+                if let Some(skin) = &popup.previous_skin {
+                    state.theme = state.theme.with_skin(skin);
+                }
+                state.mode = Mode::Normal;
+                return KeyOutcome::Handled { redraw: true };
             }
             popup_key(state, keymap, popup, key)
         }
@@ -2261,6 +2285,33 @@ mod tests {
             ),
             "a modal bug must not trap the user: {outcome:?}"
         );
+    }
+
+    #[test]
+    fn the_key_that_opened_a_popup_closes_it_again() {
+        let keymap = keymap();
+        let mut state = state_with(rows(1));
+
+        dispatch(&mut state, Action::Help);
+        assert!(state.mode.popup().is_some());
+
+        // "?" is Help's own key, not Esc.
+        handle_key(&mut state, &keymap, key(KeyCode::Char('?')));
+        assert!(state.mode.is_normal());
+    }
+
+    /// Filter's key doubles as ordinary query text, so it must keep typing rather than
+    /// close the popup on every repeat of the letter that opened it.
+    #[test]
+    fn filters_own_key_types_into_the_query_instead_of_closing_it() {
+        let keymap = keymap();
+        let mut state = state_with(rows(1));
+
+        dispatch(&mut state, Action::FilterMenu);
+        handle_key(&mut state, &keymap, key(KeyCode::Char('f')));
+
+        assert!(state.mode.popup().is_some(), "still open");
+        assert_eq!(state.mode.popup_state().unwrap().query, "f");
     }
 
     /// A popup swallows keys so the table underneath does not also act on them.
