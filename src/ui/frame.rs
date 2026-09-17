@@ -190,6 +190,7 @@ fn render(world: &World, width: u16, height: u16, hyperlinks: bool) -> Vec<Strin
         columns: &world.columns,
         now: now(),
         hyperlinks,
+        assignee_trigram: false,
     };
 
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -346,6 +347,7 @@ fn a_popup_opening_and_closing_never_leaves_a_hyperlink_open() {
             columns: &world.columns,
             now: now(),
             hyperlinks: true,
+            assignee_trigram: false,
         };
         terminal.draw(|frame| super::render(frame, &scene)).unwrap();
     };
@@ -412,6 +414,7 @@ fn a_skin_change_repaints_every_cell_in_the_new_background() {
         columns: &world.columns,
         now: now(),
         hyperlinks: false,
+        assignee_trigram: false,
     };
     terminal.draw(|frame| super::render(frame, &scene)).unwrap();
     let dark = empty_body(&terminal);
@@ -433,6 +436,7 @@ fn a_skin_change_repaints_every_cell_in_the_new_background() {
         columns: &world.columns,
         now: now(),
         hyperlinks: false,
+        assignee_trigram: false,
     };
     terminal.draw(|frame| super::render(frame, &scene)).unwrap();
     let other = empty_body(&terminal);
@@ -475,6 +479,7 @@ fn previewing_a_skin_repaints_the_popup_background() {
             columns: &world.columns,
             now: now(),
             hyperlinks: false,
+            assignee_trigram: false,
         };
         terminal.draw(|frame| super::render(frame, &scene)).unwrap();
         // The centre of an 80x24 frame sits well inside the popup's 70%-by-70% area.

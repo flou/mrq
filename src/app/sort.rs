@@ -102,7 +102,7 @@ const fn pipeline_severity(mr: &MergeRequest) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gitlab::model::{Pipeline, PipelineStatus, fixtures::mr};
+    use crate::gitlab::model::{Pipeline, PipelineStatus, User, fixtures::mr};
     use jiff::Timestamp;
 
     fn at(iso: &str) -> Timestamp {
@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn assigned_puts_mine_first() {
         let mut mine = row("mine", "someone");
-        mine.assignees = vec!["me".into()];
+        mine.assignees = vec![User::new("me")];
         mine.recompute_derived("me");
 
         let theirs = row("theirs", "someone");

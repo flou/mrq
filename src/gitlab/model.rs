@@ -248,7 +248,7 @@ pub struct MergeRequest {
     pub approved: bool,
     pub approved_by: Vec<String>,
 
-    pub assignees: Vec<String>,
+    pub assignees: Vec<User>,
     pub reviewers: Vec<String>,
     pub labels: Vec<Label>,
 
@@ -284,9 +284,18 @@ impl MergeRequest {
     /// Called after deserialization too — a cached snapshot may have been written by a
     /// different account, and stale flags would make the ASSIGNED column lie.
     pub fn recompute_derived(&mut self, current_user: &str) {
-        self.approved_by_me = contains_user(&self.approved_by, current_user);
-        self.assigned_to_me = contains_user(&self.assignees, current_user);
+        self.approved_by_me =
+            contains_user(self.approved_by.iter().map(String::as_str), current_user);
+        self.assigned_to_me = contains_user(
+            self.assignees.iter().map(|u| u.username.as_str()),
+            current_user,
+        );
         self.authored_by_me = eq_user(&self.author.username, current_user);
+    }
+
+    /// The first assignee, for the ASSIGNED column's trigram rendering.
+    pub fn first_assignee(&self) -> Option<&User> {
+        self.assignees.first()
     }
 
     /// Re-derive the flags once the identity probe lands, reporting whether any of them
@@ -349,8 +358,8 @@ const fn eq_user(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b)
 }
 
-fn contains_user(haystack: &[String], needle: &str) -> bool {
-    haystack.iter().any(|u| eq_user(u, needle))
+fn contains_user<'a>(haystack: impl IntoIterator<Item = &'a str>, needle: &str) -> bool {
+    haystack.into_iter().any(|u| eq_user(u, needle))
 }
 
 #[cfg(test)]
@@ -380,7 +389,7 @@ pub(crate) mod fixtures {
             files_changed: 9,
             approved: false,
             approved_by: vec!["jdoe".to_owned()],
-            assignees: vec!["asmith".to_owned()],
+            assignees: vec![User::new("asmith")],
             reviewers: vec!["jdoe".to_owned(), "bwayne".to_owned()],
             labels: vec![Label {
                 title: "frontend".to_owned(),
@@ -445,7 +454,7 @@ mod tests {
     #[test]
     fn username_comparison_ignores_case() {
         let mut m = mr("1", "ASmith");
-        m.assignees = vec!["ASMITH".into()];
+        m.assignees = vec![User::new("ASMITH")];
         m.recompute_derived("asmith");
 
         assert!(m.authored_by_me());

@@ -43,6 +43,10 @@
 # show_drafts = false
 # relative_times = true
 
+# Show the first assignee's initials (Charles Billow -> CBI) in the ASG column instead
+# of Yes/No. Green when the assignee is you, `-` when there is none.
+# assignee_trigram = false
+
 # Mouse capture. Off by default so the terminal keeps its native selection and copy.
 # mouse = false
 

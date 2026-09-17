@@ -622,6 +622,7 @@ impl Application for App {
             columns: &columns,
             now: jiff::Timestamp::now(),
             hyperlinks: self.hyperlinks,
+            assignee_trigram: self.config.ui.assignee_trigram,
         };
 
         // The scene borrows `self`; `Terminal::draw` only takes `self.terminal`, and
