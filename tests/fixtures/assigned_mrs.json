@@ -1,0 +1,659 @@
+{
+  "data": {
+    "currentUser": {
+      "assignedMergeRequests": {
+        "pageInfo": {
+          "hasNextPage": true,
+          "endCursor": "OPAQUE_CURSOR"
+        },
+        "nodes": [
+          {
+            "id": "gid://gitlab/MergeRequest/177284",
+            "iid": "3658",
+            "title": "Fixture merge request 1",
+            "webUrl": "https://gitlab.example.com/group1/sub/project-1/-/merge_requests/3658",
+            "draft": false,
+            "state": "opened",
+            "createdAt": "2026-09-10T12:26:10Z",
+            "updatedAt": "2026-09-10T15:26:00Z",
+            "sourceBranch": "feature/branch-1",
+            "targetBranch": "main",
+            "conflicts": false,
+            "mergeStatusEnum": "CAN_BE_MERGED",
+            "author": {
+              "username": "user1",
+              "name": "User 1"
+            },
+            "project": {
+              "fullPath": "group1/sub/project-1",
+              "webUrl": "https://gitlab.example.com/group1/sub/project-1"
+            },
+            "diffStatsSummary": {
+              "additions": 20,
+              "deletions": 1,
+              "fileCount": 11
+            },
+            "resolvableDiscussionsCount": 1,
+            "resolvedDiscussionsCount": 1,
+            "userNotesCount": 1,
+            "headPipeline": {
+              "id": "gid://gitlab/Ci::Pipeline/1262156",
+              "path": "/group1/sub/project-1/-/pipelines/1262156",
+              "status": "SUCCESS",
+              "detailedStatus": {
+                "text": "Passed",
+                "label": "passed"
+              },
+              "createdAt": "2026-09-10T15:26:01Z",
+              "finishedAt": "2026-09-10T15:27:38Z"
+            },
+            "approved": true,
+            "approvedBy": {
+              "nodes": [
+                {
+                  "username": "user2"
+                }
+              ]
+            },
+            "assignees": {
+              "nodes": [
+                {
+                  "username": "user1"
+                }
+              ]
+            },
+            "reviewers": {
+              "nodes": [
+                {
+                  "username": "user2"
+                }
+              ]
+            },
+            "labels": {
+              "nodes": [
+                {
+                  "title": "label-1",
+                  "color": "#be2727"
+                }
+              ]
+            }
+          },
+          {
+            "id": "gid://gitlab/MergeRequest/164440",
+            "iid": "3075",
+            "title": "Fixture merge request 2",
+            "webUrl": "https://gitlab.example.com/group1/sub/project-1/-/merge_requests/3075",
+            "draft": true,
+            "state": "opened",
+            "createdAt": "2026-07-03T14:07:05Z",
+            "updatedAt": "2026-09-10T15:23:04Z",
+            "sourceBranch": "feature/branch-2",
+            "targetBranch": "main",
+            "conflicts": false,
+            "mergeStatusEnum": "CANNOT_BE_MERGED_RECHECK",
+            "author": {
+              "username": "user1",
+              "name": "User 2"
+            },
+            "project": {
+              "fullPath": "group1/sub/project-1",
+              "webUrl": "https://gitlab.example.com/group1/sub/project-1"
+            },
+            "diffStatsSummary": {
+              "additions": 280,
+              "deletions": 7,
+              "fileCount": 5
+            },
+            "resolvableDiscussionsCount": 0,
+            "resolvedDiscussionsCount": 0,
+            "userNotesCount": 0,
+            "headPipeline": {
+              "id": "gid://gitlab/Ci::Pipeline/1262113",
+              "path": "/group1/sub/project-1/-/pipelines/1262113",
+              "status": "SUCCESS",
+              "detailedStatus": {
+                "text": "Passed",
+                "label": "passed"
+              },
+              "createdAt": "2026-09-10T15:23:05Z",
+              "finishedAt": "2026-09-10T15:23:41Z"
+            },
+            "approved": false,
+            "approvedBy": {
+              "nodes": []
+            },
+            "assignees": {
+              "nodes": [
+                {
+                  "username": "user1"
+                }
+              ]
+            },
+            "reviewers": {
+              "nodes": []
+            },
+            "labels": {
+              "nodes": []
+            }
+          },
+          {
+            "id": "gid://gitlab/MergeRequest/177270",
+            "iid": "3656",
+            "title": "Fixture merge request 3",
+            "webUrl": "https://gitlab.example.com/group1/sub/project-1/-/merge_requests/3656",
+            "draft": false,
+            "state": "opened",
+            "createdAt": "2026-09-10T12:05:26Z",
+            "updatedAt": "2026-09-10T12:12:16Z",
+            "sourceBranch": "feature/branch-3",
+            "targetBranch": "main",
+            "conflicts": false,
+            "mergeStatusEnum": "UNCHECKED",
+            "author": {
+              "username": "user1",
+              "name": "User 2"
+            },
+            "project": {
+              "fullPath": "group1/sub/project-1",
+              "webUrl": "https://gitlab.example.com/group1/sub/project-1"
+            },
+            "diffStatsSummary": {
+              "additions": 18,
+              "deletions": 2,
+              "fileCount": 5
+            },
+            "resolvableDiscussionsCount": 0,
+            "resolvedDiscussionsCount": 0,
+            "userNotesCount": 0,
+            "headPipeline": {
+              "id": "gid://gitlab/Ci::Pipeline/1261419",
+              "path": "/group1/sub/project-1/-/pipelines/1261419",
+              "status": "SUCCESS",
+              "detailedStatus": {
+                "text": "Passed",
+                "label": "passed"
+              },
+              "createdAt": "2026-09-10T12:12:17Z",
+              "finishedAt": "2026-09-10T12:13:16Z"
+            },
+            "approved": false,
+            "approvedBy": {
+              "nodes": []
+            },
+            "assignees": {
+              "nodes": [
+                {
+                  "username": "user1"
+                }
+              ]
+            },
+            "reviewers": {
+              "nodes": []
+            },
+            "labels": {
+              "nodes": []
+            }
+          },
+          {
+            "id": "gid://gitlab/MergeRequest/171627",
+            "iid": "3437",
+            "title": "Fixture merge request 4",
+            "webUrl": "https://gitlab.example.com/group1/sub/project-1/-/merge_requests/3437",
+            "draft": true,
+            "state": "opened",
+            "createdAt": "2026-08-14T15:29:45Z",
+            "updatedAt": "2026-09-10T07:15:01Z",
+            "sourceBranch": "feature/branch-4",
+            "targetBranch": "main",
+            "conflicts": false,
+            "mergeStatusEnum": "UNCHECKED",
+            "author": {
+              "username": "user1",
+              "name": "User 2"
+            },
+            "project": {
+              "fullPath": "group1/sub/project-1",
+              "webUrl": "https://gitlab.example.com/group1/sub/project-1"
+            },
+            "diffStatsSummary": {
+              "additions": 524,
+              "deletions": 41,
+              "fileCount": 6
+            },
+            "resolvableDiscussionsCount": 0,
+            "resolvedDiscussionsCount": 0,
+            "userNotesCount": 0,
+            "headPipeline": {
+              "id": "gid://gitlab/Ci::Pipeline/1260486",
+              "path": "/group1/sub/project-1/-/pipelines/1260486",
+              "status": "SUCCESS",
+              "detailedStatus": {
+                "text": "Passed",
+                "label": "passed"
+              },
+              "createdAt": "2026-09-10T07:15:01Z",
+              "finishedAt": "2026-09-10T07:16:27Z"
+            },
+            "approved": false,
+            "approvedBy": {
+              "nodes": []
+            },
+            "assignees": {
+              "nodes": [
+                {
+                  "username": "user1"
+                }
+              ]
+            },
+            "reviewers": {
+              "nodes": []
+            },
+            "labels": {
+              "nodes": []
+            }
+          },
+          {
+            "id": "gid://gitlab/MergeRequest/166257",
+            "iid": "5600",
+            "title": "Fixture merge request 5",
+            "webUrl": "https://gitlab.example.com/group2/sub/project-2/-/merge_requests/5600",
+            "draft": true,
+            "state": "opened",
+            "createdAt": "2026-07-16T13:10:30Z",
+            "updatedAt": "2026-09-08T13:22:56Z",
+            "sourceBranch": "feature/branch-5",
+            "targetBranch": "main",
+            "conflicts": false,
+            "mergeStatusEnum": "UNCHECKED",
+            "author": {
+              "username": "user1",
+              "name": "User 2"
+            },
+            "project": {
+              "fullPath": "group2/sub/project-2",
+              "webUrl": "https://gitlab.example.com/group2/sub/project-2"
+            },
+            "diffStatsSummary": {
+              "additions": 65,
+              "deletions": 4,
+              "fileCount": 5
+            },
+            "resolvableDiscussionsCount": 0,
+            "resolvedDiscussionsCount": 0,
+            "userNotesCount": 1,
+            "headPipeline": {
+              "id": "gid://gitlab/Ci::Pipeline/1256518",
+              "path": "/group2/sub/project-2/-/pipelines/1256518",
+              "status": "CANCELED",
+              "detailedStatus": {
+                "text": "Canceled",
+                "label": "canceled"
+              },
+              "createdAt": "2026-09-08T13:21:16Z",
+              "finishedAt": "2026-09-08T13:23:28Z"
+            },
+            "approved": false,
+            "approvedBy": {
+              "nodes": []
+            },
+            "assignees": {
+              "nodes": [
+                {
+                  "username": "user1"
+                }
+              ]
+            },
+            "reviewers": {
+              "nodes": []
+            },
+            "labels": {
+              "nodes": []
+            }
+          },
+          {
+            "id": "gid://gitlab/MergeRequest/173410",
+            "iid": "119",
+            "title": "Fixture merge request 6",
+            "webUrl": "https://gitlab.example.com/group3/sub/project-3/-/merge_requests/119",
+            "draft": true,
+            "state": "opened",
+            "createdAt": "2026-08-26T15:31:39Z",
+            "updatedAt": "2026-09-08T08:12:32Z",
+            "sourceBranch": "feature/branch-6",
+            "targetBranch": "main",
+            "conflicts": false,
+            "mergeStatusEnum": "CAN_BE_MERGED",
+            "author": {
+              "username": "user1",
+              "name": "User 2"
+            },
+            "project": {
+              "fullPath": "group3/sub/project-3",
+              "webUrl": "https://gitlab.example.com/group3/sub/project-3"
+            },
+            "diffStatsSummary": {
+              "additions": 2586,
+              "deletions": 299,
+              "fileCount": 16
+            },
+            "resolvableDiscussionsCount": 0,
+            "resolvedDiscussionsCount": 0,
+            "userNotesCount": 0,
+            "headPipeline": {
+              "id": "gid://gitlab/Ci::Pipeline/1255533",
+              "path": "/group3/sub/project-3/-/pipelines/1255533",
+              "status": "MANUAL",
+              "detailedStatus": {
+                "text": "Blocked",
+                "label": "waiting for manual action"
+              },
+              "createdAt": "2026-09-08T08:12:32Z",
+              "finishedAt": null
+            },
+            "approved": false,
+            "approvedBy": {
+              "nodes": []
+            },
+            "assignees": {
+              "nodes": [
+                {
+                  "username": "user1"
+                }
+              ]
+            },
+            "reviewers": {
+              "nodes": []
+            },
+            "labels": {
+              "nodes": []
+            }
+          },
+          {
+            "id": "gid://gitlab/MergeRequest/175472",
+            "iid": "3575",
+            "title": "Fixture merge request 7",
+            "webUrl": "https://gitlab.example.com/group1/sub/project-1/-/merge_requests/3575",
+            "draft": false,
+            "state": "opened",
+            "createdAt": "2026-09-04T16:22:23Z",
+            "updatedAt": "2026-09-04T16:23:44Z",
+            "sourceBranch": "feature/branch-7",
+            "targetBranch": "main",
+            "conflicts": false,
+            "mergeStatusEnum": "CAN_BE_MERGED",
+            "author": {
+              "username": "user1",
+              "name": "User 2"
+            },
+            "project": {
+              "fullPath": "group1/sub/project-1",
+              "webUrl": "https://gitlab.example.com/group1/sub/project-1"
+            },
+            "diffStatsSummary": {
+              "additions": 88,
+              "deletions": 19,
+              "fileCount": 2
+            },
+            "resolvableDiscussionsCount": 0,
+            "resolvedDiscussionsCount": 0,
+            "userNotesCount": 0,
+            "headPipeline": {
+              "id": "gid://gitlab/Ci::Pipeline/1252089",
+              "path": "/group1/sub/project-1/-/pipelines/1252089",
+              "status": "SUCCESS",
+              "detailedStatus": {
+                "text": "Passed",
+                "label": "passed"
+              },
+              "createdAt": "2026-09-04T16:22:38Z",
+              "finishedAt": "2026-09-04T16:25:04Z"
+            },
+            "approved": true,
+            "approvedBy": {
+              "nodes": [
+                {
+                  "username": "user3"
+                }
+              ]
+            },
+            "assignees": {
+              "nodes": [
+                {
+                  "username": "user1"
+                }
+              ]
+            },
+            "reviewers": {
+              "nodes": []
+            },
+            "labels": {
+              "nodes": []
+            }
+          },
+          {
+            "id": "gid://gitlab/MergeRequest/175435",
+            "iid": "3574",
+            "title": "Fixture merge request 8",
+            "webUrl": "https://gitlab.example.com/group1/sub/project-1/-/merge_requests/3574",
+            "draft": true,
+            "state": "opened",
+            "createdAt": "2026-09-04T14:25:07Z",
+            "updatedAt": "2026-09-04T14:25:08Z",
+            "sourceBranch": "feature/branch-8",
+            "targetBranch": "main",
+            "conflicts": false,
+            "mergeStatusEnum": "CANNOT_BE_MERGED_RECHECK",
+            "author": {
+              "username": "user1",
+              "name": "User 3"
+            },
+            "project": {
+              "fullPath": "group1/sub/project-1",
+              "webUrl": "https://gitlab.example.com/group1/sub/project-1"
+            },
+            "diffStatsSummary": {
+              "additions": 0,
+              "deletions": 0,
+              "fileCount": 0
+            },
+            "resolvableDiscussionsCount": 0,
+            "resolvedDiscussionsCount": 0,
+            "userNotesCount": 0,
+            "headPipeline": null,
+            "approved": false,
+            "approvedBy": {
+              "nodes": []
+            },
+            "assignees": {
+              "nodes": [
+                {
+                  "username": "user1"
+                }
+              ]
+            },
+            "reviewers": {
+              "nodes": []
+            },
+            "labels": {
+              "nodes": []
+            }
+          },
+          {
+            "id": "gid://gitlab/MergeRequest/132189",
+            "iid": "2",
+            "title": "Fixture merge request 9",
+            "webUrl": "https://gitlab.example.com/group4/sub/project-4/-/merge_requests/2",
+            "draft": false,
+            "state": "opened",
+            "createdAt": "2026-02-12T08:54:51Z",
+            "updatedAt": "2026-03-03T08:21:10Z",
+            "sourceBranch": "feature/branch-9",
+            "targetBranch": "main",
+            "conflicts": false,
+            "mergeStatusEnum": "CAN_BE_MERGED",
+            "author": {
+              "username": "user1",
+              "name": "User 3"
+            },
+            "project": {
+              "fullPath": "group4/sub/project-4",
+              "webUrl": "https://gitlab.example.com/group4/sub/project-4"
+            },
+            "diffStatsSummary": {
+              "additions": 955,
+              "deletions": 76,
+              "fileCount": 12
+            },
+            "resolvableDiscussionsCount": 0,
+            "resolvedDiscussionsCount": 0,
+            "userNotesCount": 0,
+            "headPipeline": {
+              "id": "gid://gitlab/Ci::Pipeline/1005833",
+              "path": "/group4/sub/project-4/-/pipelines/1005833",
+              "status": "FAILED",
+              "detailedStatus": {
+                "text": "Failed",
+                "label": "failed"
+              },
+              "createdAt": "2026-03-03T08:21:11Z",
+              "finishedAt": "2026-03-03T08:24:32Z"
+            },
+            "approved": false,
+            "approvedBy": {
+              "nodes": []
+            },
+            "assignees": {
+              "nodes": [
+                {
+                  "username": "user1"
+                }
+              ]
+            },
+            "reviewers": {
+              "nodes": []
+            },
+            "labels": {
+              "nodes": []
+            }
+          },
+          {
+            "id": "gid://gitlab/MergeRequest/71442",
+            "iid": "2",
+            "title": "Fixture merge request 10",
+            "webUrl": "https://gitlab.example.com/group5/sub/project-5/-/merge_requests/2",
+            "draft": true,
+            "state": "opened",
+            "createdAt": "2024-12-18T14:26:34Z",
+            "updatedAt": "2024-12-18T14:26:38Z",
+            "sourceBranch": "feature/branch-10",
+            "targetBranch": "main",
+            "conflicts": true,
+            "mergeStatusEnum": "CANNOT_BE_MERGED",
+            "author": {
+              "username": "user1",
+              "name": "User 3"
+            },
+            "project": {
+              "fullPath": "group5/sub/project-5",
+              "webUrl": "https://gitlab.example.com/group5/sub/project-5"
+            },
+            "diffStatsSummary": {
+              "additions": 1504,
+              "deletions": 5027,
+              "fileCount": 21
+            },
+            "resolvableDiscussionsCount": 0,
+            "resolvedDiscussionsCount": 0,
+            "userNotesCount": 0,
+            "headPipeline": {
+              "id": "gid://gitlab/Ci::Pipeline/526844",
+              "path": "/group5/sub/project-5/-/pipelines/526844",
+              "status": "FAILED",
+              "detailedStatus": {
+                "text": "Failed",
+                "label": "failed"
+              },
+              "createdAt": "2024-12-18T14:26:36Z",
+              "finishedAt": "2024-12-18T14:26:54Z"
+            },
+            "approved": false,
+            "approvedBy": {
+              "nodes": []
+            },
+            "assignees": {
+              "nodes": [
+                {
+                  "username": "user1"
+                }
+              ]
+            },
+            "reviewers": {
+              "nodes": []
+            },
+            "labels": {
+              "nodes": []
+            }
+          },
+          {
+            "id": "gid://gitlab/MergeRequest/62371",
+            "iid": "193",
+            "title": "Fixture merge request 11",
+            "webUrl": "https://gitlab.example.com/group6/sub/project-6/-/merge_requests/193",
+            "draft": false,
+            "state": "opened",
+            "createdAt": "2024-09-05T15:23:23Z",
+            "updatedAt": "2024-09-05T15:46:16Z",
+            "sourceBranch": "feature/branch-11",
+            "targetBranch": "main",
+            "conflicts": false,
+            "mergeStatusEnum": "UNCHECKED",
+            "author": {
+              "username": "user1",
+              "name": "User 3"
+            },
+            "project": {
+              "fullPath": "group6/sub/project-6",
+              "webUrl": "https://gitlab.example.com/group6/sub/project-6"
+            },
+            "diffStatsSummary": {
+              "additions": 3,
+              "deletions": 3,
+              "fileCount": 1
+            },
+            "resolvableDiscussionsCount": 0,
+            "resolvedDiscussionsCount": 0,
+            "userNotesCount": 0,
+            "headPipeline": {
+              "id": "gid://gitlab/Ci::Pipeline/432091",
+              "path": "/group6/sub/project-6/-/pipelines/432091",
+              "status": "FAILED",
+              "detailedStatus": {
+                "text": "Failed",
+                "label": "failed"
+              },
+              "createdAt": "2024-09-05T15:24:43Z",
+              "finishedAt": "2024-09-05T15:25:56Z"
+            },
+            "approved": false,
+            "approvedBy": {
+              "nodes": []
+            },
+            "assignees": {
+              "nodes": [
+                {
+                  "username": "user1"
+                }
+              ]
+            },
+            "reviewers": {
+              "nodes": []
+            },
+            "labels": {
+              "nodes": []
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "errors": [
+    {
+      "message": "Field 'userNotesCount' doesn't exist on type 'MergeRequest'",
+      "extensions": {
+        "code": "undefinedField",
+        "typeName": "MergeRequest",
+        "fieldName": "userNotesCount"
+      }
+    },
+    {
+      "message": "Field 'resolvableDiscussionsCount' doesn't exist on type 'MergeRequest'",
+      "extensions": {
+        "code": "undefinedField",
+        "typeName": "MergeRequest",
+        "fieldName": "resolvableDiscussionsCount"
+      }
+    }
+  ]
+}

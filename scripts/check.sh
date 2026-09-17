@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Run the same gates CI runs, locally, with honest exit statuses.
+#
+# This exists because piping a gate into a pager or `tail` reports the *pager's* exit
+# status, so `cargo clippy ... | tail && echo OK` prints OK for a failing clippy. That
+# mistake is silent and survives review. Run this instead of hand-assembling the commands.
+
+set -Eeuo pipefail
+
+cd "$(dirname "$0")/.."
+
+failed=()
+
+run() {
+  local name="$1"
+  shift
+  printf '\n\033[1m== %s ==\033[0m\n' "$name"
+  if "$@"; then
+    printf '\033[32mok\033[0m %s\n' "$name"
+  else
+    printf '\033[31mFAILED\033[0m %s\n' "$name"
+    failed+=("$name")
+  fi
+}
+
+run "fmt" cargo fmt --all -- --check
+run "clippy" cargo clippy --all-targets --all-features -- -D warnings
+run "test" cargo test --all-targets
+# No `cargo test --doc`: mrq is a binary-only crate, so there is no lib target and the
+# command errors out rather than finding nothing to do.
+
+printf '\n\033[1m== tls ==\033[0m\n'
+if cargo tree --quiet | grep -Eq '^[[:space:]]*[|`+-]*[[:space:]]*(openssl|native-tls)'; then
+  printf '\033[31mFAILED\033[0m tls: openssl or native-tls entered the dependency tree\n'
+  failed+=("tls")
+else
+  printf '\033[32mok\033[0m tls (rustls only)\n'
+fi
+
+if [ ${#failed[@]} -ne 0 ]; then
+  printf '\n\033[31m%d gate(s) failed:\033[0m %s\n' "${#failed[@]}" "${failed[*]}"
+  exit 1
+fi
+
+printf '\n\033[32mall gates passed\033[0m\n'
