@@ -41,29 +41,48 @@ pub const GUTTER_WIDTH: u16 = 1;
 ///
 /// The only correct way to build an [`Allocation`] for [`build`]; calling
 /// [`columns::allocate`] with the raw area width silently overcommits by [`GUTTER_WIDTH`],
-/// and skips the `author` measurement below.
+/// and skips the `author`/`repo` measurements below.
 ///
 /// `rows` should be the tab's full row set, not the visible window — measuring only what
-/// is on screen would make the column resize while scrolling.
+/// is on screen would make a column resize while scrolling.
 pub fn allocate(columns: &[Column], width: u16, rows: &[&MergeRequest]) -> Allocation {
     let fitted = columns::Fitted {
         author: author_fit(rows),
+        repo: repo_fit(rows),
     };
     columns::allocate(columns, width.saturating_sub(GUTTER_WIDTH), fitted)
 }
 
 /// The `author` column's content width: the widest author name on `rows`, floored at the
-/// header so `AUTHOR` is never truncated and capped at [`columns::AUTHOR_MAX`].
+/// header so `AUTHOR` is never truncated and capped at [`columns::FIT_MAX`].
+fn author_fit(rows: &[&MergeRequest]) -> Option<u16> {
+    content_fit(
+        rows.iter().map(|mr| mr.author.username.width()),
+        Column::Author,
+    )
+}
+
+/// The `repo` column's content width: the widest project name on `rows`, floored at the
+/// header so `REPO` is never truncated and capped at [`columns::FIT_MAX`].
+fn repo_fit(rows: &[&MergeRequest]) -> Option<u16> {
+    content_fit(rows.iter().map(|mr| mr.project_name.width()), Column::Repo)
+}
+
+/// Shared by [`author_fit`] and [`repo_fit`]: the widest of `widths`, floored at
+/// `column`'s header (so the header is never truncated) and capped at
+/// [`columns::FIT_MAX`].
 ///
 /// `None` for an empty table — there is nothing to measure, and collapsing to the header
 /// width would make the column jump the moment the first row arrives.
 ///
-/// Measured in display cells, not bytes or code points, for the reason the module doc
-/// gives: a username can contain CJK or combining marks just as a title can.
-fn author_fit(rows: &[&MergeRequest]) -> Option<u16> {
-    let widest = rows.iter().map(|mr| mr.author.username.width()).max()?;
-    let header = Column::Author.header().width();
-    let clamped = widest.max(header).min(columns::AUTHOR_MAX as usize);
+/// Takes an iterator of already-measured display widths rather than strings, so the
+/// caller picks the field and this stays a plain fold — measuring in display cells, not
+/// bytes or code points, is the caller's job, for the reason the module doc gives: a
+/// username or repo name can contain CJK or combining marks just as a title can.
+fn content_fit(widths: impl Iterator<Item = usize>, column: Column) -> Option<u16> {
+    let widest = widths.max()?;
+    let header = column.header().width();
+    let clamped = widest.max(header).min(columns::FIT_MAX as usize);
     u16::try_from(clamped).ok()
 }
 
@@ -262,8 +281,7 @@ fn row<'a>(
             // glance rather than blending into the rest of the row.
             Column::Approved if mr.approved && !mr.draft => {
                 let text = truncate(&cell_text(mr, *column, theme, now), width, theme.ellipsis());
-                Cell::from(pad(&text, width))
-                    .style(theme.emphasise(Role::Success))
+                Cell::from(pad(&text, width)).style(theme.emphasise(Role::Success))
             }
             other => {
                 let text = truncate(&cell_text(mr, *other, theme, now), width, theme.ellipsis());
@@ -602,11 +620,11 @@ mod tests {
         );
     }
 
-    /// Longer than `AUTHOR_MAX` is capped, so one outlier username cannot eat the title.
+    /// Longer than `FIT_MAX` is capped, so one outlier username cannot eat the title.
     #[test]
     fn author_fit_is_capped_at_the_maximum() {
         let long = mr("a", &"x".repeat(40));
-        assert_eq!(author_fit(&[&long]), Some(columns::AUTHOR_MAX));
+        assert_eq!(author_fit(&[&long]), Some(columns::FIT_MAX));
     }
 
     /// The widest name wins, not the first or the last.
@@ -627,7 +645,7 @@ mod tests {
         assert_eq!(author_fit(&[&m]), Some("データ".width() as u16));
     }
 
-    /// Between the header floor and `AUTHOR_MAX`, TITLE gets back whatever AUTHOR does not
+    /// Between the header floor and `FIT_MAX`, TITLE gets back whatever AUTHOR does not
     /// need — the point of fitting the column to its content in the first place.
     #[test]
     fn a_short_author_leaves_more_room_for_the_title() {
@@ -643,6 +661,75 @@ mod tests {
         assert!(
             narrow_title > wide_title,
             "a short author ({narrow_title}) should leave more room for the title than a long one ({wide_title})"
+        );
+    }
+
+    /// `repo_fit` mirrors `author_fit`: no rows, nothing to measure.
+    #[test]
+    fn repo_fit_has_no_opinion_on_an_empty_table() {
+        assert_eq!(repo_fit(&[]), None);
+    }
+
+    /// Shorter than the header never shrinks the column below `REPO` itself.
+    #[test]
+    fn repo_fit_is_floored_at_the_header_width() {
+        let mut short = mr("a", "someone");
+        short.project_name = "x".into();
+        assert_eq!(
+            repo_fit(&[&short]),
+            Some(Column::Repo.header().width() as u16)
+        );
+    }
+
+    /// Longer than `FIT_MAX` is capped, so one outlier project name cannot eat the title.
+    #[test]
+    fn repo_fit_is_capped_at_the_maximum() {
+        let mut long = mr("a", "someone");
+        long.project_name = "x".repeat(40);
+        assert_eq!(repo_fit(&[&long]), Some(columns::FIT_MAX));
+    }
+
+    /// The widest name wins, not the first or the last.
+    #[test]
+    fn repo_fit_measures_the_widest_name_on_the_rows() {
+        let mut short = mr("a", "someone");
+        short.project_name = "x".into();
+        let mut long = mr("b", "someone");
+        long.project_name = "a-longer-project-name".into();
+
+        assert_eq!(
+            repo_fit(&[&short, &long]),
+            Some("a-longer-project-name".width() as u16)
+        );
+    }
+
+    /// A CJK project name occupies two cells per character, not one — the same rule as
+    /// titles and authors.
+    #[test]
+    fn repo_fit_measures_display_width_not_characters() {
+        let mut m = mr("a", "someone");
+        m.project_name = "データ".into();
+        assert_eq!(repo_fit(&[&m]), Some("データ".width() as u16));
+    }
+
+    /// Between the header floor and `FIT_MAX`, TITLE gets back whatever REPO does not
+    /// need, exactly as it does for AUTHOR.
+    #[test]
+    fn a_short_repo_leaves_more_room_for_the_title() {
+        let mut short = mr("a", "someone");
+        short.project_name = "x".into();
+        let mut long = mr("b", "someone");
+        long.project_name = "x".repeat(25);
+
+        let narrow_repo = allocate(&Column::DEFAULT, 120, &[&short]);
+        let wide_repo = allocate(&Column::DEFAULT, 120, &[&long]);
+
+        let narrow_title = narrow_repo.width_of(Column::Title).unwrap();
+        let wide_title = wide_repo.width_of(Column::Title).unwrap();
+
+        assert!(
+            narrow_title > wide_title,
+            "a short repo ({narrow_title}) should leave more room for the title than a long one ({wide_title})"
         );
     }
 
@@ -947,9 +1034,10 @@ mod tests {
     /// nothing else here notices.
     #[test]
     fn every_column_renders_at_its_allocated_position_and_width() {
-        // A long author, so the guard also covers the fitted `author` column, not just
-        // the fixed-width ones.
-        let m = mr("a", "a-fairly-long-username");
+        // A long author and a long repo, so the guard also covers both fitted columns,
+        // not just the fixed-width ones.
+        let mut m = mr("a", "a-fairly-long-username");
+        m.project_name = "a-fairly-long-repo-name".into();
         let rows = [&m];
 
         for width in [80u16, 120, 200] {
