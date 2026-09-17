@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# Run the same gates CI runs, locally, with honest exit statuses.
-#
+#MISE description="Run the same gates CI runs, locally, with honest exit statuses."
 # This exists because piping a gate into a pager or `tail` reports the *pager's* exit
 # status, so `cargo clippy ... | tail && echo OK` prints OK for a failing clippy. That
 # mistake is silent and survives review. Run this instead of hand-assembling the commands.
 
 set -Eeuo pipefail
 
-cd "$(dirname "$0")/.."
+cd "${MISE_PROJECT_ROOT:-$(dirname "$0")/..}"
 
 failed=()
 

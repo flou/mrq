@@ -131,28 +131,3 @@ mrq completion powershell | Out-String | Invoke-Expression
 mrq completion elvish > ~/.config/elvish/lib/mrq.elv
 # Add to ~/.config/elvish/rc.elv: use mrq
 ```
-
-## Development
-
-Run all checks (what CI runs):
-
-```bash
-./scripts/check.sh
-```
-
-Run tests:
-
-```bash
-cargo test --all-targets
-```
-
-## Architecture
-
-- **Single-threaded async** — one `mpsc` channel of `AppEvent` feeds a single owner of mutable state (no locks)
-- **Read-only GitLab client** — GraphQL queries only, no mutations
-- **Complexity budget** — queries are costed against the instance's complexity ceiling; over-budget queries return no data
-- **macOS and Linux only**
-
-## License
-
-MIT
