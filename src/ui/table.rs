@@ -389,6 +389,18 @@ pub fn windowed<T>(rows: &[T], scroll: usize, viewport: usize) -> &[T] {
     &rows[start..end]
 }
 
+/// The exact text [`row`] draws in a title cell, before padding.
+///
+/// [`link_titles`] needs this again: the clickable region has to stop where the visible
+/// title does, not run on into the padding that fills out the rest of the column.
+fn title_text(mr: &MergeRequest, width: usize, theme: &Theme, now: jiff::Timestamp) -> String {
+    truncate(
+        &cell_text(mr, Column::Title, theme, now),
+        width,
+        theme.ellipsis(),
+    )
+}
+
 /// Make each row's title a clickable link to its merge request.
 ///
 /// Applied to the rendered buffer rather than built into the cells, because ratatui
@@ -396,12 +408,14 @@ pub fn windowed<T>(rows: &[T], scroll: usize, viewport: usize) -> &[T] {
 /// placed in the text would be cut across cells and printed as garbage.
 ///
 /// Call only when the terminal advertises OSC 8. An unsupported terminal does not ignore
-/// the escape, it prints it.
+/// the escape, it prints it. Also skip it while a popup is on screen — see the caller.
 pub fn link_titles(
     buffer: &mut Buffer,
     area: Rect,
     rows: &[&MergeRequest],
     allocation: &Allocation,
+    theme: &Theme,
+    now: jiff::Timestamp,
 ) {
     let (Some(x), Some(width)) = (
         column_x(allocation, area, Column::Title),
@@ -420,18 +434,48 @@ pub fn link_titles(
         }
         let y = area.y + offset;
 
-        rewrite(buffer, x, y, |symbol| {
-            format!("{}{symbol}", hyperlink::open(&mr.web_url))
-        });
+        let text = title_text(mr, width as usize, theme, now);
+        let Ok(text_width) = u16::try_from(text.width()) else {
+            continue;
+        };
+        if text_width == 0 {
+            continue;
+        }
 
-        // Backwards from the end of the column: the trailing half of a wide grapheme
-        // carries an empty symbol, and appending the close to it would put the escape
-        // somewhere the terminal never prints.
-        let last = (x..x + width)
-            .rev()
-            .find(|cx| !buffer[(*cx, y)].symbol().is_empty());
-        if let Some(cx) = last {
-            rewrite(buffer, cx, y, |symbol| {
+        // Computed from `text` itself, not found by scanning the buffer: ratatui fills a
+        // wide grapheme's trailing cell with a literal space, not an empty symbol, so
+        // "the last non-blank cell" is indistinguishable from ordinary padding — and that
+        // trailing cell is skipped by the terminal diff regardless of what is written
+        // into it, because the diff advances past it on the *preceding* cell's width, not
+        // this one's content. Ending on it would silently drop the close.
+        let last_width = text
+            .chars()
+            .next_back()
+            .and_then(|c| c.width())
+            .unwrap_or(1);
+        let close_x = if last_width >= 2 {
+            x + text_width - 2
+        } else {
+            x + text_width - 1
+        };
+
+        if close_x == x {
+            // The whole title is a single cell (a lone wide glyph, or one narrow
+            // character): open and close land on the same cell. Combine them into one
+            // rewrite — a second call would measure the width of the string the first
+            // call already rewrote, not the original glyph's.
+            rewrite(buffer, x, y, |symbol| {
+                format!(
+                    "{}{symbol}{}",
+                    hyperlink::open(&mr.id, &mr.web_url),
+                    hyperlink::CLOSE
+                )
+            });
+        } else {
+            rewrite(buffer, x, y, |symbol| {
+                format!("{}{symbol}", hyperlink::open(&mr.id, &mr.web_url))
+            });
+            rewrite(buffer, close_x, y, |symbol| {
                 format!("{symbol}{}", hyperlink::CLOSE)
             });
         }
@@ -1153,7 +1197,7 @@ mod tests {
                 let table = build(&refs, &tab(), &allocation, &theme, now());
                 frame.render_widget(table, area);
                 if links {
-                    link_titles(frame.buffer_mut(), area, &refs, &allocation);
+                    link_titles(frame.buffer_mut(), area, &refs, &allocation, &theme, now());
                 }
             })
             .unwrap();
@@ -1194,7 +1238,7 @@ mod tests {
         for (index, mr) in rows.iter().enumerate() {
             let symbol = buffer[(x, 1 + index as u16)].symbol();
             assert!(
-                symbol.starts_with(&hyperlink::open(&mr.web_url)),
+                symbol.starts_with(&hyperlink::open(&mr.id, &mr.web_url)),
                 "row {index} opened {symbol:?}"
             );
         }
@@ -1203,6 +1247,69 @@ mod tests {
         assert!(
             row.contains(hyperlink::CLOSE),
             "the link is closed: {row:?}"
+        );
+    }
+
+    /// Two rows drawn back to back need distinct `id`s, or a terminal is free to treat
+    /// them as one link broken across lines (the OSC 8 spec explicitly allows this).
+    #[test]
+    fn adjacent_rows_open_links_with_different_ids() {
+        let rows = linked_rows();
+        let buffer = buffer_of(&rows, 120, 4, true);
+        let refs: Vec<&MergeRequest> = rows.iter().collect();
+        let allocation = allocate(&Column::DEFAULT, 120, &refs);
+        let x = column_x(
+            &allocation,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 120,
+                height: 4,
+            },
+            Column::Title,
+        )
+        .unwrap();
+
+        let first = buffer[(x, 1)].symbol();
+        let second = buffer[(x, 2)].symbol();
+        assert_ne!(
+            first, second,
+            "adjacent rows opened identical hyperlinks: {first:?}"
+        );
+    }
+
+    /// The clickable region stops where the title text ends, not at the far edge of the
+    /// (usually much wider) title column: a short title must not drag the rest of its
+    /// column's padding into the link.
+    #[test]
+    fn the_link_covers_only_the_title_text_not_the_columns_padding() {
+        let mut rows = linked_rows();
+        rows[0].title = "x".to_owned();
+        let buffer = buffer_of(&rows, 120, 4, true);
+        let refs: Vec<&MergeRequest> = rows.iter().collect();
+        let allocation = allocate(&Column::DEFAULT, 120, &refs);
+        let x = column_x(
+            &allocation,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 120,
+                height: 4,
+            },
+            Column::Title,
+        )
+        .unwrap();
+
+        let title_cell = buffer[(x, 1)].symbol();
+        assert!(
+            title_cell.contains(hyperlink::CLOSE),
+            "a one-character title should open and close on that same cell: {title_cell:?}"
+        );
+
+        let padding_cell = buffer[(x + 1, 1)].symbol();
+        assert_eq!(
+            padding_cell, " ",
+            "padding right after a short title must not carry the link: {padding_cell:?}"
         );
     }
 
@@ -1219,8 +1326,14 @@ mod tests {
                     (0..120)
                         .map(|x| buffer[(x, y)].symbol().replace(['\x1b', '\\'], ""))
                         .collect::<String>()
-                        .replace("]8;;https://gitlab.example.com/a/b/-/merge_requests/1", "")
-                        .replace("]8;;https://gitlab.example.com/a/b/-/merge_requests/2", "")
+                        .replace(
+                            "]8;id=1;https://gitlab.example.com/a/b/-/merge_requests/1",
+                            "",
+                        )
+                        .replace(
+                            "]8;id=2;https://gitlab.example.com/a/b/-/merge_requests/2",
+                            "",
+                        )
                         .replace("]8;;", "")
                 })
                 .collect()
@@ -1305,14 +1418,21 @@ mod tests {
             .draw(|frame| {
                 let table = build(&refs, &tab(), &allocation, &theme(false), now());
                 frame.render_widget(table, area);
-                link_titles(frame.buffer_mut(), area, &refs, &allocation);
+                link_titles(
+                    frame.buffer_mut(),
+                    area,
+                    &refs,
+                    &allocation,
+                    &theme(false),
+                    now(),
+                );
             })
             .unwrap();
 
         let written = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
 
         assert!(
-            written.contains(&hyperlink::open(&rows[0].web_url)),
+            written.contains(&hyperlink::open(&rows[0].id, &rows[0].web_url)),
             "the link was never written"
         );
         assert!(written.contains(hyperlink::CLOSE), "the link was left open");
@@ -1323,6 +1443,82 @@ mod tests {
                 "`{after_the_title}` was skipped after the link:\n{written:?}"
             );
         }
+    }
+
+    /// A title/link stays identical between two draws, but a column after it (pipeline)
+    /// changes — the realistic "live refresh" case, where most of a row's text content is
+    /// unchanged and only a small part of it needs to be redrawn. No other test drives a
+    /// second, incremental draw against a real backend.
+    #[test]
+    fn a_second_draw_leaves_an_unchanged_title_and_link_untouched() {
+        let width = 120u16;
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width,
+            height: 4,
+        };
+        let mut rows = linked_rows();
+        let refs: Vec<&MergeRequest> = rows.iter().collect();
+        let allocation = allocate(&Column::DEFAULT, width, &refs);
+
+        let sink = Sink::default();
+        let mut terminal = Terminal::with_options(
+            CrosstermBackend::new(sink.clone()),
+            TerminalOptions {
+                viewport: Viewport::Fixed(area),
+            },
+        )
+        .unwrap();
+
+        let t = tab();
+        terminal
+            .draw(|frame| {
+                let table = build(&refs, &t, &allocation, &theme(false), now());
+                frame.render_widget(table, area);
+                link_titles(
+                    frame.buffer_mut(),
+                    area,
+                    &refs,
+                    &allocation,
+                    &theme(false),
+                    now(),
+                );
+            })
+            .unwrap();
+        sink.0.lock().unwrap().clear();
+
+        rows[0].pipeline = Some(Pipeline {
+            url: "https://example.com/p".into(),
+            status: PipelineStatus::Failed,
+            finished_at: None,
+        });
+        let refs2: Vec<&MergeRequest> = rows.iter().collect();
+        terminal
+            .draw(|frame| {
+                let table = build(&refs2, &t, &allocation, &theme(false), now());
+                frame.render_widget(table, area);
+                link_titles(
+                    frame.buffer_mut(),
+                    area,
+                    &refs2,
+                    &allocation,
+                    &theme(false),
+                    now(),
+                );
+            })
+            .unwrap();
+
+        let written = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+
+        assert!(
+            !written.contains("Merge request"),
+            "title was redrawn even though it did not change: {written:?}"
+        );
+        assert!(
+            written.contains('✘'),
+            "the new pipeline glyph must appear: {written:?}"
+        );
     }
 
     /// A title exactly filling its column ends on the trailing half of a wide grapheme,
@@ -1361,6 +1557,8 @@ mod tests {
             narrow,
             &refs,
             &allocate(&[Column::Author], 10, &refs),
+            &theme(false),
+            now(),
         );
         assert!((0..10).all(|x| !empty[(x, 1)].symbol().contains('\x1b')));
     }

@@ -121,7 +121,16 @@ pub fn render(frame: &mut Frame, scene: &Scene<'_>) {
     );
     frame.render_widget(widget, table_area);
 
-    if scene.hyperlinks {
+    // Skipped while a popup is up. A popup is drawn *after* this, on top of the table,
+    // and often covers only part of a linked title. If the terminal has already
+    // received that row's opening escape and the popup's redraw happens to leave the
+    // closing cell untouched (content-identical to the previous frame, so ratatui never
+    // resends it), the link never closes on the real terminal — everything printed after
+    // it, on every following row, reads as part of the same hyperlink until the next
+    // escape happens to appear. Turning links off for every row whenever a popup is on
+    // screen keeps the transition symmetric: opening or closing the popup rewrites (and
+    // resends) every linked cell together, so a link is never opened without its close.
+    if scene.hyperlinks && scene.view.mode.popup_state().is_none() {
         table::link_titles(
             frame.buffer_mut(),
             table_area,
@@ -131,6 +140,8 @@ pub fn render(frame: &mut Frame, scene: &Scene<'_>) {
                 table::visible_row_count(table_area),
             ),
             &allocation,
+            scene.theme,
+            scene.now,
         );
     }
 

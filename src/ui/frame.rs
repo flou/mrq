@@ -274,8 +274,104 @@ fn the_frame_carries_escapes_only_when_hyperlinks_are_supported() {
 
     let linked = render(&world, 120, 24, true).join("");
     assert!(
-        linked.contains("\x1b]8;;https://"),
+        linked.contains("\x1b]8;id="),
         "titles should be linked when the terminal advertises OSC 8"
+    );
+}
+
+/// A writer that keeps what was written, since `CrosstermBackend` owns its own.
+#[derive(Clone, Default)]
+struct Sink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Sink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A popup opening and then closing must never leave a hyperlink open on the real
+/// terminal.
+///
+/// The popup is drawn *after* the table, so it can cover only part of a linked title —
+/// say, the cell that opens the link, but not the one that closes it. `Terminal::draw`
+/// only sends cells whose content changed since the last frame; if the closing cell's
+/// content happens to be unchanged, it is never resent. A freshly reopened link with no
+/// resent close reads, to the real terminal, as still open — everything printed after it,
+/// on every following row and frame, becomes part of that one link. This drives an actual
+/// `CrosstermBackend` through open, popup-up, and popup-closed, and checks the opens and
+/// closes it wrote balance.
+#[test]
+fn a_popup_opening_and_closing_never_leaves_a_hyperlink_open() {
+    use ratatui::Viewport;
+    use ratatui::backend::CrosstermBackend;
+    use ratatui::layout::Rect;
+
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 120,
+        height: 24,
+    };
+    let sink = Sink::default();
+    let mut terminal = Terminal::with_options(
+        CrosstermBackend::new(sink.clone()),
+        ratatui::TerminalOptions {
+            viewport: Viewport::Fixed(area),
+        },
+    )
+    .unwrap();
+
+    let draw = |terminal: &mut Terminal<CrosstermBackend<Sink>>, world: &World| {
+        let rows = world.view.visible_rows();
+        let tab = world.view.tabs.active().expect("a tab");
+        let counts: Vec<usize> = (0..world.view.tabs.len())
+            .map(|index| world.view.count_of(index))
+            .collect();
+        let selected = tab
+            .selected_id()
+            .and_then(|id| rows.iter().position(|mr| mr.id == id));
+        let scene = super::Scene {
+            view: &world.view,
+            tab,
+            rows: &rows,
+            counts: &counts,
+            status: world.status(&rows, selected),
+            keymap: &world.keymap,
+            theme: &world.view.theme,
+            columns: &world.columns,
+            now: now(),
+            hyperlinks: true,
+        };
+        terminal.draw(|frame| super::render(frame, &scene)).unwrap();
+    };
+
+    let mut world = World::new("catppuccin-mocha", false);
+    draw(&mut terminal, &world);
+
+    world.view.mode = Mode::Popup(PopupState {
+        kind: Popup::Help,
+        cursor: 0,
+        query: String::new(),
+        lines: Vec::new(),
+        previous_skin: None,
+    });
+    draw(&mut terminal, &world);
+
+    world.view.mode = Mode::Normal;
+    draw(&mut terminal, &world);
+
+    let written = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+    let opens = written.matches("\x1b]8;id=").count();
+    let closes = written.matches("\x1b]8;;\x1b\\").count();
+    assert_eq!(
+        opens, closes,
+        "an opened hyperlink was never followed by a matching close: {opens} opens, \
+         {closes} closes:\n{written:?}"
     );
 }
 
