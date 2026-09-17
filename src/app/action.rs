@@ -1103,7 +1103,7 @@ fn test_theme() -> Theme {
 mod tests {
     use super::*;
     use crate::config::schema::{Filter, Scope, Sort};
-    use crate::gitlab::model::{Pipeline, PipelineStatus, fixtures::mr};
+    use crate::gitlab::model::{Pipeline, PipelineStatus, User, fixtures::mr};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::collections::BTreeMap;
     use std::time::Instant;
@@ -1204,10 +1204,10 @@ mod tests {
     fn identifying_rederives_cached_flags_and_reorders_an_assigned_sort() {
         // Written as if cached by "asmith": only "a" is assigned to that account.
         let mut a = mr("a", "someone");
-        a.assignees = vec!["carol".to_owned()];
+        a.assignees = vec![User::new("carol")];
         a.recompute_derived("asmith");
         let mut b = mr("b", "someone");
-        b.assignees = vec!["asmith".to_owned()];
+        b.assignees = vec![User::new("asmith")];
         b.recompute_derived("asmith");
 
         let mut state = state_with(vec![a, b]);

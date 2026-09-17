@@ -68,6 +68,9 @@ pub struct Scene<'a> {
     pub now: jiff::Timestamp,
     /// Whether the terminal advertises OSC 8, so titles can be made clickable.
     pub hyperlinks: bool,
+    /// `[ui].assignee_trigram`: the ASSIGNED column shows the first assignee's initials
+    /// instead of `Yes`/`No`.
+    pub assignee_trigram: bool,
 }
 
 /// The panel title: which filter the rows below belong to, and how many there are.
@@ -118,6 +121,7 @@ pub fn render(frame: &mut Frame, scene: &Scene<'_>) {
         &allocation,
         scene.theme,
         scene.now,
+        scene.assignee_trigram,
     );
     frame.render_widget(widget, table_area);
 

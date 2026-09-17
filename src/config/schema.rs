@@ -131,6 +131,10 @@ pub struct Ui {
     /// wide-only. `approved`, `author`, `repo`, `title` and `pipeline` can never appear
     /// here — validated at config load.
     pub wide_columns: Vec<Column>,
+    /// Show the first assignee's initials in the ASSIGNED column instead of `Yes`/`No`
+    /// (`Charles Billow` -> `CBI`), green when the assignee is you, `-` when there is
+    /// none.
+    pub assignee_trigram: bool,
 }
 
 impl Default for Ui {
@@ -143,6 +147,7 @@ impl Default for Ui {
             set_terminal_title: true,
             columns: Column::DEFAULT.to_vec(),
             wide_columns: Vec::new(),
+            assignee_trigram: false,
         }
     }
 }
@@ -600,7 +605,10 @@ mod tests {
         assert_eq!(c.filters[0].scope, Scope::Assigned);
         assert_eq!(c.filters[0].state, StateFilter::Opened);
         assert_eq!(c.filters[0].show_drafts, None, "inherits [ui].show_drafts");
-        assert_eq!(c.filters[0].notify, None, "inherits [notifications].enabled");
+        assert_eq!(
+            c.filters[0].notify, None,
+            "inherits [notifications].enabled"
+        );
     }
 
     /// The whole point of strict parsing: a typo must not be silently ignored,

@@ -172,6 +172,64 @@ fn diff_cell(mr: &MergeRequest) -> String {
     format!("+{} -{}", mr.additions, mr.deletions)
 }
 
+/// The first letter of `first`, uppercased, as a `String` — the leading half of a
+/// trigram built from two words.
+fn initial(word: &str) -> String {
+    word.chars().take(1).collect::<String>().to_uppercase()
+}
+
+/// The first `count` characters of `text`, uppercased. The fallback for a name (or
+/// username) that split gave only one word to work with.
+fn uppercase_prefix(text: &str, count: usize) -> String {
+    text.chars().take(count).collect::<String>().to_uppercase()
+}
+
+/// The assignee's trigram: first letter of the first word plus the first two of the
+/// last, uppercased (`Charles Billow` -> `CBI`). A single-word name, or a username with
+/// no display name, contributes its own first three characters instead
+/// (`charles.billow` -> `CBI`).
+///
+/// `name` is split on whitespace; `username` — used only when there is no name — is
+/// split on the separators GitLab usernames use (`.`, `_`, `-`), since it never contains
+/// spaces.
+fn trigram(name: Option<&str>, username: &str) -> String {
+    let name_words: Vec<&str> = name.into_iter().flat_map(str::split_whitespace).collect();
+
+    if !name_words.is_empty() {
+        return match name_words.as_slice() {
+            [single] => uppercase_prefix(single, 3),
+            [first, .., last] => initial(first) + &uppercase_prefix(last, 2),
+            [] => unreachable!("checked non-empty above"),
+        };
+    }
+
+    let username_words: Vec<&str> = username
+        .split(['.', '_', '-'])
+        .filter(|w| !w.is_empty())
+        .collect();
+
+    match username_words.as_slice() {
+        [] => uppercase_prefix(username, 3),
+        [single] => uppercase_prefix(single, 3),
+        [first, .., last] => initial(first) + &uppercase_prefix(last, 2),
+    }
+}
+
+/// The ASSIGNED column has no one to name.
+const UNASSIGNED_MARK: &str = "-";
+
+/// The ASSIGNED cell: `Yes`/`No` by default, or the first assignee's trigram when
+/// `[ui].assignee_trigram` is on.
+fn assigned_cell(mr: &MergeRequest, trigram_mode: bool) -> Cow<'_, str> {
+    if !trigram_mode {
+        return Cow::Borrowed(if mr.assigned_to_me() { "Yes" } else { "No" });
+    }
+    match mr.first_assignee() {
+        Some(user) => Cow::Owned(trigram(user.name.as_deref(), &user.username)),
+        None => Cow::Borrowed(UNASSIGNED_MARK),
+    }
+}
+
 /// The text for one cell, before padding or styling.
 ///
 /// Borrows straight from `mr` for the columns that are a plain field, rather than
@@ -183,6 +241,7 @@ fn cell_text<'a>(
     column: Column,
     theme: &Theme,
     now: jiff::Timestamp,
+    trigram_mode: bool,
 ) -> Cow<'a, str> {
     match column {
         Column::Approved => Cow::Owned(approved_cell(mr, theme)),
@@ -197,7 +256,7 @@ fn cell_text<'a>(
         }
         // Filled in by the caller, which has the theme and therefore the glyph set.
         Column::Pipeline => Cow::Borrowed(""),
-        Column::Assigned => Cow::Borrowed(if mr.assigned_to_me() { "Yes" } else { "No" }),
+        Column::Assigned => assigned_cell(mr, trigram_mode),
         Column::Age => Cow::Owned(relative_time(mr.created_at, now)),
         Column::Updated => Cow::Owned(relative_time(mr.updated_at, now)),
         Column::Diff => Cow::Owned(diff_cell(mr)),
@@ -257,6 +316,7 @@ fn row<'a>(
     selected: bool,
     is_new: bool,
     now: jiff::Timestamp,
+    trigram_mode: bool,
 ) -> Row<'a> {
     let gutter_cell = Cell::from(gutter(theme, selected, is_new).to_owned());
     let gutter_cell = if selected {
@@ -285,11 +345,29 @@ fn row<'a>(
             // Bold on top of `Role::Success`'s green, so an approved MR stands out at a
             // glance rather than blending into the rest of the row.
             Column::Approved if mr.approved && !mr.draft => {
-                let text = truncate(&cell_text(mr, *column, theme, now), width, theme.ellipsis());
+                let text = truncate(
+                    &cell_text(mr, *column, theme, now, trigram_mode),
+                    width,
+                    theme.ellipsis(),
+                );
                 Cell::from(pad(&text, width)).style(theme.emphasise(Role::Success))
             }
+            // Green, not bold: bold is APRV's signal, and this only marks the row as
+            // yours, the same fact `Yes`/`No` carried before the trigram existed.
+            Column::Assigned if trigram_mode && mr.assigned_to_me() && !mr.draft => {
+                let text = truncate(
+                    &cell_text(mr, *column, theme, now, trigram_mode),
+                    width,
+                    theme.ellipsis(),
+                );
+                Cell::from(pad(&text, width)).style(theme.style(Role::Success))
+            }
             other => {
-                let text = truncate(&cell_text(mr, *other, theme, now), width, theme.ellipsis());
+                let text = truncate(
+                    &cell_text(mr, *other, theme, now, trigram_mode),
+                    width,
+                    theme.ellipsis(),
+                );
                 Cell::from(pad(&text, width)).style(theme.style(cell_role(mr, *other)))
             }
         };
@@ -334,6 +412,7 @@ pub fn build<'a>(
     allocation: &Allocation,
     theme: &Theme,
     now: jiff::Timestamp,
+    trigram_mode: bool,
 ) -> Table<'a> {
     let selected = tab.selected_id();
 
@@ -348,6 +427,7 @@ pub fn build<'a>(
                 selected == Some(mr.id.as_str()),
                 tab.is_new(&mr.id),
                 now,
+                trigram_mode,
             )
         })
         .collect();
@@ -394,8 +474,9 @@ pub fn windowed<T>(rows: &[T], scroll: usize, viewport: usize) -> &[T] {
 /// [`link_titles`] needs this again: the clickable region has to stop where the visible
 /// title does, not run on into the padding that fills out the rest of the column.
 fn title_text(mr: &MergeRequest, width: usize, theme: &Theme, now: jiff::Timestamp) -> String {
+    // The trigram flag only affects `Column::Assigned`, so its value here is moot.
     truncate(
-        &cell_text(mr, Column::Title, theme, now),
+        &cell_text(mr, Column::Title, theme, now, false),
         width,
         theme.ellipsis(),
     )
@@ -522,7 +603,7 @@ pub fn column_x(allocation: &Allocation, area: Rect, column: Column) -> Option<u
 mod tests {
     use super::*;
     use crate::config::schema::{Filter, Scope, Sort};
-    use crate::gitlab::model::{Pipeline, PipelineStatus, fixtures::mr};
+    use crate::gitlab::model::{Pipeline, PipelineStatus, User, fixtures::mr};
     use crate::term::caps::{Capabilities, ColorDepth, NotifyEscape};
     use ratatui::backend::{CrosstermBackend, TestBackend};
     use ratatui::{Terminal, TerminalOptions, Viewport};
@@ -564,7 +645,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                let table = build(&refs, tab, &allocation, &theme, now());
+                let table = build(&refs, tab, &allocation, &theme, now(), false);
                 frame.render_widget(table, frame.area());
             })
             .unwrap();
@@ -813,7 +894,7 @@ mod tests {
         m.approved_by = vec!["jdoe".to_owned()];
 
         for column in Column::DEFAULT {
-            let text = cell_text(&m, column, &ascii, now());
+            let text = cell_text(&m, column, &ascii, now(), false);
             assert!(text.is_ascii(), "{column:?} rendered `{text}`");
         }
 
@@ -829,21 +910,36 @@ mod tests {
         m.title = "Add dark mode".into();
         m.additions = 310;
         m.deletions = 4;
-        m.assignees = vec!["me".into()];
+        m.assignees = vec![User::new("me")];
         m.recompute_derived("me");
 
-        assert_eq!(cell_text(&m, Column::Author, &theme(false), now()), "jdoe");
-        assert_eq!(cell_text(&m, Column::Repo, &theme(false), now()), "web-app");
         assert_eq!(
-            cell_text(&m, Column::Title, &theme(false), now()),
+            cell_text(&m, Column::Author, &theme(false), now(), false),
+            "jdoe"
+        );
+        assert_eq!(
+            cell_text(&m, Column::Repo, &theme(false), now(), false),
+            "web-app"
+        );
+        assert_eq!(
+            cell_text(&m, Column::Title, &theme(false), now(), false),
             "Add dark mode"
         );
-        assert_eq!(cell_text(&m, Column::Assigned, &theme(false), now()), "Yes");
-        assert_eq!(cell_text(&m, Column::Diff, &theme(false), now()), "+310 -4");
+        assert_eq!(
+            cell_text(&m, Column::Assigned, &theme(false), now(), false),
+            "Yes"
+        );
+        assert_eq!(
+            cell_text(&m, Column::Diff, &theme(false), now(), false),
+            "+310 -4"
+        );
 
         m.assignees.clear();
         m.recompute_derived("me");
-        assert_eq!(cell_text(&m, Column::Assigned, &theme(false), now()), "No");
+        assert_eq!(
+            cell_text(&m, Column::Assigned, &theme(false), now(), false),
+            "No"
+        );
     }
 
     #[test]
@@ -853,10 +949,75 @@ mod tests {
         m.title = "Migration guide".into();
 
         assert_eq!(
-            cell_text(&m, Column::Title, &theme(false), now()),
+            cell_text(&m, Column::Title, &theme(false), now(), false),
             "[Draft] Migration guide"
         );
         assert_eq!(cell_role(&m, Column::Title), Role::Dim);
+    }
+
+    /// The trigram, spelled out: `Charles Billow` -> `CBI`, `Leeroy Feist` -> `LFE` — the
+    /// examples the option was requested with.
+    #[test]
+    fn trigram_combines_the_first_and_last_word() {
+        assert_eq!(trigram(Some("Charles Billow"), "cbillow"), "CBI");
+        assert_eq!(trigram(Some("Leeroy Feist"), "lfeist"), "LFE");
+        assert_eq!(
+            trigram(Some("Jean Claude Van Damme"), "jvandamme"),
+            "JDA",
+            "only the first and last word count, the middle ones are ignored"
+        );
+    }
+
+    #[test]
+    fn trigram_falls_back_to_the_username_without_a_name() {
+        assert_eq!(trigram(None, "charles.billow"), "CBI");
+        assert_eq!(trigram(Some(""), "leeroy_feist"), "LFE");
+        assert_eq!(
+            trigram(None, "asmith"),
+            "ASM",
+            "no separator at all: first three characters"
+        );
+    }
+
+    #[test]
+    fn trigram_handles_a_single_word_name() {
+        assert_eq!(trigram(Some("Cher"), "cher"), "CHE");
+    }
+
+    #[test]
+    fn trigram_does_not_panic_on_non_ascii() {
+        // `.chars()`, not byte slicing: a non-ASCII first letter must not split a
+        // multi-byte character.
+        assert_eq!(trigram(Some("Éowyn Baggins"), "eowyn"), "ÉBA");
+    }
+
+    /// The ASG cell in trigram mode: the first assignee's trigram, `-` with none, and the
+    /// legacy `Yes`/`No` text when the mode is off.
+    #[test]
+    fn the_assigned_column_has_two_modes() {
+        let mut m = mr("a", "jdoe");
+        m.assignees = vec![User {
+            username: "cbillow".to_owned(),
+            name: Some("Charles Billow".to_owned()),
+        }];
+        m.recompute_derived("nobody");
+
+        assert_eq!(
+            cell_text(&m, Column::Assigned, &theme(false), now(), true),
+            "CBI"
+        );
+        assert_eq!(
+            cell_text(&m, Column::Assigned, &theme(false), now(), false),
+            "No",
+            "the legacy text ignores who the assignee is"
+        );
+
+        m.assignees.clear();
+        assert_eq!(
+            cell_text(&m, Column::Assigned, &theme(false), now(), true),
+            "-",
+            "no assignee at all"
+        );
     }
 
     /// A conflicted title is a problem, not a failure.
@@ -1007,7 +1168,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                let table = build(&rows, &tab, &allocation, &theme, now());
+                let table = build(&rows, &tab, &allocation, &theme, now(), false);
                 frame.render_widget(table, frame.area());
             })
             .unwrap();
@@ -1056,7 +1217,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                let table = build(&[&m], &tab, &allocation, &theme, now());
+                let table = build(&[&m], &tab, &allocation, &theme, now(), false);
                 frame.render_widget(table, frame.area());
             })
             .unwrap();
@@ -1106,7 +1267,7 @@ mod tests {
 
             terminal
                 .draw(|frame| {
-                    let table = build(&rows, &tab(), &allocation, &theme, now());
+                    let table = build(&rows, &tab(), &allocation, &theme, now(), false);
                     frame.render_widget(table, area);
                 })
                 .unwrap();
@@ -1199,7 +1360,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                let table = build(&refs, &tab(), &allocation, &theme, now());
+                let table = build(&refs, &tab(), &allocation, &theme, now(), false);
                 frame.render_widget(table, area);
                 if links {
                     link_titles(frame.buffer_mut(), area, &refs, &allocation, &theme, now());
@@ -1421,7 +1582,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                let table = build(&refs, &tab(), &allocation, &theme(false), now());
+                let table = build(&refs, &tab(), &allocation, &theme(false), now(), false);
                 frame.render_widget(table, area);
                 link_titles(
                     frame.buffer_mut(),
@@ -1479,7 +1640,7 @@ mod tests {
         let t = tab();
         terminal
             .draw(|frame| {
-                let table = build(&refs, &t, &allocation, &theme(false), now());
+                let table = build(&refs, &t, &allocation, &theme(false), now(), false);
                 frame.render_widget(table, area);
                 link_titles(
                     frame.buffer_mut(),
@@ -1501,7 +1662,7 @@ mod tests {
         let refs2: Vec<&MergeRequest> = rows.iter().collect();
         terminal
             .draw(|frame| {
-                let table = build(&refs2, &t, &allocation, &theme(false), now());
+                let table = build(&refs2, &t, &allocation, &theme(false), now(), false);
                 frame.render_widget(table, area);
                 link_titles(
                     frame.buffer_mut(),

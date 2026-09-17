@@ -193,10 +193,11 @@ fn mr_fields(fragment: &Fragment) -> String {
         ),
         // Kept even when `minimal`: the ASSIGNED column is defined by this connection, and
         // dropping it would not blank the column, it would make it read "No" for merge
-        // requests that are in fact assigned to you.
+        // requests that are in fact assigned to you. `name` rides along for the optional
+        // trigram rendering (`ui::table::trigram`).
         (
             "assignees",
-            format!("assignees(first: {ASSIGNEES_CAP}) {{ nodes {{ username }} }}"),
+            format!("assignees(first: {ASSIGNEES_CAP}) {{ nodes {{ username name }} }}"),
             false,
         ),
         (
@@ -769,6 +770,20 @@ mod tests {
     #[test]
     fn the_reduced_fragment_keeps_assignees() {
         assert!(mr_fields(&Fragment::minimal()).contains("assignees(first:"));
+    }
+
+    /// `name` rides along with `username` so the trigram rendering has a display name to
+    /// work with, even under `minimal`. `contains("name")` alone would be a false
+    /// positive against `username`, so this checks for the distinct field instead.
+    #[test]
+    fn the_assignees_selection_asks_for_the_display_name() {
+        for fragment in [Fragment::full(), Fragment::minimal()] {
+            let rendered = mr_fields(&fragment);
+            assert!(
+                rendered.contains("assignees(first:") && rendered.contains("username name"),
+                "{rendered}"
+            );
+        }
     }
 
     /// Server-side sort, so a truncated set is the most recently touched.

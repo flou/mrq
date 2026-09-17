@@ -34,7 +34,7 @@ use crate::gitlab::query::Fragment;
 /// Bumping it makes every existing file fail the check below and be discarded, which is
 /// exactly what should happen when the shape changes: a cache is an optimisation, and
 /// migrating one costs more than refetching it.
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 /// Entries older than this are ignored and deleted.
 const MAX_AGE: SignedDuration = SignedDuration::from_hours(24 * 7);
@@ -228,6 +228,7 @@ pub fn warm(
 mod tests {
     use super::*;
     use crate::config::schema::{Scope, Sort};
+    use crate::gitlab::model::User;
     use crate::gitlab::model::fixtures::mr;
     use crate::gitlab::wire::Anomalies;
 
@@ -537,7 +538,7 @@ mod tests {
 
         // Written by "someone-else", for whom this row is authored-by-me.
         let mut row = mr("a", "someone-else");
-        row.assignees = vec!["someone-else".to_owned()];
+        row.assignees = vec![User::new("someone-else")];
         row.recompute_derived("someone-else");
         assert!(row.authored_by_me(), "the fixture is set up wrong");
 
@@ -565,7 +566,7 @@ mod tests {
         let filters = vec![filter("Assigned")];
 
         let mut row = mr("a", "someone-else");
-        row.assignees = vec!["someone-else".to_owned()];
+        row.assignees = vec![User::new("someone-else")];
         row.recompute_derived("someone-else");
         assert!(row.authored_by_me(), "the fixture is set up wrong");
 

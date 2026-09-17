@@ -306,12 +306,7 @@ impl WireMergeRequest {
                 .into_iter()
                 .map(|u| u.username)
                 .collect(),
-            assignees: self
-                .assignees
-                .nodes
-                .into_iter()
-                .map(|u| u.username)
-                .collect(),
+            assignees: self.assignees.nodes.into_iter().map(User::from).collect(),
             reviewers: self
                 .reviewers
                 .nodes
