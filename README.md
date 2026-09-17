@@ -36,11 +36,57 @@ scope = "instance"
 author = "my.teammate"
 ```
 
-Generate a commented default config:
+Generate a commented default config, documenting every key and its default:
 
 ```bash
 mrq init-config
 ```
+
+### Filters
+
+Each `[[filter]]` block is a tab. The order in the config file is the tab order and the
+`1`..`9` shortcuts.
+
+#### Scope
+
+| `scope`            | merge requests                       | requires `path` |
+| ------------------ | ------------------------------------ | ---------------- |
+| `assigned`          | assigned to you                      | no                |
+| `review_requested`  | where you are a reviewer             | no                |
+| `authored`          | you opened                           | no                |
+| `group`             | under a group (and its subgroups)    | yes               |
+| `project`           | in one project                       | yes               |
+| `instance`          | every one the token can see          | no                |
+
+`assigned`, `review_requested` and `authored` are rooted at the current user. `group`,
+`project` and `instance` are unscoped searches and are the only scopes that accept the
+narrowing arguments below — `labels`, `not_labels`, `author`, `assignee`, `reviewer`,
+`has_reviewer`, `milestone`, `target_branch` and `updated_after_days`. Setting one of
+those on `assigned`, `review_requested` or `authored` is a startup error rather than a
+filter that silently ignores it.
+
+#### Fields
+
+| key                  | scopes                          | notes                                                                 |
+| -------------------- | -------------------------------- | ---------------------------------------------------------------------- |
+| `name`               | all                               | must be unique; used for the tab label and the cache file              |
+| `scope`              | all                               | see table above                                                        |
+| `state`              | all                               | `opened` (default) \| `merged` \| `closed` \| `all`                    |
+| `show_drafts`        | all                               | per-filter override of `[ui].show_drafts`                              |
+| `max_results`        | all                               | clamped to `1..=500`, default `100`                                    |
+| `path`               | `group`, `project`                | required; a GitLab full path like `acme/platform`, no leading/trailing slash |
+| `include_subgroups`  | `group`                           | defaults to `true`                                                      |
+| `labels`             | `group`, `project`, `instance`    | AND-ed                                                                  |
+| `not_labels`         | `group`, `project`, `instance`    | excludes merge requests carrying any of these labels                   |
+| `author`             | `group`, `project`, `instance`    | username                                                                |
+| `assignee`           | `group`, `project`, `instance`    | username                                                                |
+| `reviewer`           | `group`, `project`, `instance`    | username; mutually exclusive with `has_reviewer`                       |
+| `has_reviewer`       | `group`, `project`, `instance`    | `true` = has any reviewer, `false` = has none; mutually exclusive with `reviewer` |
+| `milestone`          | `group`, `project`, `instance`    | milestone title                                                        |
+| `target_branch`      | `group`, `project`, `instance`    |                                                                          |
+| `updated_after_days` | `group`, `project`, `instance`    | bounds the result set, useful for large groups/instances               |
+
+`mrq check` validates a config file against these rules without starting the TUI.
 
 ## Usage
 
