@@ -9,9 +9,20 @@
 //!
 //! 1. `title` absorbs slack, down to its minimum — it is the one column that is useful
 //!    at any width, and truncating a title still leaves it recognisable.
-//! 2. Shrinkable columns give up their slack next (author 12→8, repo 14→10). A truncated
-//!    username is still identifiable; a truncated title is not more so.
+//! 2. Shrinkable columns give up their slack next (author fits its content, down to 8;
+//!    repo 20→10). A truncated username is still identifiable; a truncated title is not
+//!    more so.
 //! 3. Whole columns are dropped, in a fixed order: age, then assigned, then diff.
+//!
+//! # Author sizes to its content
+//!
+//! Unlike every other column, `author`'s *preferred* width is not a constant: the caller
+//! measures the widest author name on the rows currently in the tab and passes it in as
+//! [`Fitted`]. This keeps [`allocate`] itself a pure function of `(columns, available,
+//! fitted)` — it does not reach into row data on its own — while letting the column show
+//! whole usernames on an instance where they are short, and give the difference back to
+//! `title`, rather than wasting the fixed 12 cells or truncating every row on an instance
+//! where they are long.
 //!
 //! Dropping is last because a missing column is invisible — the user cannot tell a
 //! dropped column from one that never existed, which is why [`Allocation`] reports what
@@ -33,8 +44,23 @@ struct Rules {
 /// Space between columns.
 const GAP: u16 = 1;
 
+/// Upper bound on the content-fitted `author` column.
+pub const AUTHOR_MAX: u16 = 30;
+
 /// The order columns are dropped in when the terminal is too narrow.
 const DROP_ORDER: [Column; 3] = [Column::Age, Column::Assigned, Column::Diff];
+
+/// Widths measured from the rows on screen, for columns that size to their content.
+///
+/// `None` means "no measurement" — the column falls back to its fixed `preferred`. Kept
+/// apart from [`Rules`] so `allocate` stays a pure function of its arguments rather than
+/// reaching for row data itself.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Fitted {
+    /// Widest author name on the current rows, already clamped by the caller to
+    /// `header().width() ..= AUTHOR_MAX`.
+    pub author: Option<u16>,
+}
 
 /// How much a column is worth keeping, for widths below what whole-column dropping covers.
 ///
@@ -56,7 +82,7 @@ const fn keep_priority(column: Column) -> u8 {
     }
 }
 
-const fn rules(column: Column) -> Rules {
+const fn rules(column: Column, fitted: Fitted) -> Rules {
     // `preferred == minimum` means fixed; a larger preferred means shrinkable.
     match column {
         Column::Approved => Rules {
@@ -64,11 +90,21 @@ const fn rules(column: Column) -> Rules {
             minimum: 4,
             flex: false,
         },
-        Column::Author => Rules {
-            preferred: 12,
-            minimum: 8,
-            flex: false,
-        },
+        // `preferred` comes from the caller's measurement, falling back to the old fixed
+        // 12 when there is nothing to measure (an empty tab). `minimum` stays the usual
+        // shrinkable floor of 8 — unless the fitted width is already narrower, in which
+        // case there is no slack to give up and the column is effectively fixed.
+        Column::Author => {
+            let preferred = match fitted.author {
+                Some(width) => width,
+                None => 12,
+            };
+            Rules {
+                preferred,
+                minimum: if preferred < 8 { preferred } else { 8 },
+                flex: false,
+            }
+        }
         Column::Repo => Rules {
             preferred: 20,
             minimum: 10,
@@ -169,7 +205,11 @@ pub fn for_wide_mode(columns: &[Column], wide_columns: &[Column], wide: bool) ->
 }
 
 /// Allocate widths for `columns` within `available`.
-pub fn allocate(columns: &[Column], available: u16) -> Allocation {
+///
+/// `fitted` carries widths measured from the current rows, for columns whose preferred
+/// width is content-dependent rather than a fixed constant (currently just `author`); pass
+/// [`Fitted::default`] to get the old fixed-width behaviour for every column.
+pub fn allocate(columns: &[Column], available: u16, fitted: Fitted) -> Allocation {
     let mut visible: Vec<Column> = columns.to_vec();
     let mut dropped = Vec::new();
 
@@ -178,7 +218,7 @@ pub fn allocate(columns: &[Column], available: u16) -> Allocation {
     // vanishes and reappears as the window is dragged is worse than one that is simply
     // absent below a threshold.
     for candidate in DROP_ORDER {
-        if minimum_width(&visible) <= available {
+        if minimum_width(&visible, fitted) <= available {
             break;
         }
         if let Some(index) = visible.iter().position(|c| *c == candidate) {
@@ -190,7 +230,7 @@ pub fn allocate(columns: &[Column], available: u16) -> Allocation {
     // Still too narrow even at minimums: keep dropping, least valuable first, so a very
     // small pane shows the columns that identify a row rather than whichever happen to
     // be leftmost.
-    while !visible.is_empty() && minimum_width(&visible) > available {
+    while !visible.is_empty() && minimum_width(&visible, fitted) > available {
         let Some(index) = visible
             .iter()
             .enumerate()
@@ -209,24 +249,27 @@ pub fn allocate(columns: &[Column], available: u16) -> Allocation {
         };
     }
 
-    let widths = distribute(&visible, available);
+    let widths = distribute(&visible, available, fitted);
     Allocation { widths, dropped }
 }
 
 /// Width needed if every column were at its minimum.
-fn minimum_width(columns: &[Column]) -> u16 {
-    let content: u16 = columns.iter().map(|c| rules(*c).minimum).sum();
+fn minimum_width(columns: &[Column], fitted: Fitted) -> u16 {
+    let content: u16 = columns.iter().map(|c| rules(*c, fitted).minimum).sum();
     let gaps = GAP * u16::try_from(columns.len().saturating_sub(1)).unwrap_or(0);
     content.saturating_add(gaps)
 }
 
-fn distribute(columns: &[Column], available: u16) -> Vec<(Column, u16)> {
+fn distribute(columns: &[Column], available: u16, fitted: Fitted) -> Vec<(Column, u16)> {
     let gaps = GAP * u16::try_from(columns.len().saturating_sub(1)).unwrap_or(0);
     let for_content = available.saturating_sub(gaps);
 
     // Start at minimums — guaranteed to fit, since the caller has already dropped
     // columns until it does — then hand out what is left.
-    let mut widths: Vec<(Column, u16)> = columns.iter().map(|c| (*c, rules(*c).minimum)).collect();
+    let mut widths: Vec<(Column, u16)> = columns
+        .iter()
+        .map(|c| (*c, rules(*c, fitted).minimum))
+        .collect();
     let mut spare = for_content.saturating_sub(widths.iter().map(|(_, w)| *w).sum::<u16>());
 
     // Non-flex columns reach their preferred width first, so the table looks the same at
@@ -235,7 +278,7 @@ fn distribute(columns: &[Column], available: u16) -> Vec<(Column, u16)> {
         if spare == 0 {
             break;
         }
-        let rules = rules(*column);
+        let rules = rules(*column, fitted);
         if rules.flex {
             continue;
         }
@@ -248,7 +291,7 @@ fn distribute(columns: &[Column], available: u16) -> Vec<(Column, u16)> {
     // Everything left goes to the flex column. With no flex column the table is simply
     // narrower than the pane, which is correct — stretching fixed columns would only
     // scatter the content.
-    if let Some((_, width)) = widths.iter_mut().find(|(c, _)| rules(*c).flex) {
+    if let Some((_, width)) = widths.iter_mut().find(|(c, _)| rules(*c, fitted).flex) {
         *width += spare;
     }
 
@@ -271,7 +314,7 @@ mod tests {
     #[test]
     fn allocation_never_exceeds_the_available_width() {
         for width in 0..=300u16 {
-            let allocation = allocate(&default_columns(), width);
+            let allocation = allocate(&default_columns(), width, Fitted::default());
             assert!(
                 allocation.total() <= width,
                 "width {width}: allocated {} for {:?}",
@@ -287,7 +330,7 @@ mod tests {
         for take in 1..=columns.len() {
             let subset: Vec<Column> = columns.iter().copied().take(take).collect();
             for width in [0, 1, 20, 40, 60, 79, 80, 100, 120, 200, 400] {
-                let allocation = allocate(&subset, width);
+                let allocation = allocate(&subset, width, Fitted::default());
                 assert!(allocation.total() <= width, "{take} cols at {width}");
             }
         }
@@ -297,14 +340,14 @@ mod tests {
     #[test]
     fn the_configured_order_is_preserved() {
         let columns = vec![Column::Title, Column::Author, Column::Updated];
-        let allocation = allocate(&columns, 120);
+        let allocation = allocate(&columns, 120, Fitted::default());
 
         assert_eq!(visible(&allocation), columns);
     }
 
     #[test]
     fn a_wide_terminal_gives_every_column_its_preferred_width() {
-        let allocation = allocate(&default_columns(), 200);
+        let allocation = allocate(&default_columns(), 200, Fitted::default());
 
         assert!(allocation.dropped.is_empty());
         assert_eq!(allocation.width_of(Column::Author), Some(12));
@@ -317,8 +360,8 @@ mod tests {
     /// The title is the one column useful at any width, so it takes the slack.
     #[test]
     fn the_title_absorbs_all_remaining_space() {
-        let narrow = allocate(&default_columns(), 120);
-        let wide = allocate(&default_columns(), 200);
+        let narrow = allocate(&default_columns(), 120, Fitted::default());
+        let wide = allocate(&default_columns(), 200, Fitted::default());
 
         let narrow_title = narrow.width_of(Column::Title).unwrap();
         let wide_title = wide.width_of(Column::Title).unwrap();
@@ -340,7 +383,7 @@ mod tests {
     #[test]
     fn the_title_never_falls_below_its_minimum() {
         for width in 0..=300u16 {
-            let allocation = allocate(&default_columns(), width);
+            let allocation = allocate(&default_columns(), width, Fitted::default());
             if let Some(title) = allocation.width_of(Column::Title) {
                 assert!(title >= 20, "title {title} at width {width}");
             }
@@ -351,7 +394,11 @@ mod tests {
     #[test]
     fn shrinkable_columns_give_up_slack_before_the_title() {
         // Just enough that not everything can be preferred.
-        let allocation = allocate(&[Column::Author, Column::Repo, Column::Title], 46);
+        let allocation = allocate(
+            &[Column::Author, Column::Repo, Column::Title],
+            46,
+            Fitted::default(),
+        );
 
         assert_eq!(allocation.width_of(Column::Title), Some(20), "at minimum");
         assert!(allocation.width_of(Column::Author).unwrap() >= 8);
@@ -361,7 +408,7 @@ mod tests {
     #[test]
     fn shrinkable_columns_respect_their_floors() {
         for width in 0..=300u16 {
-            let allocation = allocate(&default_columns(), width);
+            let allocation = allocate(&default_columns(), width, Fitted::default());
             if let Some(author) = allocation.width_of(Column::Author) {
                 assert!(author >= 8, "author {author} at {width}");
             }
@@ -380,7 +427,7 @@ mod tests {
         let mut order = Vec::new();
         let mut previous: Vec<Column> = columns.clone();
         for width in (40..=120u16).rev() {
-            let now = visible(&allocate(&columns, width));
+            let now = visible(&allocate(&columns, width, Fitted::default()));
             for column in &previous {
                 if !now.contains(column) && !order.contains(column) {
                     order.push(*column);
@@ -401,10 +448,10 @@ mod tests {
     /// existed — so the omission has to be reported.
     #[test]
     fn dropped_columns_are_reported_for_the_status_bar() {
-        let wide = allocate(&default_columns(), 200);
+        let wide = allocate(&default_columns(), 200, Fitted::default());
         assert_eq!(wide.dropped_note(), None);
 
-        let narrow = allocate(&default_columns(), 70);
+        let narrow = allocate(&default_columns(), 70, Fitted::default());
         let note = narrow.dropped_note().expect("something was dropped");
         assert!(note.contains("age"), "{note}");
         assert!(!narrow.dropped.is_empty());
@@ -414,7 +461,7 @@ mod tests {
     #[test]
     fn the_documented_widths_hold_at_each_tested_size() {
         for width in [60, 80, 100, 120, 200] {
-            let allocation = allocate(&default_columns(), width);
+            let allocation = allocate(&default_columns(), width, Fitted::default());
 
             assert!(allocation.total() <= width, "at {width}");
             assert!(
@@ -436,7 +483,7 @@ mod tests {
     #[test]
     fn the_title_is_the_last_column_standing() {
         for width in 1..=90u16 {
-            let allocation = allocate(&default_columns(), width);
+            let allocation = allocate(&default_columns(), width, Fitted::default());
             if allocation.is_empty() {
                 continue;
             }
@@ -451,7 +498,7 @@ mod tests {
     /// Below the widths whole-column dropping covers, columns go least-valuable first.
     #[test]
     fn very_narrow_widths_drop_by_value_not_by_position() {
-        let allocation = allocate(&default_columns(), 40);
+        let allocation = allocate(&default_columns(), 40, Fitted::default());
 
         assert!(allocation.total() <= 40);
         let kept = visible(&allocation);
@@ -464,7 +511,7 @@ mod tests {
 
     #[test]
     fn a_zero_width_allocates_nothing() {
-        let allocation = allocate(&default_columns(), 0);
+        let allocation = allocate(&default_columns(), 0, Fitted::default());
 
         assert!(allocation.is_empty());
         assert_eq!(allocation.total(), 0);
@@ -473,7 +520,7 @@ mod tests {
 
     #[test]
     fn an_empty_column_set_allocates_nothing() {
-        let allocation = allocate(&[], 200);
+        let allocation = allocate(&[], 200, Fitted::default());
         assert!(allocation.is_empty());
         assert!(allocation.dropped.is_empty());
     }
@@ -483,7 +530,7 @@ mod tests {
     #[test]
     fn a_column_set_without_a_title_does_not_stretch() {
         let columns = vec![Column::Author, Column::Repo, Column::Updated];
-        let allocation = allocate(&columns, 200);
+        let allocation = allocate(&columns, 200, Fitted::default());
 
         assert_eq!(allocation.width_of(Column::Author), Some(12));
         assert_eq!(allocation.width_of(Column::Repo), Some(20));
@@ -495,7 +542,7 @@ mod tests {
     #[test]
     fn gaps_between_columns_are_counted() {
         let columns = vec![Column::Pipeline, Column::Assigned];
-        let allocation = allocate(&columns, 200);
+        let allocation = allocate(&columns, 200, Fitted::default());
 
         assert_eq!(allocation.total(), 2 + GAP + 4);
     }
@@ -539,7 +586,79 @@ mod tests {
     fn allocation_is_deterministic() {
         let columns = default_columns();
         for width in [60, 80, 100, 120, 200] {
-            assert_eq!(allocate(&columns, width), allocate(&columns, width));
+            assert_eq!(
+                allocate(&columns, width, Fitted::default()),
+                allocate(&columns, width, Fitted::default())
+            );
+        }
+    }
+
+    /// A fitted width becomes `author`'s preferred width, so a wide terminal shows the
+    /// whole content-fitted column rather than the old fixed 12.
+    #[test]
+    fn a_fitted_author_width_becomes_the_preferred_width() {
+        let fitted = Fitted { author: Some(20) };
+        let allocation = allocate(&default_columns(), 200, fitted);
+
+        assert_eq!(allocation.width_of(Column::Author), Some(20));
+    }
+
+    /// No measurement (an empty tab) falls back to the old fixed width.
+    #[test]
+    fn no_measurement_falls_back_to_the_fixed_author_width() {
+        let allocation = allocate(&default_columns(), 200, Fitted::default());
+        assert_eq!(allocation.width_of(Column::Author), Some(12));
+    }
+
+    /// A fitted width still gives up slack on a narrow terminal, down to the usual floor
+    /// of 8 — sizing to content does not exempt the column from shrinking.
+    #[test]
+    fn a_fitted_author_still_shrinks_on_a_narrow_terminal() {
+        let fitted = Fitted { author: Some(20) };
+        let columns = vec![Column::Author, Column::Repo, Column::Title];
+
+        // Exactly the sum of every column's minimum plus its gaps: no spare to hand out.
+        let narrow = allocate(&columns, 40, fitted);
+        assert_eq!(
+            narrow.width_of(Column::Author),
+            Some(8),
+            "shrunk to the floor"
+        );
+
+        let wide = allocate(&columns, 200, fitted);
+        assert_eq!(
+            wide.width_of(Column::Author),
+            Some(20),
+            "fitted width honoured"
+        );
+    }
+
+    /// A fitted width below the usual floor of 8 must not be inflated back up to it — the
+    /// column should not claim more room than its content needs.
+    #[test]
+    fn a_fitted_width_below_the_usual_floor_is_not_inflated() {
+        let fitted = Fitted { author: Some(6) };
+        let allocation = allocate(&default_columns(), 200, fitted);
+
+        assert_eq!(allocation.width_of(Column::Author), Some(6));
+    }
+
+    /// The invariant that matters, swept across every fitted author width the caller can
+    /// pass in — an over-wide table corrupts every row regardless of what triggered it.
+    #[test]
+    fn allocation_never_exceeds_available_width_for_any_fitted_author_width() {
+        for author in 6..=AUTHOR_MAX {
+            let fitted = Fitted {
+                author: Some(author),
+            };
+            for width in [0, 20, 40, 60, 80, 100, 120, 200, 300] {
+                let allocation = allocate(&default_columns(), width, fitted);
+                assert!(
+                    allocation.total() <= width,
+                    "author {author}, width {width}: allocated {}",
+                    allocation.total()
+                );
+            }
         }
     }
 }
@@ -553,7 +672,7 @@ mod preview {
     #[ignore = "reports allocations for eyeballing; does not assert"]
     fn preview_allocations() {
         for width in [60, 80, 100, 120, 200] {
-            let allocation = allocate(&Column::DEFAULT, width);
+            let allocation = allocate(&Column::DEFAULT, width, Fitted::default());
             let cells: Vec<String> = allocation
                 .widths
                 .iter()

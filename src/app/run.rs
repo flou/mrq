@@ -395,7 +395,11 @@ impl App {
 
     /// Whether a screen column falls inside the title column of the current layout.
     fn title_at(&self, area: Rect, column: u16) -> bool {
-        let allocation = ui::table::allocate(&self.visible_columns(), area.width);
+        let allocation = ui::table::allocate(
+            &self.visible_columns(),
+            area.width,
+            &self.view.visible_rows(),
+        );
         let (Some(x), Some(width)) = (
             ui::table::column_x(&allocation, area, Column::Title),
             allocation.width_of(Column::Title),

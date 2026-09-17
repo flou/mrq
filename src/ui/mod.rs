@@ -94,7 +94,7 @@ pub fn render(frame: &mut Frame, scene: &Scene<'_>) {
     frame.render_widget(Block::default().style(Style::default().bg(base)), area);
 
     let table_area = regions.table_inner();
-    let allocation = table::allocate(scene.columns, table_area.width);
+    let allocation = table::allocate(scene.columns, table_area.width, scene.rows);
 
     let bar = tabbar::build(
         &scene.view.tabs,
