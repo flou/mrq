@@ -31,10 +31,11 @@ use crate::ui::theme::{Role, Theme};
 /// marker itself — it sits flush against the first column, with no gap of its own.
 ///
 /// Outside the [`columns`] budget, and it has to be: a table of `k` columns occupies
-/// `1 + sum(widths) + (k - 1)` cells, while an [`Allocation`] describes `sum(widths) +
-/// (k - 1)`. Allocating against the full area asks ratatui's layout for one cell it does
-/// not have, and the solver takes it back from whichever column it likes — invisibly,
-/// since the rendered line is still exactly as wide as the area.
+/// `1 + sum(widths) + sum(gaps)` cells, while an [`Allocation`] describes `sum(widths) +
+/// sum(gaps)` — the gaps sized per boundary by [`columns::gap_between`], not uniformly.
+/// Allocating against the full area asks ratatui's layout for one cell it does not have,
+/// and the solver takes it back from whichever column it likes — invisibly, since the
+/// rendered line is still exactly as wide as the area.
 pub const GUTTER_WIDTH: u16 = 1;
 
 /// Allocate column widths for a table drawn into `width` cells.
@@ -239,7 +240,9 @@ fn header<'a>(allocation: &Allocation, theme: &Theme) -> Row<'a> {
         // No gap before the first column: it sits flush against the gutter. Ratatui's
         // own `column_spacing` is uniform, so gaps from here on are drawn explicitly.
         if index > 0 {
-            cells.push(Cell::from(" ").style(style));
+            let previous = allocation.widths[index - 1].0;
+            let gap = columns::gap_between(previous, *column);
+            cells.push(Cell::from(" ".repeat(gap as usize)).style(style));
         }
         cells.push(Cell::from(pad(column.header(), *width as usize)).style(style));
     }
@@ -265,7 +268,9 @@ fn row<'a>(
 
     for (index, (column, width)) in allocation.widths.iter().enumerate() {
         if index > 0 {
-            cells.push(Cell::from(" "));
+            let previous = allocation.widths[index - 1].0;
+            let gap = columns::gap_between(previous, *column);
+            cells.push(Cell::from(" ".repeat(gap as usize)));
         }
         let width = *width as usize;
         let cell = match column {
@@ -348,13 +353,15 @@ pub fn build<'a>(
         .collect();
 
     // One leading constraint for the gutter, then the allocated widths with an explicit
-    // gap constraint between each pair — but not before the first column, which sits
-    // flush against the gutter. Lengths, not percentages: the allocation has already
-    // decided, and letting ratatui redistribute would undo it.
+    // gap constraint between each pair — sized per boundary by `columns::gap_between`,
+    // not uniformly — but not before the first column, which sits flush against the
+    // gutter. Lengths, not percentages: the allocation has already decided, and letting
+    // ratatui redistribute would undo it.
     let mut constraints = vec![Constraint::Length(1)];
-    for (index, (_, width)) in allocation.widths.iter().enumerate() {
+    for (index, (column, width)) in allocation.widths.iter().enumerate() {
         if index > 0 {
-            constraints.push(Constraint::Length(1));
+            let previous = allocation.widths[index - 1].0;
+            constraints.push(Constraint::Length(columns::gap_between(previous, *column)));
         }
         constraints.push(Constraint::Length(*width));
     }
@@ -450,12 +457,14 @@ fn rewrite(buffer: &mut Buffer, x: u16, y: u16, with: impl FnOnce(&str) -> Strin
 /// Where a column's first cell lands inside the table area.
 ///
 /// Mirrors the constraints [`build`] hands to ratatui: the gutter, then each column with
-/// one cell of spacing before it — except the first, which sits flush against the gutter.
+/// its `columns::gap_between` spacing before it — except the first, which sits flush
+/// against the gutter.
 pub fn column_x(allocation: &Allocation, area: Rect, column: Column) -> Option<u16> {
     let mut x = area.x + GUTTER_WIDTH;
     for (index, (candidate, width)) in allocation.widths.iter().enumerate() {
         if index > 0 {
-            x += 1;
+            let previous = allocation.widths[index - 1].0;
+            x += columns::gap_between(previous, *candidate);
         }
         if *candidate == column {
             return Some(x);
@@ -1077,6 +1086,47 @@ mod tests {
                     "at {width}: {column:?} did not get its allocated {column_width} cells"
                 );
             }
+        }
+    }
+
+    /// AUTHOR and REPO are both content-fitted, so a one-cell gap can read as part of the
+    /// neighbour's text rather than as a boundary. There have to be at least two blank
+    /// cells between AUTHOR and REPO, and between REPO and TITLE, at any width where all
+    /// three are visible.
+    #[test]
+    fn author_repo_and_title_are_separated_by_at_least_two_cells() {
+        let m = mr("a", "jdoe");
+        let rows = [&m];
+
+        for width in [60u16, 80, 100, 120, 200] {
+            let allocation = allocate(&Column::DEFAULT, width, &rows);
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width,
+                height: 1,
+            };
+
+            let (Some(author_x), Some(author_width), Some(repo_x), Some(repo_width), Some(title_x)) = (
+                column_x(&allocation, area, Column::Author),
+                allocation.width_of(Column::Author),
+                column_x(&allocation, area, Column::Repo),
+                allocation.width_of(Column::Repo),
+                column_x(&allocation, area, Column::Title),
+            ) else {
+                continue;
+            };
+
+            assert!(
+                repo_x >= author_x + author_width + 2,
+                "at {width}: only {} cells between author and repo",
+                repo_x - (author_x + author_width)
+            );
+            assert!(
+                title_x >= repo_x + repo_width + 2,
+                "at {width}: only {} cells between repo and title",
+                title_x - (repo_x + repo_width)
+            );
         }
     }
 
