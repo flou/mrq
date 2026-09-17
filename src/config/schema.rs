@@ -341,6 +341,8 @@ pub struct Filter {
     pub state: StateFilter,
     /// Per-filter override of `[ui].show_drafts`.
     pub show_drafts: Option<bool>,
+    /// Per-filter override of `[notifications].enabled`.
+    pub notify: Option<bool>,
 
     /// Required for `group` and `project` scopes.
     pub path: Option<String>,
@@ -373,6 +375,7 @@ impl Default for Filter {
             scope: Scope::Assigned,
             state: StateFilter::Opened,
             show_drafts: None,
+            notify: None,
             path: None,
             include_subgroups: None,
             labels: Vec::new(),
@@ -597,6 +600,7 @@ mod tests {
         assert_eq!(c.filters[0].scope, Scope::Assigned);
         assert_eq!(c.filters[0].state, StateFilter::Opened);
         assert_eq!(c.filters[0].show_drafts, None, "inherits [ui].show_drafts");
+        assert_eq!(c.filters[0].notify, None, "inherits [notifications].enabled");
     }
 
     /// The whole point of strict parsing: a typo must not be silently ignored,
@@ -679,11 +683,14 @@ scope = "group"
 path = "acme/platform"
 labels = ["sre-review::ask"]
 has_reviewer = false
+notify = false
 "#;
         let c: Config = toml::from_str(doc).unwrap();
         assert_eq!(c.filters.len(), 4);
         assert_eq!(c.filters[1].scope, Scope::ReviewRequested);
         assert_eq!(c.filters[1].max_results, 100, "default applies");
+        assert_eq!(c.filters[1].notify, None, "default applies");
+        assert_eq!(c.filters[3].notify, Some(false));
 
         let platform = &c.filters[2];
         assert_eq!(platform.scope, Scope::Group);

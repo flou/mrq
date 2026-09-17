@@ -136,6 +136,7 @@ name = "Assigned"
 scope = "assigned"
 # state = "opened"                  # opened | merged | closed | all
 # show_drafts = false               # per-filter override of [ui].show_drafts
+# notify = true                     # per-filter override of [notifications].enabled
 # max_results = 100                 # 1..=500
 
 # [[filter]]
