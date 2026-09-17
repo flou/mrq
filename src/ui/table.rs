@@ -1116,14 +1116,19 @@ mod tests {
 
             for (column, column_width) in &allocation.widths {
                 let x = column_x(&allocation, area, *column).expect("a visible column");
-                let drawn = header
-                    .find(column.header())
-                    .expect("every visible column draws its header");
 
-                assert_eq!(
-                    drawn, x as usize,
-                    "at {width}: {column:?} drew at {drawn}, allocated {x}\n{header}"
-                );
+                // `approved` has no header text, so there is nothing for `find` to
+                // locate — only that its cells are blank, not some other column's text.
+                if !column.header().is_empty() {
+                    let drawn = header
+                        .find(column.header())
+                        .expect("every visible column draws its header");
+
+                    assert_eq!(
+                        drawn, x as usize,
+                        "at {width}: {column:?} drew at {drawn}, allocated {x}\n{header}"
+                    );
+                }
                 assert_eq!(
                     &header[x as usize..(x + column_width) as usize],
                     pad(column.header(), *column_width as usize),

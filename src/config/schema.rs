@@ -218,9 +218,12 @@ impl Column {
     }
 
     /// The header text.
+    ///
+    /// `approved` has none: its column is just the checkmark, and a header only widens
+    /// it for a label nobody needs to read twice.
     pub const fn header(self) -> &'static str {
         match self {
-            Self::Approved => "APRV",
+            Self::Approved => "",
             Self::Author => "AUTHOR",
             Self::Repo => "REPO",
             Self::Title => "TITLE",
