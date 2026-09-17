@@ -41,8 +41,36 @@ struct Rules {
     flex: bool,
 }
 
-/// Space between columns.
+/// Space between columns, the default.
 const GAP: u16 = 1;
+
+/// Space either side of `repo`: it sits between `author` and `title`, the two other
+/// columns whose width follows their content rather than a fixed rule, and a single-cell
+/// gap reads as part of whichever neighbour's text is longest that frame rather than as a
+/// boundary. Wherever `repo` is adjacent to `author` or `title`, in either order, this
+/// replaces the default gap.
+const WIDE_GAP: u16 = 2;
+
+/// The gap between two columns that sit next to each other in display order.
+///
+/// `pub(crate)` rather than private: `table` has to draw exactly the gaps this module
+/// budgeted for, or a wide `repo` boundary would be sized here and drawn elsewhere as the
+/// default single cell.
+pub(crate) const fn gap_between(left: Column, right: Column) -> u16 {
+    use Column::{Author, Repo, Title};
+    match (left, right) {
+        (Repo, Author) | (Author, Repo) | (Repo, Title) | (Title, Repo) => WIDE_GAP,
+        _ => GAP,
+    }
+}
+
+/// The total width `columns` spends on the gaps between them, in display order.
+fn total_gaps(columns: &[Column]) -> u16 {
+    columns
+        .windows(2)
+        .map(|pair| gap_between(pair[0], pair[1]))
+        .sum()
+}
 
 /// Upper bound on either content-fitted column (`author`, `repo`).
 pub const FIT_MAX: u16 = 30;
@@ -174,8 +202,8 @@ impl Allocation {
     #[cfg(test)]
     fn total(&self) -> u16 {
         let content: u16 = self.widths.iter().map(|(_, w)| *w).sum();
-        let gaps = GAP * u16::try_from(self.widths.len().saturating_sub(1)).unwrap_or(0);
-        content + gaps
+        let columns: Vec<Column> = self.widths.iter().map(|(c, _)| *c).collect();
+        content + total_gaps(&columns)
     }
 
     pub fn width_of(&self, column: Column) -> Option<u16> {
@@ -268,12 +296,11 @@ pub fn allocate(columns: &[Column], available: u16, fitted: Fitted) -> Allocatio
 /// Width needed if every column were at its minimum.
 fn minimum_width(columns: &[Column], fitted: Fitted) -> u16 {
     let content: u16 = columns.iter().map(|c| rules(*c, fitted).minimum).sum();
-    let gaps = GAP * u16::try_from(columns.len().saturating_sub(1)).unwrap_or(0);
-    content.saturating_add(gaps)
+    content.saturating_add(total_gaps(columns))
 }
 
 fn distribute(columns: &[Column], available: u16, fitted: Fitted) -> Vec<(Column, u16)> {
-    let gaps = GAP * u16::try_from(columns.len().saturating_sub(1)).unwrap_or(0);
+    let gaps = total_gaps(columns);
     let for_content = available.saturating_sub(gaps);
 
     // Start at minimums — guaranteed to fit, since the caller has already dropped
@@ -559,6 +586,46 @@ mod tests {
         assert_eq!(allocation.total(), 2 + GAP + 4);
     }
 
+    /// AUTHOR and REPO, and REPO and TITLE, get the wider gap; every other boundary keeps
+    /// the default single cell.
+    #[test]
+    fn repo_gets_the_wide_gap_on_both_sides() {
+        assert_eq!(gap_between(Column::Author, Column::Repo), WIDE_GAP);
+        assert_eq!(gap_between(Column::Repo, Column::Author), WIDE_GAP);
+        assert_eq!(gap_between(Column::Repo, Column::Title), WIDE_GAP);
+        assert_eq!(gap_between(Column::Title, Column::Repo), WIDE_GAP);
+
+        assert_eq!(gap_between(Column::Approved, Column::Author), GAP);
+        assert_eq!(gap_between(Column::Title, Column::Pipeline), GAP);
+        assert_eq!(
+            gap_between(Column::Author, Column::Title),
+            GAP,
+            "no repo between them"
+        );
+    }
+
+    /// Author, repo and title stay adjacent to each other in the default layout — nothing
+    /// gets dropped or reordered between them — so the boundaries the wide gap applies to
+    /// actually occur, at every width where all three are still visible.
+    #[test]
+    fn author_and_repo_stay_adjacent_to_their_wide_neighbour_at_every_width() {
+        for width in [80u16, 100, 120, 200] {
+            let allocation = allocate(&default_columns(), width, Fitted::default());
+            let order: Vec<Column> = visible(&allocation);
+
+            let author_index = order.iter().position(|c| *c == Column::Author);
+            let repo_index = order.iter().position(|c| *c == Column::Repo);
+            let title_index = order.iter().position(|c| *c == Column::Title);
+
+            if let (Some(a), Some(r)) = (author_index, repo_index) {
+                assert_eq!(r, a + 1, "author and repo are not adjacent at {width}");
+            }
+            if let (Some(r), Some(t)) = (repo_index, title_index) {
+                assert_eq!(t, r + 1, "repo and title are not adjacent at {width}");
+            }
+        }
+    }
+
     #[test]
     fn diff_is_hidden_outside_wide_mode_even_with_no_configured_wide_columns() {
         let columns = default_columns();
@@ -636,7 +703,7 @@ mod tests {
         let columns = vec![Column::Author, Column::Repo, Column::Title];
 
         // Exactly the sum of every column's minimum plus its gaps: no spare to hand out.
-        let narrow = allocate(&columns, 40, fitted);
+        let narrow = allocate(&columns, 42, fitted);
         assert_eq!(
             narrow.width_of(Column::Author),
             Some(8),
@@ -714,7 +781,7 @@ mod tests {
         let columns = vec![Column::Author, Column::Repo, Column::Title];
 
         // Exactly the sum of every column's minimum plus its gaps: no spare to hand out.
-        let narrow = allocate(&columns, 40, fitted);
+        let narrow = allocate(&columns, 42, fitted);
         assert_eq!(
             narrow.width_of(Column::Repo),
             Some(10),
