@@ -9,20 +9,20 @@
 //!
 //! 1. `title` absorbs slack, down to its minimum — it is the one column that is useful
 //!    at any width, and truncating a title still leaves it recognisable.
-//! 2. Shrinkable columns give up their slack next (author fits its content, down to 8;
-//!    repo 20→10). A truncated username is still identifiable; a truncated title is not
-//!    more so.
+//! 2. Shrinkable columns give up their slack next (author and repo both fit their
+//!    content, down to 8 and 10 respectively). A truncated username or repo name is
+//!    still identifiable; a truncated title is not more so.
 //! 3. Whole columns are dropped, in a fixed order: age, then assigned, then diff.
 //!
-//! # Author sizes to its content
+//! # Author and repo size to their content
 //!
-//! Unlike every other column, `author`'s *preferred* width is not a constant: the caller
-//! measures the widest author name on the rows currently in the tab and passes it in as
-//! [`Fitted`]. This keeps [`allocate`] itself a pure function of `(columns, available,
-//! fitted)` — it does not reach into row data on its own — while letting the column show
-//! whole usernames on an instance where they are short, and give the difference back to
-//! `title`, rather than wasting the fixed 12 cells or truncating every row on an instance
-//! where they are long.
+//! Unlike the other columns, `author` and `repo`'s *preferred* widths are not constants:
+//! the caller measures the widest author name and project name on the rows currently in
+//! the tab and passes them in as [`Fitted`]. This keeps [`allocate`] itself a pure
+//! function of `(columns, available, fitted)` — it does not reach into row data on its
+//! own — while letting each column show its content in full on an instance where it is
+//! short, and give the difference back to `title`, rather than wasting the fixed width or
+//! truncating every row on an instance where it is long.
 //!
 //! Dropping is last because a missing column is invisible — the user cannot tell a
 //! dropped column from one that never existed, which is why [`Allocation`] reports what
@@ -44,8 +44,8 @@ struct Rules {
 /// Space between columns.
 const GAP: u16 = 1;
 
-/// Upper bound on the content-fitted `author` column.
-pub const AUTHOR_MAX: u16 = 30;
+/// Upper bound on either content-fitted column (`author`, `repo`).
+pub const FIT_MAX: u16 = 30;
 
 /// The order columns are dropped in when the terminal is too narrow.
 const DROP_ORDER: [Column; 3] = [Column::Age, Column::Assigned, Column::Diff];
@@ -58,8 +58,11 @@ const DROP_ORDER: [Column; 3] = [Column::Age, Column::Assigned, Column::Diff];
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Fitted {
     /// Widest author name on the current rows, already clamped by the caller to
-    /// `header().width() ..= AUTHOR_MAX`.
+    /// `header().width() ..= FIT_MAX`.
     pub author: Option<u16>,
+    /// Widest project name on the current rows, already clamped by the caller to
+    /// `header().width() ..= FIT_MAX`.
+    pub repo: Option<u16>,
 }
 
 /// How much a column is worth keeping, for widths below what whole-column dropping covers.
@@ -105,11 +108,20 @@ const fn rules(column: Column, fitted: Fitted) -> Rules {
                 flex: false,
             }
         }
-        Column::Repo => Rules {
-            preferred: 20,
-            minimum: 10,
-            flex: false,
-        },
+        // Same treatment as `author`: preferred comes from the measurement, falling back
+        // to the old fixed 20 with nothing to measure; minimum stays the usual shrinkable
+        // floor of 10, unless the fitted width is already narrower.
+        Column::Repo => {
+            let preferred = match fitted.repo {
+                Some(width) => width,
+                None => 20,
+            };
+            Rules {
+                preferred,
+                minimum: if preferred < 10 { preferred } else { 10 },
+                flex: false,
+            }
+        }
         Column::Title => Rules {
             preferred: 40,
             minimum: 20,
@@ -597,7 +609,10 @@ mod tests {
     /// whole content-fitted column rather than the old fixed 12.
     #[test]
     fn a_fitted_author_width_becomes_the_preferred_width() {
-        let fitted = Fitted { author: Some(20) };
+        let fitted = Fitted {
+            author: Some(20),
+            ..Fitted::default()
+        };
         let allocation = allocate(&default_columns(), 200, fitted);
 
         assert_eq!(allocation.width_of(Column::Author), Some(20));
@@ -614,7 +629,10 @@ mod tests {
     /// of 8 — sizing to content does not exempt the column from shrinking.
     #[test]
     fn a_fitted_author_still_shrinks_on_a_narrow_terminal() {
-        let fitted = Fitted { author: Some(20) };
+        let fitted = Fitted {
+            author: Some(20),
+            ..Fitted::default()
+        };
         let columns = vec![Column::Author, Column::Repo, Column::Title];
 
         // Exactly the sum of every column's minimum plus its gaps: no spare to hand out.
@@ -637,29 +655,104 @@ mod tests {
     /// column should not claim more room than its content needs.
     #[test]
     fn a_fitted_width_below_the_usual_floor_is_not_inflated() {
-        let fitted = Fitted { author: Some(6) };
+        let fitted = Fitted {
+            author: Some(6),
+            ..Fitted::default()
+        };
         let allocation = allocate(&default_columns(), 200, fitted);
 
         assert_eq!(allocation.width_of(Column::Author), Some(6));
     }
 
-    /// The invariant that matters, swept across every fitted author width the caller can
-    /// pass in — an over-wide table corrupts every row regardless of what triggered it.
+    /// The invariant that matters, swept across every fitted author and repo width the
+    /// caller can pass in, together — an over-wide table corrupts every row regardless of
+    /// what triggered it.
     #[test]
-    fn allocation_never_exceeds_available_width_for_any_fitted_author_width() {
-        for author in 6..=AUTHOR_MAX {
-            let fitted = Fitted {
-                author: Some(author),
-            };
-            for width in [0, 20, 40, 60, 80, 100, 120, 200, 300] {
-                let allocation = allocate(&default_columns(), width, fitted);
-                assert!(
-                    allocation.total() <= width,
-                    "author {author}, width {width}: allocated {}",
-                    allocation.total()
-                );
+    fn allocation_never_exceeds_available_width_for_any_fitted_width() {
+        for author in [None, Some(6), Some(20), Some(FIT_MAX)] {
+            for repo in [None, Some(10), Some(20), Some(FIT_MAX)] {
+                let fitted = Fitted { author, repo };
+                for width in [0, 20, 40, 60, 80, 100, 120, 200, 300] {
+                    let allocation = allocate(&default_columns(), width, fitted);
+                    assert!(
+                        allocation.total() <= width,
+                        "author {author:?}, repo {repo:?}, width {width}: allocated {}",
+                        allocation.total()
+                    );
+                }
             }
         }
+    }
+
+    /// `repo` mirrors `author`: a fitted width becomes its preferred width.
+    #[test]
+    fn a_fitted_repo_width_becomes_the_preferred_width() {
+        let fitted = Fitted {
+            repo: Some(15),
+            ..Fitted::default()
+        };
+        let allocation = allocate(&default_columns(), 200, fitted);
+
+        assert_eq!(allocation.width_of(Column::Repo), Some(15));
+    }
+
+    /// No measurement (an empty tab) falls back to the old fixed width.
+    #[test]
+    fn no_measurement_falls_back_to_the_fixed_repo_width() {
+        let allocation = allocate(&default_columns(), 200, Fitted::default());
+        assert_eq!(allocation.width_of(Column::Repo), Some(20));
+    }
+
+    /// A fitted repo width still gives up slack on a narrow terminal, down to the usual
+    /// floor of 10.
+    #[test]
+    fn a_fitted_repo_still_shrinks_on_a_narrow_terminal() {
+        let fitted = Fitted {
+            repo: Some(28),
+            ..Fitted::default()
+        };
+        let columns = vec![Column::Author, Column::Repo, Column::Title];
+
+        // Exactly the sum of every column's minimum plus its gaps: no spare to hand out.
+        let narrow = allocate(&columns, 40, fitted);
+        assert_eq!(
+            narrow.width_of(Column::Repo),
+            Some(10),
+            "shrunk to the floor"
+        );
+
+        let wide = allocate(&columns, 200, fitted);
+        assert_eq!(
+            wide.width_of(Column::Repo),
+            Some(28),
+            "fitted width honoured"
+        );
+    }
+
+    /// A fitted repo width below the usual floor of 10 must not be inflated back up to it.
+    #[test]
+    fn a_fitted_repo_width_below_the_usual_floor_is_not_inflated() {
+        let fitted = Fitted {
+            repo: Some(4),
+            ..Fitted::default()
+        };
+        let allocation = allocate(&default_columns(), 200, fitted);
+
+        assert_eq!(allocation.width_of(Column::Repo), Some(4));
+    }
+
+    /// Author and repo are fitted independently — sizing one to its content does not
+    /// disturb the other.
+    #[test]
+    fn author_and_repo_are_fitted_independently() {
+        let fitted = Fitted {
+            author: Some(9),
+            repo: Some(25),
+        };
+        let allocation = allocate(&default_columns(), 200, fitted);
+
+        assert_eq!(allocation.width_of(Column::Author), Some(9));
+        assert_eq!(allocation.width_of(Column::Repo), Some(25));
     }
 }
 
