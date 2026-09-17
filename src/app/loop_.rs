@@ -106,6 +106,8 @@ mod tests {
             AppEvent::FetchStarted { .. } => "started",
             AppEvent::RefreshScheduled { .. } => "scheduled",
             AppEvent::RefreshesPaused { .. } => "paused",
+            AppEvent::Identified { .. } => "identified",
+            AppEvent::IdentityFailed { .. } => "identity_failed",
             AppEvent::Quit(_) => "quit",
         }
     }

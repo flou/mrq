@@ -10,6 +10,7 @@
 //! - `state`     — per-filter tab state: snapshot, sort, drafts, scroll, selection
 //! - `scheduler` — per-filter refresh timers, jitter, stagger, concurrency cap
 //! - `cache`     — snapshot persistence and the warm first paint
+//! - `identity`  — the background identity probe and the workers' wait for it
 //! - `sort`      — comparators with the mandatory stable tiebreak
 //! - `filter`    — incremental search and draft visibility
 //! - `diff`      — snapshot diffing and the notification trigger rules
@@ -26,6 +27,7 @@ pub mod state;
 
 pub mod cache;
 pub mod diff;
+pub mod identity;
 pub mod notify;
 pub mod sort;
 

@@ -20,6 +20,7 @@ use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::app::event::{AppEvent, EventSender, FilterId, Tasks};
+use crate::app::identity;
 use crate::config::schema::{Config, Refresh};
 use crate::error::{Phase, Recovery};
 use crate::gitlab::client::Client;
@@ -149,7 +150,7 @@ pub fn spawn(
     events: EventSender,
     client: Client,
     config: &Config,
-    current_user: String,
+    identity: identity::Receiver,
     cache_dir: Option<std::path::PathBuf>,
     flags: Flags,
 ) -> RefreshHandle {
@@ -168,7 +169,7 @@ pub fn spawn(
             filter: filter.clone(),
             refresh: config.refresh.clone(),
             instance_url: config.gitlab.url.clone(),
-            current_user: current_user.clone(),
+            identity: identity.clone(),
             client: client.clone(),
             events: events.clone(),
             permits: Arc::clone(&permits),
@@ -193,7 +194,10 @@ struct Worker {
     filter: crate::config::schema::Filter,
     refresh: Refresh,
     instance_url: String,
-    current_user: String,
+    /// The identity probe's result. Not yet known at construction time — the whole
+    /// point is that the worker's spawn does not wait on it — so the wait happens once,
+    /// overlapping the startup stagger, in [`Worker::run`].
+    identity: identity::Receiver,
     client: Client,
     events: EventSender,
     permits: Arc<Semaphore>,
@@ -221,7 +225,7 @@ enum Wake {
 }
 
 impl Worker {
-    async fn run(self, mut manual: mpsc::Receiver<()>) {
+    async fn run(mut self, mut manual: mpsc::Receiver<()>) {
         let mut backoff = Backoff::new(Duration::from_secs(self.refresh.interval_secs));
         // StdRng rather than ThreadRng: this is held across an await inside a spawned
         // task, and ThreadRng is not Send. Seeded from the clock and the filter id,
@@ -232,13 +236,24 @@ impl Worker {
         // refreshes so the ladder is walked once per session.
         let mut degradation = Degradation::none();
 
-        // The stagger applies once, at startup.
-        if !self.stagger.is_zero() {
-            tokio::select! {
-                () = self.cancel.cancelled() => return,
-                () = tokio::time::sleep(self.stagger) => {}
-            }
-        }
+        // The stagger and the identity probe overlap: both are waits, and serialising
+        // them would add the probe's round trip on top of a delay that already exists
+        // only to spread load. `None` means the probe failed and no identity is coming,
+        // in which case there is nothing left to fetch for — the event loop already has
+        // the error.
+        let current_user = tokio::select! {
+            () = self.cancel.cancelled() => return,
+            resolved = async {
+                let (_, resolved) = tokio::join!(
+                    tokio::time::sleep(self.stagger),
+                    identity::awaited(&mut self.identity),
+                );
+                resolved
+            } => resolved,
+        };
+        let Some(current_user) = current_user else {
+            return;
+        };
 
         let mut wake = Wake::Startup;
 
@@ -273,7 +288,7 @@ impl Worker {
                 // the terminal guard is allowed to restore.
                 let outcome = tokio::select! {
                     () = self.cancel.cancelled() => return,
-                    outcome = self.fetch_once(&mut degradation) => outcome,
+                    outcome = self.fetch_once(&mut degradation, &current_user) => outcome,
                 };
                 match outcome {
                     Outcome::Healthy => {
@@ -333,7 +348,7 @@ impl Worker {
     }
 
     /// Run one fetch, reporting the outcome.
-    async fn fetch_once(&self, degradation: &mut Degradation) -> Outcome {
+    async fn fetch_once(&self, degradation: &mut Degradation, current_user: &str) -> Outcome {
         let Ok(_permit) = self.permits.acquire().await else {
             // The semaphore is closed, which only happens at shutdown.
             return Outcome::Healthy;
@@ -352,7 +367,7 @@ impl Worker {
             &self.client,
             &self.filter,
             degradation,
-            &self.current_user,
+            current_user,
             &self.instance_url,
             now,
         )
@@ -783,7 +798,7 @@ mod tests {
             events,
             client,
             &config,
-            "me".to_owned(),
+            identified("me"),
             None,
             Flags {
                 focused: focused(),
@@ -983,6 +998,14 @@ mod tests {
         Arc::new(AtomicBool::new(false))
     }
 
+    /// A receiver already carrying an identity, for the tests that are not about the
+    /// probe itself. The sender is dropped immediately and that is fine: `watch`
+    /// evaluates the predicate against the current value before it waits, so an
+    /// already-`Some` channel resolves without a sender ever remaining alive.
+    fn identified(user: &str) -> identity::Receiver {
+        tokio::sync::watch::channel(Some(Arc::<str>::from(user))).1
+    }
+
     /// One worker pointed at a mock instance, with a literal token.
     fn spawn_against(uri: &str, events: &EventSender, tasks: &mut Tasks) -> RefreshHandle {
         use crate::config::schema::Gitlab;
@@ -1008,7 +1031,7 @@ mod tests {
             events.clone(),
             client,
             &config,
-            "me".to_owned(),
+            identified("me"),
             None,
             Flags {
                 focused: focused(),
@@ -1172,7 +1195,7 @@ mod tests {
             events.clone(),
             client,
             &config,
-            "me".to_owned(),
+            identified("me"),
             None,
             Flags {
                 focused: focus,
@@ -1217,7 +1240,7 @@ mod tests {
             events.clone(),
             client,
             &config,
-            "me".to_owned(),
+            identified("me"),
             None,
             Flags {
                 focused: focused(),
@@ -1376,7 +1399,7 @@ mod tests {
             events,
             client,
             &config,
-            "me".to_owned(),
+            identified("me"),
             None,
             Flags {
                 focused: focused(),
@@ -1387,5 +1410,113 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(10), tasks.shutdown())
             .await
             .expect("workers should stop promptly");
+    }
+
+    /// A worker with a sub-second interval, pointed at a counting server, whose
+    /// identity is supplied by the caller — for the tests about the wait itself.
+    fn spawn_awaiting_identity(
+        uri: &str,
+        events: &EventSender,
+        tasks: &mut Tasks,
+        identity: identity::Receiver,
+    ) -> RefreshHandle {
+        use crate::config::schema::Gitlab;
+        use crate::config::token::{TokenEnv, resolve};
+
+        let gitlab = Gitlab {
+            url: uri.to_owned(),
+            token: Some("glpat-test".into()),
+            timeout_secs: 5,
+            ..Gitlab::default()
+        };
+        let token = resolve(&gitlab, &TokenEnv::default(), None).unwrap().token;
+        let client = Client::new(&gitlab, token).unwrap();
+
+        let config = Config {
+            filters: vec![Filter::named("One", Scope::Assigned)],
+            gitlab,
+            refresh: Refresh {
+                interval_secs: 0,
+                jitter_secs: 0,
+                ..Refresh::default()
+            },
+            ..Config::default()
+        };
+
+        spawn(
+            tasks,
+            events.clone(),
+            client,
+            &config,
+            identity,
+            None,
+            Flags {
+                focused: focused(),
+                auth_paused: unpaused(),
+            },
+        )
+    }
+
+    /// The worker must not fire its startup fetch before the identity probe lands —
+    /// there is no username yet to derive the flags against.
+    #[tokio::test]
+    async fn a_worker_does_not_fetch_before_the_identity_lands() {
+        let (server, hits) = counting_server().await;
+
+        let mut tasks = Tasks::new();
+        let (events, _rx) = crate::app::event::channel();
+        let (identity_tx, identity_rx) = identity::channel();
+        let _handle = spawn_awaiting_identity(&server.uri(), &events, &mut tasks, identity_rx);
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            hits.load(Ordering::Relaxed),
+            0,
+            "a worker fetched before it knew who it was fetching for"
+        );
+
+        identity_tx.send(Some(Arc::from("me"))).unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(
+            hits.load(Ordering::Relaxed) > 0,
+            "the worker never fetched once the identity landed"
+        );
+
+        tasks.shutdown().await;
+    }
+
+    /// A failed probe drops the identity sender; the worker must give up rather than
+    /// wait forever, since nothing is coming and the event loop already has the error.
+    #[tokio::test]
+    async fn a_worker_stops_when_the_identity_probe_fails() {
+        let (server, hits) = counting_server().await;
+
+        let mut tasks = Tasks::new();
+        let (events, _rx) = crate::app::event::channel();
+        let (identity_tx, identity_rx) = identity::channel();
+        drop(identity_tx);
+        let _handle = spawn_awaiting_identity(&server.uri(), &events, &mut tasks, identity_rx);
+
+        tokio::time::timeout(Duration::from_secs(5), tasks.shutdown())
+            .await
+            .expect("a worker with no identity coming must stop, not hang");
+        assert_eq!(hits.load(Ordering::Relaxed), 0, "never fetched at all");
+    }
+
+    /// Cancellation must win even while a worker is still waiting on the identity
+    /// probe — quitting must not be held up by a probe that never resolves.
+    #[tokio::test]
+    async fn a_worker_waiting_for_the_identity_still_stops_on_cancellation() {
+        let (server, _hits) = counting_server().await;
+
+        let mut tasks = Tasks::new();
+        let (events, _rx) = crate::app::event::channel();
+        // Kept alive and never sent to: the worker is left waiting indefinitely.
+        let (_identity_tx, identity_rx) = identity::channel();
+        let _handle = spawn_awaiting_identity(&server.uri(), &events, &mut tasks, identity_rx);
+
+        tokio::time::timeout(Duration::from_secs(5), tasks.shutdown())
+            .await
+            .expect("shutdown must not wait out a probe that never resolves");
     }
 }

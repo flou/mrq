@@ -267,6 +267,18 @@ impl Tab {
         if first_fetch { Vec::new() } else { arrived }
     }
 
+    /// Re-derive every row's per-user flags once the identity probe lands, reporting
+    /// whether any of them changed.
+    pub fn rederive(&mut self, current_user: &str) -> bool {
+        let mut changed = false;
+        for mr in &mut self.merge_requests {
+            // Not `||`: short-circuiting would leave later rows on the previous
+            // account's flags.
+            changed |= mr.rederive(current_user);
+        }
+        changed
+    }
+
     /// Record a failed fetch. The previous snapshot is deliberately retained.
     pub fn apply_error(&mut self, error: &Error) {
         self.state = FetchState::Failed {
@@ -405,6 +417,37 @@ mod tests {
 
     fn tabs(names: &[&str]) -> Tabs {
         Tabs::new(&filters(names), Sort::default(), false, None)
+    }
+
+    /// Once an earlier row's flags change, a later row must still be recomputed — the
+    /// fold has to use `|=`, not a short-circuiting `||` that would skip every row after
+    /// the first change.
+    #[test]
+    fn rederiving_a_tab_reports_a_change_only_when_one_happened() {
+        let mut tabs = tabs(&["Assigned"]);
+        let tab = tabs.active_mut().unwrap();
+
+        // Both rows have "asmith" as their sole assignee (the fixture default); both are
+        // written as if cached by "asmith", so both currently read as assigned to me.
+        let mut a = mr("a", "carol");
+        a.recompute_derived("asmith");
+        let mut b = mr("b", "dave");
+        b.recompute_derived("asmith");
+        tab.apply_rows(vec![a, b], Instant::now());
+
+        assert!(
+            !tab.rederive("asmith"),
+            "recomputing against the same account changes nothing"
+        );
+        assert!(
+            tab.rederive("carol"),
+            "switching accounts must change at least one row's flags"
+        );
+        assert!(
+            !tab.all()[1].assigned_to_me(),
+            "the second row must actually be recomputed, not skipped once the first \
+             row already reported a change"
+        );
     }
 
     #[test]

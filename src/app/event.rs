@@ -73,6 +73,20 @@ pub enum AppEvent {
     /// A runtime 401/403: every filter stops refreshing until the user asks again.
     RefreshesPaused { filter: FilterId },
 
+    /// The identity probe landed. The rows the cache put on screen carry whichever
+    /// account's derived flags the run that wrote them computed; this is where they are
+    /// re-derived against the account this session actually authenticated as.
+    Identified { username: String },
+
+    /// The identity probe failed. Fatal, by the same recovery table that made it fatal
+    /// when it ran before the guard — the only difference now is that the guard is up,
+    /// so the message has to travel out of `run` and `main` prints it to the restored
+    /// terminal instead of an `eprintln` reaching the alternate screen.
+    ///
+    /// Boxed for the same reason `FetchFailed` is: `AppEvent` pays the size of its
+    /// biggest variant on every event (see `the_event_enum_stays_small`).
+    IdentityFailed { error: Box<Error> },
+
     /// Shut down: a signal arrived, or the user quit.
     Quit(QuitReason),
 }
@@ -96,6 +110,11 @@ pub enum QuitReason {
     /// would paint onto a screen the loop no longer owns, so this is a quit rather than a
     /// crash.
     TaskPanicked,
+    /// Startup could not complete: the identity probe failed after the terminal was
+    /// already taken over. The error itself travels on `App::fatal`, not in this
+    /// variant, so `QuitReason` stays `Copy` — a boxed error here would cost `Flow`,
+    /// `main` and every test that compares a reason.
+    Fatal,
 }
 
 /// The sending half, cloned into every task that can produce an event.
