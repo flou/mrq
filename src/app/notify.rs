@@ -269,6 +269,12 @@ impl Notifier {
     }
 }
 
+/// The notification title names its filter, so the OS identifies the source rather than
+/// showing a bare filter name.
+fn filter_title(filter_name: &str) -> String {
+    format!("Filter: {filter_name}")
+}
+
 /// Collapse one cycle's events into the messages to deliver.
 fn coalesce(events: &[&Event]) -> Vec<Notification> {
     let Some(first) = events.first() else {
@@ -277,7 +283,7 @@ fn coalesce(events: &[&Event]) -> Vec<Notification> {
 
     if events.len() > COALESCE_ABOVE {
         return vec![Notification {
-            title: first.filter_name.clone(),
+            title: filter_title(&first.filter_name),
             body: summarise(events),
             filter: Some(first.filter),
         }];
@@ -286,7 +292,7 @@ fn coalesce(events: &[&Event]) -> Vec<Notification> {
     events
         .iter()
         .map(|event| Notification {
-            title: event.filter_name.clone(),
+            title: filter_title(&event.filter_name),
             body: describe(event),
             filter: Some(event.filter),
         })
@@ -411,7 +417,7 @@ mod tests {
 
         assert_eq!(got.len(), 3);
         for notification in &got {
-            assert_eq!(notification.title, "Reviewing");
+            assert_eq!(notification.title, "Filter: Reviewing");
             assert_eq!(notification.filter, Some(FILTER));
             assert!(
                 notification.body.contains("web-app!482"),
@@ -429,7 +435,10 @@ mod tests {
         let got = n.process(&arrivals(5), false, now());
 
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].title, "Reviewing", "the summary names the filter");
+        assert_eq!(
+            got[0].title, "Filter: Reviewing",
+            "the summary names the filter"
+        );
         assert_eq!(got[0].body, "5 new merge requests");
         assert_eq!(got[0].filter, Some(FILTER));
     }

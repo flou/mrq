@@ -90,7 +90,8 @@ impl Helpers {
             return Some("terminal-notifier -title {title} -message {body}".to_owned());
         }
         if cfg!(target_os = "linux") && self.notify_send {
-            return Some("notify-send {title} {body}".to_owned());
+            // The flag is static text, so unlike `{title}`/`{body}` it needs no quoting.
+            return Some("notify-send -a MRQ {title} {body}".to_owned());
         }
         None
     }
@@ -308,6 +309,9 @@ mod tests {
                     "notify-send"
                 };
                 assert!(command.starts_with(expected), "{command}");
+                if cfg!(target_os = "linux") {
+                    assert!(command.contains("-a MRQ"), "{command}");
+                }
             }
             other => panic!("expected a command backend, got {other:?}"),
         }
