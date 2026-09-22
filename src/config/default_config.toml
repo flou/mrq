@@ -54,11 +54,13 @@
 
 # Display order, left to right. Any subset of these keys, each at most once; `sort.column`
 # below has to be one of them.
-# columns = ["approved", "author", "repo", "title", "pipeline", "assigned", "age", "updated", "diff"]
+# columns = ["approved", "author", "repo", "title", "pipeline", "assigned", "approver", "reviewer", "age", "updated", "diff"]
 
 # Columns hidden until wide mode (w) is toggled on, in addition to diff, which is always
 # wide-only. Must be a subset of columns above; approved, author, repo, title and pipeline
-# identify a row and can never be listed here.
+# identify a row and can never be listed here. Defaults to ["approver", "reviewer"], but
+# only while columns above is also left at its default -- set your own columns and this
+# reverts to hiding nothing extra unless you list it here too.
 # wide_columns = []
 
 [skin]

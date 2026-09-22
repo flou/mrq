@@ -338,6 +338,7 @@ impl WireMergeRequest {
             approved_by_me: false,
             assigned_to_me: false,
             authored_by_me: false,
+            reviewing_me: false,
         };
 
         mr.recompute_derived(current_user);

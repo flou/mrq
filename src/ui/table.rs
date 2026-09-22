@@ -215,8 +215,8 @@ fn trigram(name: Option<&str>, username: &str) -> String {
     }
 }
 
-/// The ASSIGNED column has no one to name.
-const UNASSIGNED_MARK: &str = "-";
+/// No one to name, in a column that names people.
+const NOBODY_MARK: &str = "-";
 
 /// The ASSIGNED cell: `Yes`/`No` by default, or the first assignee's trigram when
 /// `[ui].assignee_trigram` is on.
@@ -226,7 +226,16 @@ fn assigned_cell(mr: &MergeRequest, trigram_mode: bool) -> Cow<'_, str> {
     }
     match mr.first_assignee() {
         Some(user) => Cow::Owned(trigram(user.name.as_deref(), &user.username)),
-        None => Cow::Borrowed(UNASSIGNED_MARK),
+        None => Cow::Borrowed(NOBODY_MARK),
+    }
+}
+
+/// The APPROVER / REVIEWER cell: the first username, `+N` for the rest, `-` for none.
+fn people_cell(people: &[String]) -> Cow<'_, str> {
+    match people.split_first() {
+        None => Cow::Borrowed(NOBODY_MARK),
+        Some((first, [])) => Cow::Borrowed(first),
+        Some((first, rest)) => Cow::Owned(format!("{first} +{}", rest.len())),
     }
 }
 
@@ -257,6 +266,8 @@ fn cell_text<'a>(
         // Filled in by the caller, which has the theme and therefore the glyph set.
         Column::Pipeline => Cow::Borrowed(""),
         Column::Assigned => assigned_cell(mr, trigram_mode),
+        Column::Approver => people_cell(&mr.approved_by),
+        Column::Reviewer => people_cell(&mr.reviewers),
         Column::Age => Cow::Owned(relative_time(mr.created_at, now)),
         Column::Updated => Cow::Owned(relative_time(mr.updated_at, now)),
         Column::Diff => Cow::Owned(diff_cell(mr)),
@@ -276,6 +287,26 @@ const fn cell_role(mr: &MergeRequest, column: Column) -> Role {
         Column::Title if mr.is_blocked() => Role::Warning,
         Column::Diff => Role::Normal,
         _ => Role::Normal,
+    }
+}
+
+/// Whether a cell should carry the "this is yours" highlight.
+///
+/// `Assigned` only counts in trigram mode: the legacy `Yes`/`No` text already says it.
+const fn marks_me(mr: &MergeRequest, column: Column, trigram_mode: bool) -> bool {
+    match column {
+        Column::Assigned => trigram_mode && mr.assigned_to_me(),
+        Column::Approver => mr.approved_by_me(),
+        Column::Reviewer => mr.reviewing_me(),
+        Column::Approved
+        | Column::Author
+        | Column::Repo
+        | Column::Title
+        | Column::Pipeline
+        | Column::Age
+        | Column::Updated
+        | Column::Diff
+        | Column::Branch => false,
     }
 }
 
@@ -353,10 +384,11 @@ fn row<'a>(
                 Cell::from(pad(&text, width)).style(theme.emphasise(Role::Success))
             }
             // Green, not bold: bold is APRV's signal, and this only marks the row as
-            // yours, the same fact `Yes`/`No` carried before the trigram existed.
-            Column::Assigned if trigram_mode && mr.assigned_to_me() && !mr.draft => {
+            // yours. ASG carries the same fact `Yes`/`No` did before the trigram existed;
+            // APPROVER and REVIEWER extend it to a name the ASG column never had.
+            other if marks_me(mr, *other, trigram_mode) && !mr.draft => {
                 let text = truncate(
-                    &cell_text(mr, *column, theme, now, trigram_mode),
+                    &cell_text(mr, *other, theme, now, trigram_mode),
                     width,
                     theme.ellipsis(),
                 );
@@ -940,6 +972,67 @@ mod tests {
             cell_text(&m, Column::Assigned, &theme(false), now(), false),
             "No"
         );
+    }
+
+    /// `-` with nobody, the bare username with one, `name +N` with more.
+    #[test]
+    fn people_cell_names_the_first_and_counts_the_rest() {
+        assert_eq!(people_cell(&[]), "-");
+        assert_eq!(people_cell(&["jdoe".to_owned()]), "jdoe");
+        assert_eq!(
+            people_cell(&["jdoe".to_owned(), "bwayne".to_owned(), "asmith".to_owned()]),
+            "jdoe +2"
+        );
+    }
+
+    #[test]
+    fn approver_and_reviewer_cells_read_from_their_own_lists() {
+        let mut m = mr("a", "jdoe");
+        m.approved_by = vec!["asmith".to_owned()];
+        m.reviewers = vec!["bwayne".to_owned(), "cdavis".to_owned()];
+
+        assert_eq!(
+            cell_text(&m, Column::Approver, &theme(false), now(), false),
+            "asmith"
+        );
+        assert_eq!(
+            cell_text(&m, Column::Reviewer, &theme(false), now(), false),
+            "bwayne +1"
+        );
+
+        m.approved_by.clear();
+        m.reviewers.clear();
+        assert_eq!(
+            cell_text(&m, Column::Approver, &theme(false), now(), false),
+            "-"
+        );
+        assert_eq!(
+            cell_text(&m, Column::Reviewer, &theme(false), now(), false),
+            "-"
+        );
+    }
+
+    /// The "this is yours" highlight: ASG only in trigram mode, APPROVER/REVIEWER
+    /// whenever the current user is anywhere in the list, not just shown first.
+    #[test]
+    fn marks_me_reflects_the_current_user_in_each_column() {
+        let mut m = mr("a", "jdoe");
+        m.approved_by = vec!["asmith".to_owned(), "me".to_owned()];
+        m.reviewers = vec!["bwayne".to_owned()];
+        m.assignees = vec![User::new("me")];
+        m.recompute_derived("me");
+
+        assert!(marks_me(&m, Column::Approver, false), "me is in the list");
+        assert!(
+            !marks_me(&m, Column::Reviewer, false),
+            "me is not reviewing"
+        );
+        assert!(
+            !marks_me(&m, Column::Assigned, false),
+            "trigram mode is off"
+        );
+        assert!(marks_me(&m, Column::Assigned, true), "trigram mode is on");
+        assert!(!marks_me(&m, Column::Title, true), "title never marks");
     }
 
     #[test]

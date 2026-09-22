@@ -129,7 +129,8 @@ pub struct Ui {
     pub columns: Vec<Column>,
     /// Columns hidden until wide mode (`w`) is on, beyond `diff`, which is always
     /// wide-only. `approved`, `author`, `repo`, `title` and `pipeline` can never appear
-    /// here — validated at config load.
+    /// here — validated at config load. Defaults to `[approver, reviewer]`, but only
+    /// while `columns` is also left at its default — see `load::load`.
     pub wide_columns: Vec<Column>,
     /// Show the first assignee's initials in the ASSIGNED column instead of `Yes`/`No`
     /// (`Charles Billow` -> `CBI`), green when the assignee is you, `-` when there is
@@ -146,7 +147,7 @@ impl Default for Ui {
             mouse: false,
             set_terminal_title: true,
             columns: Column::DEFAULT.to_vec(),
-            wide_columns: Vec::new(),
+            wide_columns: vec![Column::Approver, Column::Reviewer],
             assignee_trigram: false,
         }
     }
@@ -187,6 +188,8 @@ pub enum Column {
     Title,
     Pipeline,
     Assigned,
+    Approver,
+    Reviewer,
     Age,
     Updated,
     Diff,
@@ -194,13 +197,15 @@ pub enum Column {
 }
 
 impl Column {
-    pub const DEFAULT: [Self; 9] = [
+    pub const DEFAULT: [Self; 11] = [
         Self::Approved,
         Self::Author,
         Self::Repo,
         Self::Title,
         Self::Pipeline,
         Self::Assigned,
+        Self::Approver,
+        Self::Reviewer,
         Self::Age,
         Self::Updated,
         Self::Diff,
@@ -215,6 +220,8 @@ impl Column {
             Self::Title => "title",
             Self::Pipeline => "pipeline",
             Self::Assigned => "assigned",
+            Self::Approver => "approver",
+            Self::Reviewer => "reviewer",
             Self::Age => "age",
             Self::Updated => "updated",
             Self::Diff => "diff",
@@ -234,6 +241,8 @@ impl Column {
             Self::Title => "TITLE",
             Self::Pipeline => "CI",
             Self::Assigned => "ASG",
+            Self::Approver => "APPROVER",
+            Self::Reviewer => "REVIEWER",
             Self::Age => "AGE",
             Self::Updated => "UPDATED",
             Self::Diff => "DIFF",
@@ -589,6 +598,7 @@ mod tests {
         assert!(!c.ui.show_drafts, "drafts are hidden by default");
         assert!(!c.ui.mouse, "mouse off, so native selection keeps working");
         assert_eq!(c.ui.columns, Column::DEFAULT.to_vec());
+        assert_eq!(c.ui.wide_columns, vec![Column::Approver, Column::Reviewer]);
         assert_eq!(c.sort.column, Column::Updated);
         assert_eq!(c.sort.order, Order::Desc);
         assert!(c.sort.drafts_last);

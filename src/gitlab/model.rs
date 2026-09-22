@@ -273,6 +273,8 @@ pub struct MergeRequest {
     pub(super) assigned_to_me: bool,
     #[serde(default)]
     pub(super) authored_by_me: bool,
+    #[serde(default)]
+    pub(super) reviewing_me: bool,
 }
 
 impl MergeRequest {
@@ -291,6 +293,7 @@ impl MergeRequest {
             current_user,
         );
         self.authored_by_me = eq_user(&self.author.username, current_user);
+        self.reviewing_me = contains_user(self.reviewers.iter().map(String::as_str), current_user);
     }
 
     /// The first assignee, for the ASSIGNED column's trigram rendering.
@@ -309,6 +312,7 @@ impl MergeRequest {
             self.approved_by_me,
             self.assigned_to_me,
             self.authored_by_me,
+            self.reviewing_me,
         );
         self.recompute_derived(current_user);
         before
@@ -316,10 +320,10 @@ impl MergeRequest {
                 self.approved_by_me,
                 self.assigned_to_me,
                 self.authored_by_me,
+                self.reviewing_me,
             )
     }
 
-    #[cfg(test)]
     pub const fn approved_by_me(&self) -> bool {
         self.approved_by_me
     }
@@ -330,6 +334,10 @@ impl MergeRequest {
 
     pub const fn authored_by_me(&self) -> bool {
         self.authored_by_me
+    }
+
+    pub const fn reviewing_me(&self) -> bool {
+        self.reviewing_me
     }
 
     /// Total lines touched, for the DIFF sort.
@@ -408,6 +416,7 @@ pub(crate) mod fixtures {
             approved_by_me: false,
             assigned_to_me: false,
             authored_by_me: false,
+            reviewing_me: false,
         }
     }
 }
@@ -424,14 +433,21 @@ mod tests {
         assert!(m.authored_by_me());
         assert!(m.assigned_to_me(), "asmith is in assignees");
         assert!(!m.approved_by_me(), "jdoe approved, not asmith");
+        assert!(!m.reviewing_me(), "asmith is not a reviewer");
 
         m.recompute_derived("jdoe");
         assert!(!m.authored_by_me());
         assert!(!m.assigned_to_me());
         assert!(m.approved_by_me());
+        assert!(m.reviewing_me(), "jdoe is the first reviewer");
+
+        m.recompute_derived("bwayne");
+        assert!(m.reviewing_me(), "bwayne is the second reviewer");
 
         m.recompute_derived("nobody");
-        assert!(!m.authored_by_me() && !m.assigned_to_me() && !m.approved_by_me());
+        assert!(
+            !m.authored_by_me() && !m.assigned_to_me() && !m.approved_by_me() && !m.reviewing_me()
+        );
     }
 
     /// `rederive` is what the identity handler redraws on: a no-op recompute must report
@@ -446,6 +462,10 @@ mod tests {
             m.rederive("someone-else"),
             "a different account must be reported as a change"
         );
+        assert!(
+            m.rederive("jdoe"),
+            "reviewing_me flipping true must also count as a change"
+        );
     }
 
     /// The casing GraphQL returns for `currentUser` does not reliably match the casing in
@@ -455,10 +475,14 @@ mod tests {
     fn username_comparison_ignores_case() {
         let mut m = mr("1", "ASmith");
         m.assignees = vec![User::new("ASMITH")];
+        m.reviewers = vec!["JDOE".to_owned()];
         m.recompute_derived("asmith");
 
         assert!(m.authored_by_me());
         assert!(m.assigned_to_me());
+
+        m.recompute_derived("jdoe");
+        assert!(m.reviewing_me());
     }
 
     /// A cached snapshot may have been written by a different account; stale flags would
@@ -490,9 +514,11 @@ mod tests {
         obj.remove("approved_by_me");
         obj.remove("assigned_to_me");
         obj.remove("authored_by_me");
+        obj.remove("reviewing_me");
 
         let restored: MergeRequest = serde_json::from_value(value).unwrap();
         assert!(!restored.assigned_to_me());
+        assert!(!restored.reviewing_me());
     }
 
     /// A status this build does not know must degrade, not fail the fetch

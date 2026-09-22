@@ -66,6 +66,9 @@ fn compare(a: &MergeRequest, b: &MergeRequest, column: Column) -> Ordering {
         // Assigned-to-me first, so the column sorts the way the user means it.
         Column::Assigned => b.assigned_to_me().cmp(&a.assigned_to_me()),
 
+        Column::Approver => people_order(&a.approved_by, &b.approved_by),
+        Column::Reviewer => people_order(&a.reviewers, &b.reviewers),
+
         // Oldest first for AGE: an ascending age column should put the merge request
         // that has been waiting longest at the top, and that is the earliest timestamp.
         Column::Age => a.created_at.cmp(&b.created_at),
@@ -86,6 +89,16 @@ fn case_insensitive(a: &str, b: &str) -> Ordering {
     a.to_lowercase()
         .cmp(&b.to_lowercase())
         .then_with(|| a.cmp(b))
+}
+
+/// Case-insensitive on the first username; nobody sorts last on ascending.
+fn people_order(a: &[String], b: &[String]) -> Ordering {
+    match (a.first(), b.first()) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(x), Some(y)) => case_insensitive(x, y),
+    }
 }
 
 /// Failed, running, pending, manual, canceled, skipped, success, none.
@@ -206,6 +219,36 @@ mod tests {
         let mut rows = refs(&mrs);
         sort(&mut rows, Column::Approved, Order::Asc, false);
         assert_eq!(ids(&rows), ["approved", "pending"]);
+    }
+
+    #[test]
+    fn approver_sorts_case_insensitively_and_puts_nobody_last() {
+        let mut zoe = row("zoe", "someone");
+        zoe.approved_by = vec!["Zoe".into()];
+        let mut adam = row("adam", "someone");
+        adam.approved_by = vec!["adam".into()];
+        let mut nobody = row("nobody", "someone");
+        nobody.approved_by = Vec::new();
+
+        let mrs = vec![zoe, nobody, adam];
+        let mut rows = refs(&mrs);
+        sort(&mut rows, Column::Approver, Order::Asc, false);
+        assert_eq!(ids(&rows), ["adam", "zoe", "nobody"]);
+    }
+
+    #[test]
+    fn reviewer_sorts_case_insensitively_and_puts_nobody_last() {
+        let mut zoe = row("zoe", "someone");
+        zoe.reviewers = vec!["Zoe".into()];
+        let mut adam = row("adam", "someone");
+        adam.reviewers = vec!["adam".into()];
+        let mut nobody = row("nobody", "someone");
+        nobody.reviewers = Vec::new();
+
+        let mrs = vec![zoe, nobody, adam];
+        let mut rows = refs(&mrs);
+        sort(&mut rows, Column::Reviewer, Order::Asc, false);
+        assert_eq!(ids(&rows), ["adam", "zoe", "nobody"]);
     }
 
     #[test]

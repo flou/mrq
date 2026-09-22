@@ -76,7 +76,13 @@ fn total_gaps(columns: &[Column]) -> u16 {
 pub const FIT_MAX: u16 = 30;
 
 /// The order columns are dropped in when the terminal is too narrow.
-const DROP_ORDER: [Column; 3] = [Column::Age, Column::Assigned, Column::Diff];
+const DROP_ORDER: [Column; 5] = [
+    Column::Age,
+    Column::Assigned,
+    Column::Approver,
+    Column::Reviewer,
+    Column::Diff,
+];
 
 /// Widths measured from the rows on screen, for columns that size to their content.
 ///
@@ -108,6 +114,8 @@ const fn keep_priority(column: Column) -> u8 {
         Column::Updated => 4,
         Column::Age => 3,
         Column::Assigned => 2,
+        Column::Approver => 2,
+        Column::Reviewer => 2,
         Column::Diff => 1,
         Column::Branch => 6,
     }
@@ -165,6 +173,16 @@ const fn rules(column: Column, fitted: Fitted) -> Rules {
         Column::Assigned => Rules {
             preferred: 4,
             minimum: 4,
+            flex: false,
+        },
+        Column::Approver => Rules {
+            preferred: 14,
+            minimum: 8,
+            flex: false,
+        },
+        Column::Reviewer => Rules {
+            preferred: 14,
+            minimum: 8,
             flex: false,
         },
         Column::Age => Rules {
@@ -409,8 +427,9 @@ mod tests {
 
         assert_eq!(
             wide_title - narrow_title,
-            80,
-            "the extra 80 columns all went to the title"
+            76,
+            "the extra 80 columns went to the title, apart from what approver/reviewer \
+             still needed to reach their own preferred width"
         );
         for column in [Column::Author, Column::Repo, Column::Diff] {
             assert_eq!(
@@ -459,7 +478,7 @@ mod tests {
         }
     }
 
-    /// The drop order when columns don't fit: age, then assigned, then diff.
+    /// The drop order when columns don't fit: age, assigned, approver, reviewer, diff.
     #[test]
     fn columns_are_dropped_in_the_documented_order() {
         let columns = default_columns();
@@ -467,7 +486,7 @@ mod tests {
         // Walk widths downward and record the order columns disappear.
         let mut order = Vec::new();
         let mut previous: Vec<Column> = columns.clone();
-        for width in (40..=120u16).rev() {
+        for width in (30..=120u16).rev() {
             let now = visible(&allocate(&columns, width, Fitted::default()));
             for column in &previous {
                 if !now.contains(column) && !order.contains(column) {
@@ -477,10 +496,16 @@ mod tests {
             previous = now;
         }
 
-        let first_three: Vec<Column> = order.iter().copied().take(3).collect();
+        let first_five: Vec<Column> = order.iter().copied().take(5).collect();
         assert_eq!(
-            first_three,
-            [Column::Age, Column::Assigned, Column::Diff],
+            first_five,
+            [
+                Column::Age,
+                Column::Assigned,
+                Column::Approver,
+                Column::Reviewer,
+                Column::Diff
+            ],
             "full drop order observed: {order:?}"
         );
     }

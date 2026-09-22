@@ -200,10 +200,19 @@ pub struct Loaded {
 pub fn load(paths: Paths, overrides: &Overrides) -> Result<Loaded, ConfigError> {
     let mut provenance = Provenance::default();
 
-    let config = match paths.config_file() {
+    let mut config = match paths.config_file() {
         Some(path) => read_file(path, paths.config_source(), &mut provenance)?,
         None => Config::default(),
     };
+
+    // The shipped `wide_columns` default names columns a user-written `columns` need not
+    // contain. Only what they actually display can be wide-only.
+    if provenance.get("ui.wide_columns") == Source::Default {
+        config
+            .ui
+            .wide_columns
+            .retain(|c| config.ui.columns.contains(c));
+    }
 
     let mut loaded = Loaded {
         config,
@@ -261,7 +270,7 @@ fn apply_overrides(loaded: &mut Loaded, overrides: &Overrides) {
 mod tests {
     use super::*;
     use crate::config::paths::Env;
-    use crate::config::schema::Scope;
+    use crate::config::schema::{Column, Scope};
     use std::path::PathBuf;
 
     struct Fixture {
@@ -544,5 +553,38 @@ path = "acme/platform"
                 "100".to_owned()
             )
         );
+    }
+
+    /// A config predating `approver`/`reviewer` sets its own `columns` and never mentions
+    /// `wide_columns`. It must not inherit the shipped default `wide_columns`, or it fails
+    /// validation with "approver is not in ui.columns" for a key it never wrote.
+    #[test]
+    fn a_pre_existing_columns_list_does_not_inherit_the_default_wide_columns() {
+        use crate::config::validate::validate;
+
+        let fx = Fixture::new();
+        fx.write_config(
+            "[ui]\ncolumns = [\"approved\", \"author\", \"repo\", \"title\", \"pipeline\", \
+             \"assigned\", \"age\", \"updated\", \"diff\"]\n",
+        );
+        let mut loaded = fx.load(&Overrides::default()).unwrap();
+
+        assert!(
+            loaded.config.ui.wide_columns.is_empty(),
+            "neither approver nor reviewer is in the user's columns: {:?}",
+            loaded.config.ui.wide_columns
+        );
+        validate(&mut loaded.config).expect("a pre-existing config must still load");
+    }
+
+    /// A user who does write `wide_columns` gets exactly what they asked for, not a
+    /// merge with the shipped default.
+    #[test]
+    fn an_explicit_wide_columns_is_left_untouched() {
+        let fx = Fixture::new();
+        fx.write_config("[ui]\nwide_columns = [\"age\"]\n");
+        let loaded = fx.load(&Overrides::default()).unwrap();
+
+        assert_eq!(loaded.config.ui.wide_columns, vec![Column::Age]);
     }
 }
