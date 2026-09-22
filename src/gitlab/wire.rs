@@ -113,6 +113,8 @@ pub struct WireMergeRequest {
     /// GraphQL `ID!`, serialised as a string even though it reads as a number.
     pub iid: String,
     pub title: String,
+    #[serde(default)]
+    pub description: Option<String>,
     pub web_url: String,
     #[serde(default)]
     pub draft: bool,
@@ -281,6 +283,7 @@ impl WireMergeRequest {
             project_path,
             project_name,
             title: self.title,
+            description: self.description.unwrap_or_default(),
             web_url: self.web_url,
             draft: self.draft,
             state: parse_state(self.state.as_deref()),
@@ -499,6 +502,22 @@ mod tests {
         assert_eq!(mr.target_branch, "main");
         assert!(mr.web_url.starts_with(INSTANCE));
         assert_eq!(mr.state, MrState::Opened);
+        assert_eq!(mr.description, "Fixture description for merge request 1.");
+    }
+
+    /// An instance that omits `description` entirely must not fail the row.
+    #[test]
+    fn an_absent_description_decodes_to_empty() {
+        let mut value =
+            fixture()["data"]["currentUser"]["assignedMergeRequests"]["nodes"][0].clone();
+        value.as_object_mut().unwrap().remove("description");
+
+        let wire: WireMergeRequest = serde_json::from_value(value).unwrap();
+        let mut anomalies = Anomalies::default();
+        assert_eq!(
+            wire.into_model(INSTANCE, ME, &mut anomalies).description,
+            ""
+        );
     }
 
     /// The bug that motivated the fixture: GitLab returns the path, not a URL.

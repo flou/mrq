@@ -18,12 +18,13 @@
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::state::Tabs;
 use crate::config::keymap::{Action, Keymap};
 use crate::config::schema::Column;
 use crate::gitlab::fetch::Snapshot;
-use crate::gitlab::model::MergeRequest;
+use crate::gitlab::model::{MergeRequest, MergeStatus};
 use crate::logging::LogBuffer;
 use crate::ui::skins;
 use crate::ui::theme::Theme;
@@ -36,6 +37,7 @@ pub enum Popup {
     Filter,
     Skin,
     Log,
+    Details,
 }
 
 impl Popup {
@@ -47,6 +49,7 @@ impl Popup {
             Self::Filter => Action::FilterMenu,
             Self::Skin => Action::SkinMenu,
             Self::Log => Action::LogMenu,
+            Self::Details => Action::ShowDetails,
         }
     }
 }
@@ -680,6 +683,15 @@ pub fn dispatch(state: &mut ViewState, action: Action) -> (bool, Effect) {
             state.mode = Mode::Popup(popup);
             (true, Effect::None)
         }
+        Action::ShowDetails => match state.selected() {
+            Some(mr) => {
+                let mut popup = PopupState::new(Popup::Details);
+                popup.lines = detail_lines(&mr, &state.theme);
+                state.mode = Mode::Popup(popup);
+                (true, Effect::None)
+            }
+            None => (false, Effect::None),
+        },
 
         Action::NextFilter => {
             state.tabs.next();
@@ -841,6 +853,34 @@ pub fn mouse_wheel(state: &mut ViewState, up: bool) -> bool {
     state.move_selection(delta)
 }
 
+/// Wheel-scroll inside an open popup, the same distance as the table's own wheel.
+///
+/// The table sits behind every popup, so a wheel event needs routing to whichever one
+/// currently has the keyboard — the same split `handle_key` already makes for key
+/// presses. `None` when nothing is open, so the caller falls back to [`mouse_wheel`].
+pub fn popup_wheel(state: &mut ViewState, keymap: &Keymap, up: bool) -> Option<bool> {
+    let mut popup = state.mode.popup_state()?.clone();
+    let rows = popup_rows(state, keymap, &popup);
+
+    let wheel_rows = MOUSE_WHEEL_ROWS.unsigned_abs();
+    popup.cursor = if up {
+        previous(popup.cursor, wheel_rows)
+    } else {
+        next(popup.cursor, wheel_rows, rows)
+    };
+
+    // Mirrors the picker preview in `popup_key`: a wheel scroll through the skin list
+    // should preview exactly like `j`/`k` do.
+    if popup.kind == Popup::Skin
+        && let Some(name) = skins::BUILTIN_NAMES.get(popup.cursor)
+    {
+        state.theme = state.theme.with_skin(name);
+    }
+
+    state.mode = Mode::Popup(popup);
+    Some(true)
+}
+
 /// Select the row under a mouse click; the index is into the sorted, filtered rows the
 /// table shows, so the caller folds the scroll offset into it.
 pub fn mouse_select(state: &mut ViewState, index: usize) -> bool {
@@ -894,13 +934,31 @@ fn popup_key(
 ) -> KeyOutcome {
     let rows = popup_rows(state, keymap, &popup);
 
+    // ctrl-d / ctrl-u mirror the table's own page-down / page-up, alongside the named
+    // PageDown/PageUp keys below. Guarded on the modifier: bare `d` and `u` are still
+    // available as Sort/Skin jump letters (`DIFF`, `dracula`).
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
     match key.code {
+        KeyCode::Char('d') if ctrl => popup.cursor = next(popup.cursor, POPUP_PAGE, rows),
+        KeyCode::Char('u') if ctrl => popup.cursor = previous(popup.cursor, POPUP_PAGE),
+
         KeyCode::Char('j') | KeyCode::Down => popup.cursor = next(popup.cursor, 1, rows),
         KeyCode::Char('k') | KeyCode::Up => popup.cursor = previous(popup.cursor, 1),
         KeyCode::PageDown => popup.cursor = next(popup.cursor, POPUP_PAGE, rows),
         KeyCode::PageUp => popup.cursor = previous(popup.cursor, POPUP_PAGE),
         KeyCode::Home => popup.cursor = 0,
         KeyCode::End => popup.cursor = rows.saturating_sub(1),
+
+        // `g` / `shift-G` jump to top/bottom in the read-only text popups, matching the
+        // table's own Top/Bottom keys. Sort and Skin keep bare letters as jump-to-entry
+        // shortcuts instead, so they are excluded here.
+        KeyCode::Char('g') if matches!(popup.kind, Popup::Log | Popup::Help | Popup::Details) => {
+            popup.cursor = 0;
+        }
+        KeyCode::Char('G') if matches!(popup.kind, Popup::Log | Popup::Help | Popup::Details) => {
+            popup.cursor = rows.saturating_sub(1);
+        }
 
         KeyCode::Enter => {
             let kind = popup.kind;
@@ -935,7 +993,9 @@ fn popup_key(
                     popup.cursor = index;
                 }
             }
-            Popup::Help | Popup::Log => return KeyOutcome::Handled { redraw: false },
+            Popup::Help | Popup::Log | Popup::Details => {
+                return KeyOutcome::Handled { redraw: false };
+            }
         },
 
         _ => return KeyOutcome::Handled { redraw: false },
@@ -962,7 +1022,7 @@ fn popup_rows(state: &ViewState, keymap: &Keymap, popup: &PopupState) -> usize {
         Popup::Sort => SORTABLE.len(),
         Popup::Filter => matching_filters(state, &popup.query).len(),
         Popup::Skin => skins::BUILTIN_NAMES.len(),
-        Popup::Log => popup.lines.len(),
+        Popup::Log | Popup::Details => popup.lines.len(),
         Popup::Help => help_lines(keymap).len(),
     }
 }
@@ -1009,6 +1069,178 @@ pub fn help_lines(keymap: &Keymap) -> Vec<HelpLine> {
                 description: action.description(),
             });
         }
+    }
+    lines
+}
+
+/// Wrap width for the details popup's description.
+///
+/// Not tied to the actual terminal width — like the log popup's lines, this is built
+/// once when the popup opens and merely truncated further at render time if the frame
+/// turns out narrower. Wide enough for the popup's usual share of the body, narrow
+/// enough to read as prose.
+const DETAILS_WRAP_WIDTH: usize = 76;
+
+/// The merge request details popup's content: header fields, then the wrapped
+/// description. Built once when the popup opens, the same pattern as the log popup's
+/// `popup.lines`, so key handling never has to know about a merge request.
+fn detail_lines(mr: &MergeRequest, theme: &Theme) -> Vec<String> {
+    let joined = |items: &[String]| -> String {
+        if items.is_empty() {
+            "none".to_owned()
+        } else {
+            items.join(", ")
+        }
+    };
+
+    let mut lines = vec![
+        format!("{} !{}", mr.project_name, mr.iid),
+        mr.title.clone(),
+        String::new(),
+        format!("Author:      {}", mr.author.username),
+        format!("Branches:    {} -> {}", mr.source_branch, mr.target_branch),
+        format!("State:       {}", mr.state.label()),
+        format!(
+            "Approved:    {}{}",
+            if mr.approved { "yes" } else { "no" },
+            if mr.approved_by.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", mr.approved_by.join(", "))
+            }
+        ),
+        format!(
+            "Assignees:   {}",
+            joined(
+                &mr.assignees
+                    .iter()
+                    .map(|user| user.username.clone())
+                    .collect::<Vec<_>>()
+            )
+        ),
+        format!("Reviewers:   {}", joined(&mr.reviewers)),
+        format!(
+            "Labels:      {}",
+            joined(
+                &mr.labels
+                    .iter()
+                    .map(|label| label.title.clone())
+                    .collect::<Vec<_>>()
+            )
+        ),
+        format!(
+            "Discussions: {} unresolved, {} notes",
+            mr.unresolved_discussions, mr.notes_count
+        ),
+        format!(
+            "Merge:       {}{}",
+            merge_status_label(mr.merge_status),
+            if mr.conflicts { " (conflicts)" } else { "" }
+        ),
+        String::new(),
+        "Description:".to_owned(),
+    ];
+    lines.extend(wrap_description(&mr.description));
+
+    lines
+        .into_iter()
+        .map(|line| theme.ascii_safe(&line).into_owned())
+        .collect()
+}
+
+/// How a [`MergeStatus`] reads in the details popup.
+const fn merge_status_label(status: MergeStatus) -> &'static str {
+    match status {
+        MergeStatus::CanBeMerged => "can be merged",
+        MergeStatus::CannotBeMerged => "cannot be merged",
+        MergeStatus::Checking => "checking",
+        MergeStatus::Unchecked => "unchecked",
+        MergeStatus::Unknown => "unknown",
+    }
+}
+
+/// Strip control characters other than the newlines that separate lines, so a
+/// description with a stray escape sequence or `\r` cannot corrupt the terminal.
+fn sanitize_description(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .chars()
+        .filter(|c| *c == '\n' || !c.is_control())
+        .collect()
+}
+
+/// Wrap a (possibly multi-paragraph) description to [`DETAILS_WRAP_WIDTH`], preserving
+/// blank lines as paragraph breaks.
+fn wrap_description(text: &str) -> Vec<String> {
+    let sanitized = sanitize_description(text);
+    if sanitized.trim().is_empty() {
+        return vec!["(no description)".to_owned()];
+    }
+
+    sanitized
+        .split('\n')
+        .flat_map(|line| {
+            if line.trim().is_empty() {
+                vec![String::new()]
+            } else {
+                wrap_line(line, DETAILS_WRAP_WIDTH)
+            }
+        })
+        .collect()
+}
+
+/// Word-wrap one paragraph to `width` terminal cells, CJK-aware via [`UnicodeWidthStr`],
+/// hard-breaking a single word longer than `width` rather than overflowing it.
+fn wrap_line(line: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![line.to_owned()];
+    }
+
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+
+    for word in line.split_whitespace() {
+        let word_width = word.width();
+
+        if word_width > width {
+            if !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+            }
+            let (mut chunk, mut chunk_width) = (String::new(), 0usize);
+            for ch in word.chars() {
+                let char_width = ch.width().unwrap_or(0);
+                if chunk_width + char_width > width && !chunk.is_empty() {
+                    lines.push(std::mem::take(&mut chunk));
+                    chunk_width = 0;
+                }
+                chunk.push(ch);
+                chunk_width += char_width;
+            }
+            current = chunk;
+            current_width = chunk_width;
+            continue;
+        }
+
+        let needed = if current.is_empty() {
+            word_width
+        } else {
+            current_width + 1 + word_width
+        };
+        if needed > width {
+            lines.push(std::mem::take(&mut current));
+            current_width = 0;
+        }
+        if !current.is_empty() {
+            current.push(' ');
+            current_width += 1;
+        }
+        current.push_str(word);
+        current_width += word_width;
+    }
+
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(current);
     }
     lines
 }
@@ -1066,7 +1298,7 @@ fn apply_popup(state: &mut ViewState, kind: Popup, popup: &PopupState) -> KeyOut
         // Already applied, one preview at a time; Enter is what stops Esc undoing it.
         Popup::Skin => state.flash(format!("skin: {}", state.theme.skin())),
         // Nothing to apply; Enter just closes them.
-        Popup::Help | Popup::Log => {}
+        Popup::Help | Popup::Log | Popup::Details => {}
     }
     KeyOutcome::Handled { redraw: true }
 }
@@ -1961,6 +2193,33 @@ mod tests {
         assert!(!mouse_wheel(&mut state, true));
     }
 
+    /// The wheel scrolls an open popup's cursor rather than the table selection behind
+    /// it, the same distance per notch as the table's own wheel.
+    #[test]
+    fn the_wheel_scrolls_an_open_popup_instead_of_the_table() {
+        let keymap = keymap();
+        let mut state = state_with(rows(1));
+        state.log = LogBuffer::new();
+        let owned: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
+        let borrowed: Vec<&str> = owned.iter().map(String::as_str).collect();
+        state.log.seed(&borrowed);
+        dispatch(&mut state, Action::LogMenu);
+
+        assert_eq!(popup_wheel(&mut state, &keymap, true), Some(true));
+        let cursor_after_up = state.mode.popup_state().unwrap().cursor;
+        assert_eq!(cursor_after_up, 16, "opened at the end, scrolled up 3");
+
+        assert_eq!(popup_wheel(&mut state, &keymap, false), Some(true));
+        assert_eq!(state.mode.popup_state().unwrap().cursor, 19, "back down 3");
+    }
+
+    #[test]
+    fn the_wheel_falls_back_to_the_table_with_no_popup_open() {
+        let keymap = keymap();
+        let mut state = state_with(rows(1));
+        assert_eq!(popup_wheel(&mut state, &keymap, false), None);
+    }
+
     /// Navigation keeps the selection visible: within the fallback window the offset
     /// does not move, and once the cursor reaches the edge margin the window follows so
     /// it never drops out of view.
@@ -2129,6 +2388,81 @@ mod tests {
             dispatch(&mut state, action);
             assert_eq!(state.mode.popup(), Some(expected), "{action:?}");
         }
+    }
+
+    #[test]
+    fn show_details_opens_on_the_selected_merge_request() {
+        let mut state = state_with(rows(1));
+        dispatch(&mut state, Action::Down);
+
+        let (redraw, effect) = dispatch(&mut state, Action::ShowDetails);
+        assert!(redraw);
+        assert_eq!(effect, Effect::None);
+
+        assert_eq!(state.mode.popup(), Some(Popup::Details));
+        let lines = &state.mode.popup_state().unwrap().lines;
+        assert!(lines[0].contains("!482"), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l == "merge request 0"),
+            "title should appear: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("Adds a toggle to the settings page")),
+            "description should appear: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn show_details_does_nothing_without_a_selection() {
+        let mut state = state_with(rows(1));
+        assert_eq!(
+            dispatch(&mut state, Action::ShowDetails),
+            (false, Effect::None)
+        );
+        assert!(state.mode.is_normal());
+    }
+
+    #[test]
+    fn show_details_toggles_closed_with_the_same_key() {
+        let keymap = keymap();
+        let mut state = state_with(rows(1));
+        dispatch(&mut state, Action::Down);
+        dispatch(&mut state, Action::ShowDetails);
+        assert!(state.mode.popup().is_some());
+
+        handle_key(&mut state, &keymap, key(KeyCode::Char('i')));
+        assert!(state.mode.is_normal());
+    }
+
+    /// A long description wraps rather than overflowing the popup, and a blank line in
+    /// it stays a paragraph break.
+    #[test]
+    fn a_long_description_wraps_and_keeps_paragraph_breaks() {
+        let mut row = mr("id-0", "someone");
+        row.description = format!("{}\n\nSecond paragraph.", "word ".repeat(40).trim());
+        let mut state = state_with(vec![row]);
+        dispatch(&mut state, Action::Down);
+
+        dispatch(&mut state, Action::ShowDetails);
+
+        let lines = state.mode.popup_state().unwrap().lines.clone();
+        let description_start = lines
+            .iter()
+            .position(|l| l == "Description:")
+            .expect("description heading");
+        let body = &lines[description_start + 1..];
+
+        assert!(
+            body.iter().all(|l| l.width() <= DETAILS_WRAP_WIDTH),
+            "{body:?}"
+        );
+        assert!(
+            body.iter().any(|l| l.is_empty()),
+            "blank line between paragraphs: {body:?}"
+        );
+        assert!(body.iter().any(|l| l == "Second paragraph."), "{body:?}");
     }
 
     /// Opening on the skin in force is what makes the list read as "you are here", and

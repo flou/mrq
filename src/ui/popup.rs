@@ -45,6 +45,7 @@ const fn title(kind: Popup) -> &'static str {
         Popup::Filter => " Filters ",
         Popup::Skin => " Skin ",
         Popup::Log => " Log ",
+        Popup::Details => " Details ",
     }
 }
 
@@ -70,6 +71,7 @@ pub fn build<'a>(
         Popup::Filter => filter_lines(state, popup, theme, now, inner_width),
         Popup::Skin => skin_lines(popup, theme, inner_width),
         Popup::Log => log_lines(popup, theme, inner_width),
+        Popup::Details => details_lines(popup, theme, inner_width),
     };
 
     let block = theme
@@ -81,15 +83,28 @@ pub fn build<'a>(
 
 /// Take the window of `lines` that keeps `cursor` visible.
 ///
-/// Clipping instead would silently lose the end of a long help screen, and the user has
-/// no way to know there was more.
+/// There are `lines.len()` cursor positions but only `last_start + 1` places the window
+/// can start from, so some positions are inevitably going to share a window — the
+/// question is only where that slack lands. Truncating (`cursor.min(last_start)`) dumps
+/// all of it on the last page: from the bottom, `k` would sit dead for up to
+/// `height - 1` presses before the window actually moved, which reads as a stuck popup
+/// rather than as scrolling up. Scaling `cursor` onto `0..=last_start` instead spreads
+/// that same slack evenly across the whole range, so every direction responds within a
+/// press or two — matching what already happens scrolling down from the top, where
+/// `cursor` and `start` agree exactly because there is no slack down there yet.
+///
+/// Clipping instead of windowing would silently lose the end of a long help screen, and
+/// the user has no way to know there was more.
 fn scroll_to<'a>(lines: Vec<Line<'a>>, cursor: usize, height: usize) -> Vec<Line<'a>> {
     if height == 0 || lines.len() <= height {
         return lines;
     }
 
     let last_start = lines.len() - height;
-    let start = cursor.saturating_sub(height / 2).min(last_start);
+    let last_cursor = lines.len() - 1;
+    // Rounded rather than truncated, so the slack is distributed rather than always
+    // favouring the lower `start` (which would bias every repeat towards not scrolling).
+    let start = (cursor * last_start + last_cursor / 2) / last_cursor;
     lines[start..start + height].to_vec()
 }
 
@@ -295,6 +310,16 @@ fn log_lines<'a>(popup: &PopupState, theme: &Theme, width: usize) -> Vec<Line<'a
         .collect()
 }
 
+/// The merge request details popup: header fields and the wrapped description, exactly
+/// as `action::detail_lines` built them when the popup opened.
+fn details_lines<'a>(popup: &PopupState, theme: &Theme, width: usize) -> Vec<Line<'a>> {
+    popup
+        .lines
+        .iter()
+        .map(|line| row(line.clone(), Role::Normal, theme, false, width))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,6 +386,14 @@ mod tests {
 
     fn press(state: &mut ViewState, code: KeyCode) {
         crate::app::action::handle_key(state, &keymap(), KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    fn press_ctrl(state: &mut ViewState, code: KeyCode) {
+        crate::app::action::handle_key(
+            state,
+            &keymap(),
+            KeyEvent::new(code, KeyModifiers::CONTROL),
+        );
     }
 
     fn rendered(state: &ViewState, width: u16, height: u16) -> Vec<String> {
@@ -619,6 +652,23 @@ mod tests {
         assert!(text(&state).contains("nothing logged yet"));
     }
 
+    #[test]
+    fn the_details_popup_shows_the_selected_merge_request() {
+        let mut state = state();
+        state
+            .tabs
+            .active_mut()
+            .unwrap()
+            .select(Some("a".to_owned()));
+        open(&mut state, Action::ShowDetails);
+
+        let shown = text(&state);
+        assert!(shown.contains("web-app"), "{shown}");
+        assert!(shown.contains("482"), "{shown}");
+        assert!(shown.contains("Add dark mode toggle"), "{shown}");
+        assert!(shown.contains("Description:"), "{shown}");
+    }
+
     /// The log popup shows the last 50 lines, which is the ring's capacity.
     #[test]
     fn the_log_popup_snapshots_the_ring_when_it_opens() {
@@ -657,8 +707,14 @@ mod tests {
             Action::FilterMenu,
             Action::SkinMenu,
             Action::LogMenu,
+            Action::ShowDetails,
         ] {
             let mut state = state();
+            state
+                .tabs
+                .active_mut()
+                .unwrap()
+                .select(Some("a".to_owned()));
             open(&mut state, action);
             assert!(state.mode.popup().is_some());
 
@@ -687,6 +743,44 @@ mod tests {
         );
 
         assert_eq!(scroll_to(lines, 0, 0).len(), 40, "no height, no window");
+    }
+
+    /// The window has to follow the very first cursor step, with no dead zone — a popup
+    /// with no highlighted cursor (Log, Help, Details) would otherwise look stuck for a
+    /// press or two before the content visibly moves.
+    #[test]
+    fn the_window_follows_the_cursor_from_the_first_step() {
+        let lines: Vec<Line> = (0..40)
+            .map(|i| Line::from(Span::raw(format!("line {i}"))))
+            .collect();
+
+        let after_one_step = scroll_to(lines, 1, 10);
+        assert_eq!(
+            after_one_step[0].to_string(),
+            "line 1",
+            "no dead zone: the very first cursor step already scrolls the window"
+        );
+    }
+
+    /// The mirror of the test above: scrolling *up* from the last line must respond just
+    /// as fast as scrolling down from the first one does. Truncating `cursor` at
+    /// `last_start` used to dump the whole compression on this end, so `k` right after
+    /// `shift-G` sat dead for several presses before the window actually moved.
+    #[test]
+    fn the_window_follows_the_cursor_up_from_the_last_line_too() {
+        let lines: Vec<Line> = (0..40)
+            .map(|i| Line::from(Span::raw(format!("line {i}"))))
+            .collect();
+
+        let at_the_end = scroll_to(lines.clone(), 39, 10);
+        assert_eq!(at_the_end.last().unwrap().to_string(), "line 39");
+
+        let after_one_step_up = scroll_to(lines, 38, 10);
+        assert_ne!(
+            after_one_step_up.last().unwrap().to_string(),
+            "line 39",
+            "no dead zone: the very first step up from the end already scrolls the window"
+        );
     }
 
     /// The help popup's cursor is bounded by the lines it actually has. Left unbounded,
@@ -734,6 +828,66 @@ mod tests {
             shown.contains("line 19"),
             "the newest line is visible: {shown}"
         );
+    }
+
+    /// ctrl-d / ctrl-u page a popup exactly like the named PageDown/PageUp keys.
+    #[test]
+    fn ctrl_d_and_ctrl_u_page_the_log_popup() {
+        let lines: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+
+        let mut state = state();
+        state.log.seed(&refs);
+        open(&mut state, Action::LogMenu);
+        assert_eq!(state.mode.popup_state().unwrap().cursor, 19);
+
+        press_ctrl(&mut state, KeyCode::Char('u'));
+        assert_eq!(state.mode.popup_state().unwrap().cursor, 9);
+
+        press_ctrl(&mut state, KeyCode::Char('d'));
+        assert_eq!(state.mode.popup_state().unwrap().cursor, 19);
+    }
+
+    /// `g` / `shift-G` jump to the top and bottom of a read-only text popup.
+    #[test]
+    fn g_and_shift_g_jump_to_the_ends_of_the_log_popup() {
+        let lines: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+
+        let mut state = state();
+        state.log.seed(&refs);
+        open(&mut state, Action::LogMenu);
+
+        press(&mut state, KeyCode::Char('g'));
+        assert_eq!(state.mode.popup_state().unwrap().cursor, 0);
+
+        press(&mut state, KeyCode::Char('G'));
+        assert_eq!(state.mode.popup_state().unwrap().cursor, 19);
+    }
+
+    /// `g` still jumps to a matching skin name rather than to the top of the list — the
+    /// letter shortcut and the read-only popups' Top binding must not collide.
+    #[test]
+    fn g_still_jumps_to_a_skin_by_letter() {
+        let mut state = state();
+        open(&mut state, Action::SkinMenu);
+
+        press(&mut state, KeyCode::Char('g'));
+
+        let cursor = state.mode.popup_state().unwrap().cursor;
+        assert_eq!(crate::ui::skins::BUILTIN_NAMES[cursor], "gruvbox-dark");
+    }
+
+    /// Same for Sort: `d` must still jump to the `DIFF` column, not page down.
+    #[test]
+    fn d_still_jumps_to_a_sort_column_by_letter() {
+        let mut state = state();
+        open(&mut state, Action::SortMenu);
+
+        press(&mut state, KeyCode::Char('d'));
+
+        let cursor = state.mode.popup_state().unwrap().cursor;
+        assert_eq!(SORTABLE[cursor], Column::Diff);
     }
 
     /// One structure feeds both the renderer and the scroll bound, so they cannot drift.

@@ -195,6 +195,7 @@ scope = "assigned"
 # open_project    = ["shift-O"]
 # copy_url        = ["y"]
 # copy_branch     = ["shift-Y"]
+# show_details    = ["i"]
 # toggle_drafts   = ["d"]
 # toggle_wide     = ["w"]
 # sort_menu       = ["shift-S"]

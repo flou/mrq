@@ -366,13 +366,15 @@ impl App {
 
     /// A mouse event inside the table, when `[ui].mouse` is on.
     ///
-    /// Wheel scrolls the cursor; a click selects the row under it, and a click on the
-    /// title cell also opens that merge request. Everything else — hover, drag, the
-    /// other buttons — changes nothing.
+    /// Wheel scrolls the cursor — or an open popup, if one has the keyboard; a click
+    /// selects the row under it, and a click on the title cell also opens that merge
+    /// request. Everything else — hover, drag, the other buttons — changes nothing.
     fn handle_mouse(&mut self, event: MouseEvent) -> bool {
         match event.kind {
-            MouseEventKind::ScrollUp => action::mouse_wheel(&mut self.view, true),
-            MouseEventKind::ScrollDown => action::mouse_wheel(&mut self.view, false),
+            MouseEventKind::ScrollUp => action::popup_wheel(&mut self.view, &self.keymap, true)
+                .unwrap_or_else(|| action::mouse_wheel(&mut self.view, true)),
+            MouseEventKind::ScrollDown => action::popup_wheel(&mut self.view, &self.keymap, false)
+                .unwrap_or_else(|| action::mouse_wheel(&mut self.view, false)),
             MouseEventKind::Up(MouseButton::Left) => {
                 // One terminal size query for both checks below, rather than one each.
                 let Some(area) = self.table_area() else {

@@ -153,6 +153,7 @@ fn mr_fields(fragment: &Fragment) -> String {
         ("id", "id".into(), false),
         ("iid", "iid".into(), false),
         ("title", "title".into(), false),
+        ("description", "description".into(), false),
         ("webUrl", "webUrl".into(), false),
         ("draft", "draft".into(), false),
         ("state", "state".into(), false),
@@ -653,6 +654,7 @@ mod tests {
             "id",
             "iid",
             "title",
+            "description",
             "webUrl",
             "draft",
             "state",
@@ -696,6 +698,7 @@ mod tests {
         for kept in [
             "id",
             "title",
+            "description",
             "webUrl",
             "updatedAt",
             "diffStatsSummary",

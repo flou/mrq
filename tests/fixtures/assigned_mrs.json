@@ -11,6 +11,7 @@
             "id": "gid://gitlab/MergeRequest/177284",
             "iid": "3658",
             "title": "Fixture merge request 1",
+            "description": "Fixture description for merge request 1.",
             "webUrl": "https://gitlab.example.com/group1/sub/project-1/-/merge_requests/3658",
             "draft": false,
             "state": "opened",

@@ -230,6 +230,9 @@ pub struct MergeRequest {
     pub project_path: String,
     pub project_name: String,
     pub title: String,
+    /// Missing from caches written before this field existed.
+    #[serde(default)]
+    pub description: String,
     pub web_url: String,
     pub draft: bool,
     pub state: MrState,
@@ -382,6 +385,7 @@ pub(crate) mod fixtures {
             project_path: "acme/web/web-app".to_owned(),
             project_name: "web-app".to_owned(),
             title: "Add dark mode toggle".to_owned(),
+            description: "Adds a toggle to the settings page and persists the choice.".to_owned(),
             web_url: format!(
                 "https://gitlab.example.com/acme/web/web-app/-/merge_requests/482/{id}"
             ),

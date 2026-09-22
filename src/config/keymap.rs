@@ -37,6 +37,7 @@ pub enum Action {
     OpenProject,
     CopyUrl,
     CopyBranch,
+    ShowDetails,
     ToggleDrafts,
     ToggleWide,
     SortMenu,
@@ -83,7 +84,7 @@ impl Category {
 
 impl Action {
     /// Every action, in help-popup order.
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 27] = [
         Self::Down,
         Self::Up,
         Self::PageDown,
@@ -95,6 +96,7 @@ impl Action {
         Self::OpenProject,
         Self::CopyUrl,
         Self::CopyBranch,
+        Self::ShowDetails,
         Self::ToggleDrafts,
         Self::ToggleWide,
         Self::SortMenu,
@@ -129,6 +131,7 @@ impl Action {
             Self::OpenProject => "open_project",
             Self::CopyUrl => "copy_url",
             Self::CopyBranch => "copy_branch",
+            Self::ShowDetails => "show_details",
             Self::ToggleDrafts => "toggle_drafts",
             Self::ToggleWide => "toggle_wide",
             Self::SortMenu => "sort_menu",
@@ -165,6 +168,7 @@ impl Action {
             Self::OpenProject => "Open the project",
             Self::CopyUrl => "Copy the merge request URL",
             Self::CopyBranch => "Copy the source branch name",
+            Self::ShowDetails => "Show merge request details",
             Self::ToggleDrafts => "Show or hide drafts",
             Self::ToggleWide => "Show or hide wide-only columns",
             Self::SortMenu => "Choose the sort column",
@@ -189,7 +193,8 @@ impl Action {
             | Self::OpenPipeline
             | Self::OpenProject
             | Self::CopyUrl
-            | Self::CopyBranch => Category::Actions,
+            | Self::CopyBranch
+            | Self::ShowDetails => Category::Actions,
             Self::ToggleDrafts
             | Self::ToggleWide
             | Self::SortMenu
@@ -468,6 +473,7 @@ pub const DEFAULT_BINDINGS: &[(Action, &[&str])] = &[
     (Action::OpenProject, &["shift-O"]),
     (Action::CopyUrl, &["y"]),
     (Action::CopyBranch, &["shift-Y"]),
+    (Action::ShowDetails, &["i"]),
     (Action::ToggleDrafts, &["d"]),
     (Action::ToggleWide, &["w"]),
     (Action::SortMenu, &["shift-S"]),
@@ -696,6 +702,7 @@ mod tests {
             ("shift-O", Action::OpenProject),
             ("y", Action::CopyUrl),
             ("shift-Y", Action::CopyBranch),
+            ("i", Action::ShowDetails),
             ("d", Action::ToggleDrafts),
             ("w", Action::ToggleWide),
             ("shift-S", Action::SortMenu),
