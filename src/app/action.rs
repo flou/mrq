@@ -17,17 +17,16 @@
 
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-
 use crate::app::state::Tabs;
 use crate::config::keymap::{Action, Keymap};
 use crate::config::schema::Column;
 use crate::gitlab::fetch::Snapshot;
 use crate::gitlab::model::{MergeRequest, MergeStatus};
 use crate::logging::LogBuffer;
+use crate::ui::markdown;
 use crate::ui::skins;
-use crate::ui::theme::Theme;
+use crate::ui::theme::{Role, Theme};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Which overlay, if any, currently has the keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +72,8 @@ pub struct PopupState {
     /// Snapshotted rather than read live: the buffer keeps filling while the popup is
     /// open, and a list that grows under the cursor cannot be read.
     pub lines: Vec<String>,
+    /// The details popup's markdown-rendered description, built once when it opens.
+    pub styled: Vec<markdown::StyledLine>,
     /// The skin that was in force when the picker opened.
     ///
     /// The picker previews as the cursor moves, so cancelling has to put back something,
@@ -87,6 +88,7 @@ impl PopupState {
             cursor: 0,
             query: String::new(),
             lines: Vec::new(),
+            styled: Vec::new(),
             previous_skin: None,
         }
     }
@@ -686,7 +688,7 @@ pub fn dispatch(state: &mut ViewState, action: Action) -> (bool, Effect) {
         Action::ShowDetails => match state.selected() {
             Some(mr) => {
                 let mut popup = PopupState::new(Popup::Details);
-                popup.lines = detail_lines(&mr, &state.theme);
+                popup.styled = detail_lines(&mr, &state.theme);
                 state.mode = Mode::Popup(popup);
                 (true, Effect::None)
             }
@@ -1022,7 +1024,8 @@ fn popup_rows(state: &ViewState, keymap: &Keymap, popup: &PopupState) -> usize {
         Popup::Sort => SORTABLE.len(),
         Popup::Filter => matching_filters(state, &popup.query).len(),
         Popup::Skin => skins::BUILTIN_NAMES.len(),
-        Popup::Log | Popup::Details => popup.lines.len(),
+        Popup::Log => popup.lines.len(),
+        Popup::Details => popup.styled.len(),
         Popup::Help => help_lines(keymap).len(),
     }
 }
@@ -1081,10 +1084,11 @@ pub fn help_lines(keymap: &Keymap) -> Vec<HelpLine> {
 /// enough to read as prose.
 const DETAILS_WRAP_WIDTH: usize = 76;
 
-/// The merge request details popup's content: header fields, then the wrapped
-/// description. Built once when the popup opens, the same pattern as the log popup's
-/// `popup.lines`, so key handling never has to know about a merge request.
-fn detail_lines(mr: &MergeRequest, theme: &Theme) -> Vec<String> {
+/// The merge request details popup's content: header fields as plain lines, then the
+/// description rendered as markdown. Built once when the popup opens, the same pattern
+/// as the log popup's `popup.lines`, so key handling never has to know about a merge
+/// request.
+fn detail_lines(mr: &MergeRequest, theme: &Theme) -> Vec<markdown::StyledLine> {
     let joined = |items: &[String]| -> String {
         if items.is_empty() {
             "none".to_owned()
@@ -1093,14 +1097,24 @@ fn detail_lines(mr: &MergeRequest, theme: &Theme) -> Vec<String> {
         }
     };
 
+    let plain = |text: String| {
+        vec![markdown::Segment {
+            role: Role::Normal,
+            text,
+        }]
+    };
+
     let mut lines = vec![
-        format!("{} !{}", mr.project_name, mr.iid),
-        mr.title.clone(),
-        String::new(),
-        format!("Author:      {}", mr.author.username),
-        format!("Branches:    {} -> {}", mr.source_branch, mr.target_branch),
-        format!("State:       {}", mr.state.label()),
-        format!(
+        plain(format!("{} !{}", mr.project_name, mr.iid)),
+        plain(mr.title.clone()),
+        Vec::new(),
+        plain(format!("Author:      {}", mr.author.username)),
+        plain(format!(
+            "Branches:    {} -> {}",
+            mr.source_branch, mr.target_branch
+        )),
+        plain(format!("State:       {}", mr.state.label())),
+        plain(format!(
             "Approved:    {}{}",
             if mr.approved { "yes" } else { "no" },
             if mr.approved_by.is_empty() {
@@ -1108,8 +1122,8 @@ fn detail_lines(mr: &MergeRequest, theme: &Theme) -> Vec<String> {
             } else {
                 format!(" ({})", mr.approved_by.join(", "))
             }
-        ),
-        format!(
+        )),
+        plain(format!(
             "Assignees:   {}",
             joined(
                 &mr.assignees
@@ -1117,9 +1131,9 @@ fn detail_lines(mr: &MergeRequest, theme: &Theme) -> Vec<String> {
                     .map(|user| user.username.clone())
                     .collect::<Vec<_>>()
             )
-        ),
-        format!("Reviewers:   {}", joined(&mr.reviewers)),
-        format!(
+        )),
+        plain(format!("Reviewers:   {}", joined(&mr.reviewers))),
+        plain(format!(
             "Labels:      {}",
             joined(
                 &mr.labels
@@ -1127,24 +1141,34 @@ fn detail_lines(mr: &MergeRequest, theme: &Theme) -> Vec<String> {
                     .map(|label| label.title.clone())
                     .collect::<Vec<_>>()
             )
-        ),
-        format!(
+        )),
+        plain(format!(
             "Discussions: {} unresolved, {} notes",
             mr.unresolved_discussions, mr.notes_count
-        ),
-        format!(
+        )),
+        plain(format!(
             "Merge:       {}{}",
             merge_status_label(mr.merge_status),
             if mr.conflicts { " (conflicts)" } else { "" }
-        ),
-        String::new(),
-        "Description:".to_owned(),
+        )),
+        Vec::new(),
+        vec![markdown::Segment {
+            role: Role::Header,
+            text: "Description:".to_owned(),
+        }],
     ];
-    lines.extend(wrap_description(&mr.description));
+    lines.extend(markdown::render(&mr.description, DETAILS_WRAP_WIDTH));
 
     lines
         .into_iter()
-        .map(|line| theme.ascii_safe(&line).into_owned())
+        .map(|line| {
+            line.into_iter()
+                .map(|segment| markdown::Segment {
+                    role: segment.role,
+                    text: theme.ascii_safe(&segment.text).into_owned(),
+                })
+                .collect()
+        })
         .collect()
 }
 
@@ -1157,92 +1181,6 @@ const fn merge_status_label(status: MergeStatus) -> &'static str {
         MergeStatus::Unchecked => "unchecked",
         MergeStatus::Unknown => "unknown",
     }
-}
-
-/// Strip control characters other than the newlines that separate lines, so a
-/// description with a stray escape sequence or `\r` cannot corrupt the terminal.
-fn sanitize_description(text: &str) -> String {
-    text.replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .chars()
-        .filter(|c| *c == '\n' || !c.is_control())
-        .collect()
-}
-
-/// Wrap a (possibly multi-paragraph) description to [`DETAILS_WRAP_WIDTH`], preserving
-/// blank lines as paragraph breaks.
-fn wrap_description(text: &str) -> Vec<String> {
-    let sanitized = sanitize_description(text);
-    if sanitized.trim().is_empty() {
-        return vec!["(no description)".to_owned()];
-    }
-
-    sanitized
-        .split('\n')
-        .flat_map(|line| {
-            if line.trim().is_empty() {
-                vec![String::new()]
-            } else {
-                wrap_line(line, DETAILS_WRAP_WIDTH)
-            }
-        })
-        .collect()
-}
-
-/// Word-wrap one paragraph to `width` terminal cells, CJK-aware via [`UnicodeWidthStr`],
-/// hard-breaking a single word longer than `width` rather than overflowing it.
-fn wrap_line(line: &str, width: usize) -> Vec<String> {
-    if width == 0 {
-        return vec![line.to_owned()];
-    }
-
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    let mut current_width = 0usize;
-
-    for word in line.split_whitespace() {
-        let word_width = word.width();
-
-        if word_width > width {
-            if !current.is_empty() {
-                lines.push(std::mem::take(&mut current));
-            }
-            let (mut chunk, mut chunk_width) = (String::new(), 0usize);
-            for ch in word.chars() {
-                let char_width = ch.width().unwrap_or(0);
-                if chunk_width + char_width > width && !chunk.is_empty() {
-                    lines.push(std::mem::take(&mut chunk));
-                    chunk_width = 0;
-                }
-                chunk.push(ch);
-                chunk_width += char_width;
-            }
-            current = chunk;
-            current_width = chunk_width;
-            continue;
-        }
-
-        let needed = if current.is_empty() {
-            word_width
-        } else {
-            current_width + 1 + word_width
-        };
-        if needed > width {
-            lines.push(std::mem::take(&mut current));
-            current_width = 0;
-        }
-        if !current.is_empty() {
-            current.push(' ');
-            current_width += 1;
-        }
-        current.push_str(word);
-        current_width += word_width;
-    }
-
-    if !current.is_empty() || lines.is_empty() {
-        lines.push(current);
-    }
-    lines
 }
 
 fn next(cursor: usize, by: usize, rows: usize) -> usize {
@@ -1339,9 +1277,15 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::collections::BTreeMap;
     use std::time::Instant;
+    use unicode_width::UnicodeWidthStr;
 
     fn keymap() -> Keymap {
         crate::config::keymap::resolve(&BTreeMap::new()).unwrap()
+    }
+
+    /// A rendered markdown line's plain text, for tests that only care about content.
+    fn joined(line: &markdown::StyledLine) -> String {
+        line.iter().map(|segment| segment.text.as_str()).collect()
     }
 
     fn state_with(rows: Vec<MergeRequest>) -> ViewState {
@@ -2400,7 +2344,14 @@ mod tests {
         assert_eq!(effect, Effect::None);
 
         assert_eq!(state.mode.popup(), Some(Popup::Details));
-        let lines = &state.mode.popup_state().unwrap().lines;
+        let lines: Vec<String> = state
+            .mode
+            .popup_state()
+            .unwrap()
+            .styled
+            .iter()
+            .map(joined)
+            .collect();
         assert!(lines[0].contains("!482"), "{lines:?}");
         assert!(
             lines.iter().any(|l| l == "merge request 0"),
@@ -2447,22 +2398,27 @@ mod tests {
 
         dispatch(&mut state, Action::ShowDetails);
 
-        let lines = state.mode.popup_state().unwrap().lines.clone();
-        let description_start = lines
+        let styled = state.mode.popup_state().unwrap().styled.clone();
+        let description_start = styled
             .iter()
-            .position(|l| l == "Description:")
+            .position(|l| joined(l) == "Description:")
             .expect("description heading");
-        let body = &lines[description_start + 1..];
+        let body = &styled[description_start + 1..];
+        let body_text: Vec<String> = body.iter().map(joined).collect();
 
         assert!(
-            body.iter().all(|l| l.width() <= DETAILS_WRAP_WIDTH),
-            "{body:?}"
+            body.iter()
+                .all(|l| l.iter().map(|s| s.text.width()).sum::<usize>() <= DETAILS_WRAP_WIDTH),
+            "{body_text:?}"
         );
         assert!(
             body.iter().any(|l| l.is_empty()),
-            "blank line between paragraphs: {body:?}"
+            "blank line between paragraphs: {body_text:?}"
         );
-        assert!(body.iter().any(|l| l == "Second paragraph."), "{body:?}");
+        assert!(
+            body_text.iter().any(|l| l == "Second paragraph."),
+            "{body_text:?}"
+        );
     }
 
     /// Opening on the skin in force is what makes the list read as "you are here", and

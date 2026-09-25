@@ -310,14 +310,33 @@ fn log_lines<'a>(popup: &PopupState, theme: &Theme, width: usize) -> Vec<Line<'a
         .collect()
 }
 
-/// The merge request details popup: header fields and the wrapped description, exactly
-/// as `action::detail_lines` built them when the popup opened.
+/// The merge request details popup: header fields and the markdown-rendered description,
+/// exactly as `action::detail_lines` built them when the popup opened.
 fn details_lines<'a>(popup: &PopupState, theme: &Theme, width: usize) -> Vec<Line<'a>> {
     popup
-        .lines
+        .styled
         .iter()
-        .map(|line| row(line.clone(), Role::Normal, theme, false, width))
+        .map(|line| styled_row(line, theme, width))
         .collect()
+}
+
+/// One rendered markdown line, truncated across its segments so the popup never wraps
+/// past `width` regardless of how many styled runs a line was split into.
+fn styled_row<'a>(line: &[crate::ui::markdown::Segment], theme: &Theme, width: usize) -> Line<'a> {
+    let mut spans = Vec::new();
+    let mut used = 0usize;
+
+    for segment in line {
+        if used >= width {
+            break;
+        }
+        let remaining = width - used;
+        let text = truncate(&segment.text, remaining, theme.ellipsis());
+        used += text.width();
+        spans.push(Span::styled(text, theme.style(segment.role)));
+    }
+
+    Line::from(spans)
 }
 
 #[cfg(test)]

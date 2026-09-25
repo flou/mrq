@@ -134,6 +134,7 @@ impl World {
             cursor: 0,
             query: String::new(),
             lines: vec!["2026-09-11T11:59:48Z  INFO mrq: refreshing Assigned".to_owned()],
+            styled: Vec::new(),
             previous_skin: None,
         });
         self
@@ -360,6 +361,7 @@ fn a_popup_opening_and_closing_never_leaves_a_hyperlink_open() {
         cursor: 0,
         query: String::new(),
         lines: Vec::new(),
+        styled: Vec::new(),
         previous_skin: None,
     });
     draw(&mut terminal, &world);

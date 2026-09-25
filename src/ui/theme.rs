@@ -46,8 +46,16 @@ pub enum Role {
     Removed,
     /// A link or an actionable hint.
     Accent,
-    /// The gutter marker on the selected row.
+    /// The gutter marker on the selected row, and a markdown list marker.
     Marker,
+    /// Inline or fenced markdown code.
+    Code,
+    /// A markdown link.
+    Link,
+    /// Markdown `**bold**`.
+    Strong,
+    /// Markdown `*italic*`.
+    Emphasis,
 }
 
 /// A resolved theme: the skin's palette, the depth it is rendered at, and whether glyphs
@@ -172,7 +180,23 @@ impl Theme {
                 // With no colour, DIM is the only way to de-emphasise.
                 None => style.add_modifier(Modifier::DIM),
             },
-            _ => match self.colour(role) {
+            Role::Link => match self.colour(role) {
+                Some(colour) => style.fg(colour).add_modifier(Modifier::UNDERLINED),
+                None => style.add_modifier(Modifier::UNDERLINED),
+            },
+            Role::Strong => style.add_modifier(Modifier::BOLD),
+            Role::Emphasis => style.add_modifier(Modifier::ITALIC),
+            Role::Normal
+            | Role::Border
+            | Role::Success
+            | Role::Failure
+            | Role::Pending
+            | Role::Warning
+            | Role::Added
+            | Role::Removed
+            | Role::Accent
+            | Role::Marker
+            | Role::Code => match self.colour(role) {
                 Some(colour) => style.fg(colour),
                 None => style,
             },
@@ -218,8 +242,11 @@ impl Theme {
             // Not yellow, or a conflicted merge request and a pending pipeline would be
             // the same colour — and they mean opposite things about whether to look.
             Role::Warning => skin.peach,
-            Role::Accent => skin.sapphire,
+            Role::Accent | Role::Link => skin.sapphire,
             Role::Marker => skin.yellow,
+            Role::Code => skin.teal,
+            // Bold/italic carry the meaning; the colour underneath is body text.
+            Role::Strong | Role::Emphasis => skin.text,
         }
     }
 
@@ -227,13 +254,14 @@ impl Theme {
     /// adapts, and overriding it is how text ends up invisible.
     const fn ansi16(&self, role: Role) -> Color {
         match role {
-            Role::Normal | Role::Selection => Color::Reset,
+            Role::Normal | Role::Selection | Role::Strong | Role::Emphasis => Color::Reset,
             Role::Dim | Role::Border => Color::DarkGray,
             Role::Header => Color::Cyan,
             Role::Success | Role::Added => Color::Green,
             Role::Failure | Role::Removed => Color::Red,
             Role::Pending | Role::Warning | Role::Marker | Role::ColumnHeader => Color::Yellow,
-            Role::Accent => Color::Blue,
+            Role::Accent | Role::Link => Color::Blue,
+            Role::Code => Color::Magenta,
         }
     }
 
@@ -540,7 +568,7 @@ mod tests {
         }
     }
 
-    const ALL_ROLES: [Role; 13] = [
+    const ALL_ROLES: [Role; 18] = [
         Role::Normal,
         Role::Dim,
         Role::Header,
@@ -554,6 +582,11 @@ mod tests {
         Role::Added,
         Role::Removed,
         Role::Accent,
+        Role::Marker,
+        Role::Code,
+        Role::Link,
+        Role::Strong,
+        Role::Emphasis,
     ];
 
     const ALL_STATUSES: [PipelineStatus; 11] = [
@@ -1028,6 +1061,7 @@ mod tests {
         let sources = [
             ("ui/columns.rs", include_str!("columns.rs")),
             ("ui/layout.rs", include_str!("layout.rs")),
+            ("ui/markdown.rs", include_str!("markdown.rs")),
             ("ui/mod.rs", include_str!("mod.rs")),
             ("ui/popup.rs", include_str!("popup.rs")),
             ("ui/statusbar.rs", include_str!("statusbar.rs")),
