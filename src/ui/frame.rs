@@ -16,7 +16,9 @@ use jiff::Timestamp;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
-use crate::app::action::{HALF_PAGE_VIEWPORT, Mode, Popup, PopupState, ViewState};
+use crate::app::action::{
+    DEFAULT_POPUP_WIDTH, HALF_PAGE_VIEWPORT, Mode, Popup, PopupState, ViewState,
+};
 use crate::app::state::Tabs;
 use crate::config::keymap::{self, Keymap};
 use crate::config::schema::{Column, Config, Filter, Scope, Sort};
@@ -113,6 +115,7 @@ impl World {
             flash: None,
             log: LogBuffer::new(),
             viewport: HALF_PAGE_VIEWPORT,
+            popup_width: DEFAULT_POPUP_WIDTH,
         };
 
         let all = rows();
@@ -135,6 +138,7 @@ impl World {
             query: String::new(),
             lines: vec!["2026-09-11T11:59:48Z  INFO mrq: refreshing Assigned".to_owned()],
             styled: Vec::new(),
+            source: None,
             previous_skin: None,
         });
         self
@@ -362,6 +366,7 @@ fn a_popup_opening_and_closing_never_leaves_a_hyperlink_open() {
         query: String::new(),
         lines: Vec::new(),
         styled: Vec::new(),
+        source: None,
         previous_skin: None,
     });
     draw(&mut terminal, &world);

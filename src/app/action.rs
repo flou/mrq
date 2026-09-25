@@ -72,8 +72,16 @@ pub struct PopupState {
     /// Snapshotted rather than read live: the buffer keeps filling while the popup is
     /// open, and a list that grows under the cursor cannot be read.
     pub lines: Vec<String>,
-    /// The details popup's markdown-rendered description, built once when it opens.
+    /// The details popup's markdown-rendered description, rebuilt whenever the popup's
+    /// width changes (see [`resize_popup`]).
     pub styled: Vec<markdown::StyledLine>,
+    /// The merge request behind the details popup, kept so [`resize_popup`] can re-wrap
+    /// `styled` when the popup's width changes. Every other popup leaves this `None`.
+    ///
+    /// Boxed: `MergeRequest` is large enough on its own that an unboxed `Option` here
+    /// would push `PopupState`, and so `Mode`, well past clippy's large-enum-variant
+    /// threshold.
+    pub source: Option<Box<MergeRequest>>,
     /// The skin that was in force when the picker opened.
     ///
     /// The picker previews as the cursor moves, so cancelling has to put back something,
@@ -89,6 +97,7 @@ impl PopupState {
             query: String::new(),
             lines: Vec::new(),
             styled: Vec::new(),
+            source: None,
             previous_skin: None,
         }
     }
@@ -170,6 +179,13 @@ pub struct ViewState {
     /// it at startup, on a resize and on every frame; [`HALF_PAGE_VIEWPORT`] stands in
     /// until the first of those.
     pub viewport: usize,
+    /// The popup's live text width, for wrapping the details description to it.
+    ///
+    /// Also a renderer fact the action layer cannot ask the terminal for itself. `App`
+    /// writes it the same way it writes `viewport` — at startup, on a resize and on every
+    /// frame — and [`resize_popup`] re-wraps the open details popup whenever it changes.
+    /// [`DEFAULT_POPUP_WIDTH`] stands in until the first of those.
+    pub popup_width: usize,
 }
 
 /// The columns the sort menu offers, in menu order.
@@ -688,7 +704,8 @@ pub fn dispatch(state: &mut ViewState, action: Action) -> (bool, Effect) {
         Action::ShowDetails => match state.selected() {
             Some(mr) => {
                 let mut popup = PopupState::new(Popup::Details);
-                popup.styled = detail_lines(&mr, &state.theme);
+                popup.styled = detail_lines(&mr, &state.theme, state.popup_width);
+                popup.source = Some(Box::new(mr));
                 state.mode = Mode::Popup(popup);
                 (true, Effect::None)
             }
@@ -1030,6 +1047,36 @@ fn popup_rows(state: &ViewState, keymap: &Keymap, popup: &PopupState) -> usize {
     }
 }
 
+/// Record the popup's live text width, and re-wrap an open details popup to it.
+///
+/// `App` calls this at startup, on a resize and on every frame — the same way it keeps
+/// `viewport` current — because the action layer cannot ask the terminal itself. A no-op
+/// when the width has not actually changed, so a rebuild does not happen on every frame.
+pub fn resize_popup(state: &mut ViewState, width: usize) {
+    if state.popup_width == width {
+        return;
+    }
+    state.popup_width = width;
+
+    let Mode::Popup(popup) = &state.mode else {
+        return;
+    };
+    if popup.kind != Popup::Details {
+        return;
+    }
+    let Some(mr) = popup.source.clone() else {
+        return;
+    };
+
+    // Cloned out before rebuilding: `detail_lines` needs `&state.theme` while `popup` is
+    // still borrowed mutably below, and this only runs on an actual width change.
+    let styled = detail_lines(&mr, &state.theme, width);
+    if let Mode::Popup(popup) = &mut state.mode {
+        popup.cursor = popup.cursor.min(styled.len().saturating_sub(1));
+        popup.styled = styled;
+    }
+}
+
 /// One line of the help popup, before it is styled or truncated.
 ///
 /// Built here rather than in the renderer so the key handler can count the lines it is
@@ -1076,19 +1123,15 @@ pub fn help_lines(keymap: &Keymap) -> Vec<HelpLine> {
     lines
 }
 
-/// Wrap width for the details popup's description.
-///
-/// Not tied to the actual terminal width — like the log popup's lines, this is built
-/// once when the popup opens and merely truncated further at render time if the frame
-/// turns out narrower. Wide enough for the popup's usual share of the body, narrow
-/// enough to read as prose.
-const DETAILS_WRAP_WIDTH: usize = 76;
+/// Fallback wrap width for the details popup's description, before `ViewState.popup_width`
+/// has been set to the real one — the same role [`HALF_PAGE_VIEWPORT`] plays for `viewport`.
+pub const DEFAULT_POPUP_WIDTH: usize = 90;
 
 /// The merge request details popup's content: header fields as plain lines, then the
-/// description rendered as markdown. Built once when the popup opens, the same pattern
-/// as the log popup's `popup.lines`, so key handling never has to know about a merge
-/// request.
-fn detail_lines(mr: &MergeRequest, theme: &Theme) -> Vec<markdown::StyledLine> {
+/// description rendered as markdown wrapped to `width`. Rebuilt whenever the popup's
+/// width changes (see [`resize_popup`]), the same pattern as the log popup's
+/// `popup.lines`, so key handling never has to know about a merge request.
+fn detail_lines(mr: &MergeRequest, theme: &Theme, width: usize) -> Vec<markdown::StyledLine> {
     let joined = |items: &[String]| -> String {
         if items.is_empty() {
             "none".to_owned()
@@ -1157,7 +1200,7 @@ fn detail_lines(mr: &MergeRequest, theme: &Theme) -> Vec<markdown::StyledLine> {
             text: "Description:".to_owned(),
         }],
     ];
-    lines.extend(markdown::render(&mr.description, DETAILS_WRAP_WIDTH));
+    lines.extend(markdown::render(&mr.description, width));
 
     lines
         .into_iter()
@@ -1311,6 +1354,7 @@ mod tests {
             flash: None,
             log: LogBuffer::new(),
             viewport: HALF_PAGE_VIEWPORT,
+            popup_width: DEFAULT_POPUP_WIDTH,
         }
     }
 
@@ -2394,6 +2438,7 @@ mod tests {
         let mut row = mr("id-0", "someone");
         row.description = format!("{}\n\nSecond paragraph.", "word ".repeat(40).trim());
         let mut state = state_with(vec![row]);
+        state.popup_width = 30;
         dispatch(&mut state, Action::Down);
 
         dispatch(&mut state, Action::ShowDetails);
@@ -2408,7 +2453,7 @@ mod tests {
 
         assert!(
             body.iter()
-                .all(|l| l.iter().map(|s| s.text.width()).sum::<usize>() <= DETAILS_WRAP_WIDTH),
+                .all(|l| l.iter().map(|s| s.text.width()).sum::<usize>() <= state.popup_width),
             "{body_text:?}"
         );
         assert!(
@@ -2419,6 +2464,65 @@ mod tests {
             body_text.iter().any(|l| l == "Second paragraph."),
             "{body_text:?}"
         );
+    }
+
+    /// A narrower popup re-wraps the open description to the new width, not just the
+    /// header lines around it — the whole point of tracking the popup's live width.
+    #[test]
+    fn resize_popup_rewraps_the_open_details_description() {
+        let mut row = mr("id-0", "someone");
+        row.description = "word ".repeat(40).trim().to_owned();
+        let mut state = state_with(vec![row]);
+        state.popup_width = 80;
+        dispatch(&mut state, Action::Down);
+        dispatch(&mut state, Action::ShowDetails);
+        let wide = state.mode.popup_state().unwrap().styled.len();
+
+        resize_popup(&mut state, 20);
+
+        assert_eq!(state.popup_width, 20);
+        let narrow = state.mode.popup_state().unwrap().styled.len();
+        assert!(
+            narrow > wide,
+            "a narrower popup wraps to more lines: {narrow} vs {wide}"
+        );
+    }
+
+    /// A cursor scrolled near the end of a wide description must not be left pointing
+    /// past the end of a shorter re-wrap — `scroll_to` indexes the line list with it.
+    #[test]
+    fn resize_popup_clamps_the_cursor_when_the_wrap_shrinks() {
+        let mut row = mr("id-0", "someone");
+        row.description = "line one\nline two\nline three\nline four".to_owned();
+        let mut state = state_with(vec![row]);
+        state.popup_width = 200;
+        dispatch(&mut state, Action::Down);
+        dispatch(&mut state, Action::ShowDetails);
+        handle_key(&mut state, &keymap(), key(KeyCode::Char('G')));
+        let end = state.mode.popup_state().unwrap().cursor;
+
+        resize_popup(&mut state, 200);
+        assert_eq!(
+            state.mode.popup_state().unwrap().cursor,
+            end,
+            "an unchanged width does not touch the cursor"
+        );
+
+        resize_popup(&mut state, 3);
+        let popup = state.mode.popup_state().unwrap();
+        assert!(popup.cursor < popup.styled.len(), "{popup:?}");
+    }
+
+    /// Every other popup carries no merge request, so a resize has nothing to re-wrap.
+    #[test]
+    fn resize_popup_does_nothing_outside_the_details_popup() {
+        let mut state = state_with(rows(1));
+        dispatch(&mut state, Action::LogMenu);
+
+        resize_popup(&mut state, 10);
+
+        assert_eq!(state.popup_width, 10);
+        assert_eq!(state.mode.popup(), Some(Popup::Log));
     }
 
     /// Opening on the skin in force is what makes the list read as "you are here", and
@@ -2816,6 +2920,7 @@ mod perf {
             flash: None,
             log: LogBuffer::new(),
             viewport: HALF_PAGE_VIEWPORT,
+            popup_width: DEFAULT_POPUP_WIDTH,
         }
     }
 

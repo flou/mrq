@@ -364,6 +364,30 @@ impl App {
         self.view.viewport = self.table_viewport();
     }
 
+    /// The details popup's live text width on the current terminal size. The fallback
+    /// matches [`action::DEFAULT_POPUP_WIDTH`], the assumption the action layer makes
+    /// before the first draw.
+    fn popup_width(&self) -> usize {
+        match self.terminal.size() {
+            Ok(size) => {
+                let body = ui::layout::compute(size.into()).body();
+                ui::popup::content_width(ui::popup::area(body))
+            }
+            Err(error) => {
+                tracing::warn!(%error, "terminal size unavailable; assuming the default popup width");
+                action::DEFAULT_POPUP_WIDTH
+            }
+        }
+    }
+
+    /// Keep the open details popup's description wrapped to the popup's real width: the
+    /// action layer cannot ask the terminal itself, so `App` pushes the width in, the same
+    /// way it pushes in `viewport`.
+    fn sync_popup_width(&mut self) {
+        let width = self.popup_width();
+        action::resize_popup(&mut self.view, width);
+    }
+
     /// A mouse event inside the table, when `[ui].mouse` is on.
     ///
     /// Wheel scrolls the cursor — or an open popup, if one has the keyboard; a click
@@ -462,6 +486,7 @@ impl Application for App {
                 // A resize does not draw until the next render tick; a key pressed in
                 // that gap must not scroll against the old window.
                 self.sync_viewport();
+                self.sync_popup_width();
                 true
             }
             AppEvent::Input(TermEvent::Paste(text)) => {
@@ -577,6 +602,7 @@ impl Application for App {
         // Refreshed before anything else, so the action layer's next scroll decision
         // sees this frame's real window rather than last frame's.
         self.sync_viewport();
+        self.sync_popup_width();
 
         let Some(tab) = self.view.tabs.active() else {
             return;
@@ -846,6 +872,7 @@ pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> 
         flash: None,
         log,
         viewport: action::HALF_PAGE_VIEWPORT,
+        popup_width: action::DEFAULT_POPUP_WIDTH,
     };
     view.select_initial_rows();
 
@@ -871,6 +898,7 @@ pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> 
     // A key queued at startup could be handled before the first draw; give it the real
     // window rather than the fallback.
     app.sync_viewport();
+    app.sync_popup_width();
 
     let reason = crate::app::app_loop::run(&mut app, &mut receiver, tasks).await;
 

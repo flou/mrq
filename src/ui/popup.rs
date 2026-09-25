@@ -37,6 +37,14 @@ pub fn area(body: Rect) -> Rect {
     crate::ui::layout::centred(body, WIDTH_PCT, HEIGHT_PCT)
 }
 
+/// The text width inside a popup's own area: two cells of border and one of padding on
+/// each side. The one place this subtraction happens, so `build` and `App` (which needs
+/// it before the popup has even opened, to keep the details description pre-wrapped to
+/// it) can't drift apart.
+pub fn content_width(popup_area: Rect) -> usize {
+    usize::from(popup_area.width).saturating_sub(4)
+}
+
 /// The title each popup carries, so the user knows what they opened.
 const fn title(kind: Popup) -> &'static str {
     match kind {
@@ -61,8 +69,7 @@ pub fn build<'a>(
 ) -> Option<(Clear, Paragraph<'a>)> {
     let popup = state.mode.popup_state()?;
 
-    // Two cells of border and one of padding on each side.
-    let inner_width = usize::from(area.width).saturating_sub(4);
+    let inner_width = content_width(area);
     let inner_height = usize::from(area.height).saturating_sub(2);
 
     let lines = match popup.kind {
@@ -396,6 +403,7 @@ mod tests {
             flash: None,
             log: crate::logging::LogBuffer::new(),
             viewport: HALF_PAGE_VIEWPORT,
+            popup_width: action::DEFAULT_POPUP_WIDTH,
         }
     }
 
