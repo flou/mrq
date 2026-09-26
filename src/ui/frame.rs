@@ -171,6 +171,11 @@ impl World {
             truncated: tab.truncated,
             flash: None,
             spinner: 0,
+            help_key: self
+                .keymap
+                .keys_for(crate::config::keymap::Action::Help)
+                .first()
+                .map(|key| key.to_spec()),
         }
     }
 }

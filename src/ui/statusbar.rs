@@ -2,7 +2,7 @@
 //!
 //! //!
 //! ```text
-//! {position}/{count} · sort: {COLUMN} {↑|↓} · drafts: {shown|hidden} · {refresh state} · {search} · [?] help
+//! {position}/{count} · sort: {COLUMN} {↑|↓} · drafts: {shown|hidden} · {refresh state} · {search} · [{help key}] help
 //! ```
 //!
 //! # Everything non-fatal surfaces here
@@ -136,6 +136,10 @@ pub struct Status {
     pub flash: Option<String>,
     /// Which spinner frame to show, advanced by the caller's clock.
     pub spinner: usize,
+    /// The first key bound to `help` in the user's keymap, `None` if it is unbound.
+    /// Read from the keymap rather than hardcoded, so rebinding or unbinding `help`
+    /// doesn't leave the hint pointing at a key that no longer opens it.
+    pub help_key: Option<String>,
 }
 
 /// A segment and the role it is drawn in.
@@ -233,7 +237,9 @@ fn segments(status: &Status, theme: &Theme) -> Vec<Segment> {
         });
     }
 
-    out.push(fixed("[?] help".to_owned(), Role::Dim));
+    if let Some(key) = &status.help_key {
+        out.push(fixed(format!("[{key}] help"), Role::Dim));
+    }
     // `Refresh::Fresh { next_in_secs: None }` renders empty text: an empty segment would
     // still draw its separator, producing a doubled one.
     out.retain(|segment| !segment.text.is_empty());
@@ -407,6 +413,7 @@ mod tests {
             truncated: false,
             flash: None,
             spinner: 0,
+            help_key: Some("?".to_owned()),
         }
     }
 
@@ -437,6 +444,19 @@ mod tests {
         assert!(line.contains("next refresh in 3m"), "{line}");
         assert!(line.contains("/dark"), "{line}");
         assert!(line.contains("[?] help"), "{line}");
+    }
+
+    /// The hint follows the keymap: a rebound `help` renders its own key, and an
+    /// unbound one drops the hint instead of naming a key that no longer opens it.
+    #[test]
+    fn the_help_hint_follows_the_keymap() {
+        let mut status = status();
+
+        status.help_key = Some("f1".to_owned());
+        assert!(rendered(&status, 200).contains("[f1] help"));
+
+        status.help_key = None;
+        assert!(!rendered(&status, 200).contains("help"));
     }
 
     #[test]

@@ -117,6 +117,11 @@ impl App {
             // at the same rate however often the frame happens to be redrawn.
             spinner: (now.saturating_duration_since(self.started).as_millis()
                 / SPINNER_FRAME.as_millis()) as usize,
+            help_key: self
+                .keymap
+                .keys_for(crate::config::keymap::Action::Help)
+                .first()
+                .map(|key| key.to_spec()),
         }
     }
 
