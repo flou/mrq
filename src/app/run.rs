@@ -364,28 +364,31 @@ impl App {
         self.view.viewport = self.table_viewport();
     }
 
-    /// The details popup's live text width on the current terminal size. The fallback
-    /// matches [`action::DEFAULT_POPUP_WIDTH`], the assumption the action layer makes
-    /// before the first draw.
-    fn popup_width(&self) -> usize {
+    /// The popup's live text width and height on the current terminal size. The fallback
+    /// matches [`action::DEFAULT_POPUP_WIDTH`] and [`action::DEFAULT_POPUP_HEIGHT`], the
+    /// assumption the action layer makes before the first draw.
+    fn popup_size(&self) -> (usize, usize) {
         match self.terminal.size() {
             Ok(size) => {
-                let body = ui::layout::compute(size.into()).body();
-                ui::popup::content_width(ui::popup::area(body))
+                let region = ui::popup::area(ui::layout::compute(size.into()).body());
+                (
+                    ui::popup::content_width(region),
+                    ui::popup::content_height(region),
+                )
             }
             Err(error) => {
-                tracing::warn!(%error, "terminal size unavailable; assuming the default popup width");
-                action::DEFAULT_POPUP_WIDTH
+                tracing::warn!(%error, "terminal size unavailable; assuming the default popup size");
+                (action::DEFAULT_POPUP_WIDTH, action::DEFAULT_POPUP_HEIGHT)
             }
         }
     }
 
-    /// Keep the open details popup's description wrapped to the popup's real width: the
-    /// action layer cannot ask the terminal itself, so `App` pushes the width in, the same
-    /// way it pushes in `viewport`.
-    fn sync_popup_width(&mut self) {
-        let width = self.popup_width();
-        action::resize_popup(&mut self.view, width);
+    /// Keep an open text popup's description wrapped and scroll bound to the popup's real
+    /// size: the action layer cannot ask the terminal itself, so `App` pushes the size in,
+    /// the same way it pushes in `viewport`.
+    fn sync_popup_size(&mut self) {
+        let (width, height) = self.popup_size();
+        action::resize_popup(&mut self.view, &self.keymap, width, height);
     }
 
     /// A mouse event inside the table, when `[ui].mouse` is on.
@@ -486,7 +489,7 @@ impl Application for App {
                 // A resize does not draw until the next render tick; a key pressed in
                 // that gap must not scroll against the old window.
                 self.sync_viewport();
-                self.sync_popup_width();
+                self.sync_popup_size();
                 true
             }
             AppEvent::Input(TermEvent::Paste(text)) => {
@@ -602,7 +605,7 @@ impl Application for App {
         // Refreshed before anything else, so the action layer's next scroll decision
         // sees this frame's real window rather than last frame's.
         self.sync_viewport();
-        self.sync_popup_width();
+        self.sync_popup_size();
 
         let Some(tab) = self.view.tabs.active() else {
             return;
@@ -873,6 +876,7 @@ pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> 
         log,
         viewport: action::HALF_PAGE_VIEWPORT,
         popup_width: action::DEFAULT_POPUP_WIDTH,
+        popup_height: action::DEFAULT_POPUP_HEIGHT,
     };
     view.select_initial_rows();
 
@@ -898,7 +902,7 @@ pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> 
     // A key queued at startup could be handled before the first draw; give it the real
     // window rather than the fallback.
     app.sync_viewport();
-    app.sync_popup_width();
+    app.sync_popup_size();
 
     let reason = crate::app::app_loop::run(&mut app, &mut receiver, tasks).await;
 

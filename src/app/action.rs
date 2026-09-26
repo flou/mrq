@@ -186,6 +186,13 @@ pub struct ViewState {
     /// frame — and [`resize_popup`] re-wraps the open details popup whenever it changes.
     /// [`DEFAULT_POPUP_WIDTH`] stands in until the first of those.
     pub popup_width: usize,
+    /// The popup's live text height, for turning a text popup's `cursor` into a scroll
+    /// position (see [`popup_rows`]) — one line per key press, rather than the list
+    /// popups' proportional-mapping scroll.
+    ///
+    /// Written the same way as `popup_width`; [`DEFAULT_POPUP_HEIGHT`] stands in until the
+    /// first of those.
+    pub popup_height: usize,
 }
 
 /// The columns the sort menu offers, in menu order.
@@ -696,8 +703,10 @@ pub fn dispatch(state: &mut ViewState, action: Action) -> (bool, Effect) {
         Action::LogMenu => {
             let mut popup = PopupState::new(Popup::Log);
             popup.lines = state.log.lines();
-            // Opens at the end: the newest line is the one you came to read.
-            popup.cursor = popup.lines.len().saturating_sub(1);
+            // Opens at the end: the newest line is the one you came to read. `cursor` is
+            // the top visible line, so that is the last scroll position, not the last
+            // line index.
+            popup.cursor = scroll_positions(popup.lines.len(), state.popup_height) - 1;
             state.mode = Mode::Popup(popup);
             (true, Effect::None)
         }
@@ -1032,48 +1041,79 @@ fn popup_key(
     KeyOutcome::Handled { redraw: true }
 }
 
-/// How many rows the popup has, for clamping the cursor.
+/// How many positions the popup's cursor can take, for clamping it.
 ///
-/// The help popup counts the lines it will actually render — an unbounded cursor would
-/// let `j` run past the end and then need as many `k` presses to come back.
+/// Sort/Filter/Skin move a selection over their list, one row per position. Help/Log/
+/// Details have no selection: `cursor` is the index of their top visible line instead, so
+/// they have one position per line the window can start at — `lines - height + 1`, not
+/// `lines` — or that window would keep scrolling past the point where the last line is
+/// already on screen.
 fn popup_rows(state: &ViewState, keymap: &Keymap, popup: &PopupState) -> usize {
     match popup.kind {
         Popup::Sort => SORTABLE.len(),
         Popup::Filter => matching_filters(state, &popup.query).len(),
         Popup::Skin => skins::BUILTIN_NAMES.len(),
-        Popup::Log => popup.lines.len(),
-        Popup::Details => popup.styled.len(),
-        Popup::Help => help_lines(keymap).len(),
+        Popup::Log => scroll_positions(popup.lines.len(), state.popup_height),
+        Popup::Details => scroll_positions(popup.styled.len(), state.popup_height),
+        Popup::Help => scroll_positions(help_lines(keymap).len(), state.popup_height),
     }
 }
 
-/// Record the popup's live text width, and re-wrap an open details popup to it.
+/// How many places a `height`-tall window can start from within `lines` lines: every
+/// line index up to the one that still leaves a full window on screen.
+const fn scroll_positions(lines: usize, height: usize) -> usize {
+    lines.saturating_sub(height) + 1
+}
+
+/// Record the popup's live text size, re-wrap an open details popup to its width, and
+/// clamp any open text popup's cursor to its height.
 ///
 /// `App` calls this at startup, on a resize and on every frame — the same way it keeps
 /// `viewport` current — because the action layer cannot ask the terminal itself. A no-op
-/// when the width has not actually changed, so a rebuild does not happen on every frame.
-pub fn resize_popup(state: &mut ViewState, width: usize) {
-    if state.popup_width == width {
+/// when neither dimension actually changed, so a rebuild does not happen on every frame.
+pub fn resize_popup(state: &mut ViewState, keymap: &Keymap, width: usize, height: usize) {
+    let width_changed = state.popup_width != width;
+    let height_changed = state.popup_height != height;
+    if !width_changed && !height_changed {
         return;
     }
     state.popup_width = width;
+    state.popup_height = height;
 
-    let Mode::Popup(popup) = &state.mode else {
+    let Mode::Popup(popup) = &mut state.mode else {
         return;
     };
-    if popup.kind != Popup::Details {
-        return;
+
+    // Re-wrapping only rebuilds `styled` on a width change; the height alone does not
+    // affect how the description wraps.
+    if width_changed
+        && popup.kind == Popup::Details
+        && let Some(mr) = popup.source.clone()
+    {
+        // Cloned out before rebuilding: `detail_lines` needs `&state.theme` while `popup`
+        // is still borrowed mutably here.
+        popup.styled = detail_lines(&mr, &state.theme, width);
     }
-    let Some(mr) = popup.source.clone() else {
-        return;
-    };
 
-    // Cloned out before rebuilding: `detail_lines` needs `&state.theme` while `popup` is
-    // still borrowed mutably below, and this only runs on an actual width change.
-    let styled = detail_lines(&mr, &state.theme, width);
-    if let Mode::Popup(popup) = &mut state.mode {
-        popup.cursor = popup.cursor.min(styled.len().saturating_sub(1));
-        popup.styled = styled;
+    // A taller/shorter window shifts how many scroll positions Help/Log/Details have;
+    // the cursor has to follow or it can point past the last one `popup_rows` now allows.
+    match popup.kind {
+        Popup::Help => {
+            popup.cursor = popup
+                .cursor
+                .min(scroll_positions(help_lines(keymap).len(), height) - 1);
+        }
+        Popup::Log => {
+            popup.cursor = popup
+                .cursor
+                .min(scroll_positions(popup.lines.len(), height) - 1)
+        }
+        Popup::Details => {
+            popup.cursor = popup
+                .cursor
+                .min(scroll_positions(popup.styled.len(), height) - 1);
+        }
+        Popup::Sort | Popup::Filter | Popup::Skin => {}
     }
 }
 
@@ -1126,6 +1166,10 @@ pub fn help_lines(keymap: &Keymap) -> Vec<HelpLine> {
 /// Fallback wrap width for the details popup's description, before `ViewState.popup_width`
 /// has been set to the real one — the same role [`HALF_PAGE_VIEWPORT`] plays for `viewport`.
 pub const DEFAULT_POPUP_WIDTH: usize = 90;
+
+/// Fallback text height for a text popup, before `ViewState.popup_height` has been set to
+/// the real one. Mirrors [`DEFAULT_POPUP_WIDTH`].
+pub const DEFAULT_POPUP_HEIGHT: usize = 20;
 
 /// The merge request details popup's content: header fields as plain lines, then the
 /// description rendered as markdown wrapped to `width`. Rebuilt whenever the popup's
@@ -1355,6 +1399,7 @@ mod tests {
             log: LogBuffer::new(),
             viewport: HALF_PAGE_VIEWPORT,
             popup_width: DEFAULT_POPUP_WIDTH,
+            popup_height: DEFAULT_POPUP_HEIGHT,
         }
     }
 
@@ -2188,17 +2233,19 @@ mod tests {
         let keymap = keymap();
         let mut state = state_with(rows(1));
         state.log = LogBuffer::new();
+        state.popup_height = 10;
         let owned: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
         let borrowed: Vec<&str> = owned.iter().map(String::as_str).collect();
         state.log.seed(&borrowed);
         dispatch(&mut state, Action::LogMenu);
 
+        // 20 lines, a 10-line window: 11 scroll positions (0..=10), opening on the last.
         assert_eq!(popup_wheel(&mut state, &keymap, true), Some(true));
         let cursor_after_up = state.mode.popup_state().unwrap().cursor;
-        assert_eq!(cursor_after_up, 16, "opened at the end, scrolled up 3");
+        assert_eq!(cursor_after_up, 7, "opened at the end, scrolled up 3");
 
         assert_eq!(popup_wheel(&mut state, &keymap, false), Some(true));
-        assert_eq!(state.mode.popup_state().unwrap().cursor, 19, "back down 3");
+        assert_eq!(state.mode.popup_state().unwrap().cursor, 10, "back down 3");
     }
 
     #[test]
@@ -2409,6 +2456,53 @@ mod tests {
         );
     }
 
+    /// Every `j`/`k` on an open Details popup moves the window by exactly one line. The
+    /// regression this guards: `scroll_to`'s proportional mapping moved the window by
+    /// *less* than one line per press, so repeated presses looked dropped (mrq-l4k).
+    #[test]
+    fn the_details_popup_scrolls_one_line_per_press() {
+        let mut row = mr("id-0", "someone");
+        row.description = (0..30)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut state = state_with(vec![row]);
+        state.popup_width = 200;
+        state.popup_height = 5;
+        dispatch(&mut state, Action::Down);
+        dispatch(&mut state, Action::ShowDetails);
+
+        let len = state.mode.popup_state().unwrap().styled.len();
+        let last = scroll_positions(len, 5) - 1;
+        assert!(last > 2, "test needs a description taller than the window");
+
+        handle_key(&mut state, &keymap(), key(KeyCode::Down));
+        handle_key(&mut state, &keymap(), key(KeyCode::Down));
+        assert_eq!(
+            state.mode.popup_state().unwrap().cursor,
+            2,
+            "two presses move exactly two lines"
+        );
+
+        handle_key(&mut state, &keymap(), key(KeyCode::Char('G')));
+        assert_eq!(state.mode.popup_state().unwrap().cursor, last);
+
+        handle_key(&mut state, &keymap(), key(KeyCode::Up));
+        assert_eq!(
+            state.mode.popup_state().unwrap().cursor,
+            last - 1,
+            "k from the end responds on the very first press"
+        );
+
+        handle_key(&mut state, &keymap(), key(KeyCode::Char('G')));
+        handle_key(&mut state, &keymap(), key(KeyCode::Down));
+        assert_eq!(
+            state.mode.popup_state().unwrap().cursor,
+            last,
+            "j at the end leaves the cursor unchanged"
+        );
+    }
+
     #[test]
     fn show_details_does_nothing_without_a_selection() {
         let mut state = state_with(rows(1));
@@ -2477,8 +2571,9 @@ mod tests {
         dispatch(&mut state, Action::Down);
         dispatch(&mut state, Action::ShowDetails);
         let wide = state.mode.popup_state().unwrap().styled.len();
+        let height = state.popup_height;
 
-        resize_popup(&mut state, 20);
+        resize_popup(&mut state, &keymap(), 20, height);
 
         assert_eq!(state.popup_width, 20);
         let narrow = state.mode.popup_state().unwrap().styled.len();
@@ -2489,28 +2584,33 @@ mod tests {
     }
 
     /// A cursor scrolled near the end of a wide description must not be left pointing
-    /// past the end of a shorter re-wrap — `scroll_to` indexes the line list with it.
+    /// past the last scroll position of a shorter re-wrap — `popup_rows` bounds it with
+    /// the height too, not just the line count.
     #[test]
     fn resize_popup_clamps_the_cursor_when_the_wrap_shrinks() {
         let mut row = mr("id-0", "someone");
         row.description = "line one\nline two\nline three\nline four".to_owned();
         let mut state = state_with(vec![row]);
         state.popup_width = 200;
+        state.popup_height = 10;
         dispatch(&mut state, Action::Down);
         dispatch(&mut state, Action::ShowDetails);
         handle_key(&mut state, &keymap(), key(KeyCode::Char('G')));
         let end = state.mode.popup_state().unwrap().cursor;
 
-        resize_popup(&mut state, 200);
+        resize_popup(&mut state, &keymap(), 200, 10);
         assert_eq!(
             state.mode.popup_state().unwrap().cursor,
             end,
-            "an unchanged width does not touch the cursor"
+            "an unchanged width and height do not touch the cursor"
         );
 
-        resize_popup(&mut state, 3);
+        resize_popup(&mut state, &keymap(), 3, 10);
         let popup = state.mode.popup_state().unwrap();
-        assert!(popup.cursor < popup.styled.len(), "{popup:?}");
+        assert!(
+            popup.cursor < scroll_positions(popup.styled.len(), 10),
+            "{popup:?}"
+        );
     }
 
     /// Every other popup carries no merge request, so a resize has nothing to re-wrap.
@@ -2518,8 +2618,9 @@ mod tests {
     fn resize_popup_does_nothing_outside_the_details_popup() {
         let mut state = state_with(rows(1));
         dispatch(&mut state, Action::LogMenu);
+        let height = state.popup_height;
 
-        resize_popup(&mut state, 10);
+        resize_popup(&mut state, &keymap(), 10, height);
 
         assert_eq!(state.popup_width, 10);
         assert_eq!(state.mode.popup(), Some(Popup::Log));
@@ -2921,6 +3022,7 @@ mod perf {
             log: LogBuffer::new(),
             viewport: HALF_PAGE_VIEWPORT,
             popup_width: DEFAULT_POPUP_WIDTH,
+            popup_height: DEFAULT_POPUP_HEIGHT,
         }
     }
 

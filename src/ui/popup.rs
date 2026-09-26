@@ -45,6 +45,13 @@ pub fn content_width(popup_area: Rect) -> usize {
     usize::from(popup_area.width).saturating_sub(4)
 }
 
+/// The text height inside a popup's own area: one cell of border on each side. The one
+/// place this subtraction happens, mirroring [`content_width`], so `build` and `App`
+/// (which needs it to know how many scroll positions a text popup has) can't drift apart.
+pub fn content_height(popup_area: Rect) -> usize {
+    usize::from(popup_area.height).saturating_sub(2)
+}
+
 /// The title each popup carries, so the user knows what they opened.
 const fn title(kind: Popup) -> &'static str {
     match kind {
@@ -70,7 +77,7 @@ pub fn build<'a>(
     let popup = state.mode.popup_state()?;
 
     let inner_width = content_width(area);
-    let inner_height = usize::from(area.height).saturating_sub(2);
+    let inner_height = content_height(area);
 
     let lines = match popup.kind {
         Popup::Help => help_lines(keymap, theme, inner_width),
@@ -84,7 +91,14 @@ pub fn build<'a>(
     let block = theme
         .panel(title(popup.kind))
         .padding(Padding::horizontal(1));
-    let scrolled = scroll_to(lines, popup.cursor, inner_height);
+    // Help/Log/Details have no separate selection: `cursor` already *is* the top line
+    // (see `popup_rows`), so the window follows it directly — one press, one line. Sort/
+    // Filter/Skin move a selection over a short list instead, where `scroll_to`'s
+    // proportional mapping still applies.
+    let scrolled = match popup.kind {
+        Popup::Help | Popup::Log | Popup::Details => scroll_from(lines, popup.cursor, inner_height),
+        Popup::Sort | Popup::Filter | Popup::Skin => scroll_to(lines, popup.cursor, inner_height),
+    };
     Some((Clear, Paragraph::new(scrolled).block(block)))
 }
 
@@ -112,6 +126,19 @@ fn scroll_to<'a>(lines: Vec<Line<'a>>, cursor: usize, height: usize) -> Vec<Line
     // Rounded rather than truncated, so the slack is distributed rather than always
     // favouring the lower `start` (which would bias every repeat towards not scrolling).
     let start = (cursor * last_start + last_cursor / 2) / last_cursor;
+    lines[start..start + height].to_vec()
+}
+
+/// Take the window of `lines` starting at `top`, the top-line-per-press counterpart to
+/// [`scroll_to`]. `top` is already clamped to a valid scroll position by [`popup_rows`],
+/// so a press of `j`/`k` moves the window by exactly one line every time — the `min` here
+/// only guards against a `height` that is one frame stale.
+fn scroll_from<'a>(lines: Vec<Line<'a>>, top: usize, height: usize) -> Vec<Line<'a>> {
+    if height == 0 || lines.len() <= height {
+        return lines;
+    }
+
+    let start = top.min(lines.len() - height);
     lines[start..start + height].to_vec()
 }
 
@@ -404,6 +431,7 @@ mod tests {
             log: crate::logging::LogBuffer::new(),
             viewport: HALF_PAGE_VIEWPORT,
             popup_width: action::DEFAULT_POPUP_WIDTH,
+            popup_height: action::DEFAULT_POPUP_HEIGHT,
         }
     }
 
@@ -772,9 +800,9 @@ mod tests {
         assert_eq!(scroll_to(lines, 0, 0).len(), 40, "no height, no window");
     }
 
-    /// The window has to follow the very first cursor step, with no dead zone — a popup
-    /// with no highlighted cursor (Log, Help, Details) would otherwise look stuck for a
-    /// press or two before the content visibly moves.
+    /// `scroll_to`'s proportional mapping still has to follow the very first cursor step,
+    /// with no dead zone — a list popup (Sort, Filter, Skin) would otherwise look stuck
+    /// for a press or two before the selection visibly moved.
     #[test]
     fn the_window_follows_the_cursor_from_the_first_step() {
         let lines: Vec<Line> = (0..40)
@@ -810,6 +838,26 @@ mod tests {
         );
     }
 
+    /// `scroll_from` backs Help/Log/Details, where `cursor` already is the top line: every
+    /// press has to move the window by exactly one line, in both directions, with none of
+    /// `scroll_to`'s proportional rounding — that rounding is what let `j`/`k` presses
+    /// disappear on those popups (mrq-l4k).
+    #[test]
+    fn scroll_from_moves_exactly_one_line_per_step() {
+        let lines: Vec<Line> = (0..40)
+            .map(|i| Line::from(Span::raw(format!("line {i}"))))
+            .collect();
+
+        for top in 0..=30 {
+            let window = scroll_from(lines.clone(), top, 10);
+            assert_eq!(
+                window[0].to_string(),
+                format!("line {top}"),
+                "top line {top} did not scroll to exactly itself"
+            );
+        }
+    }
+
     /// The help popup's cursor is bounded by the lines it actually has. Left unbounded,
     /// `j` runs past the end and needs as many `k` presses to come back.
     #[test]
@@ -817,7 +865,11 @@ mod tests {
         let mut state = state();
         open(&mut state, Action::Help);
 
-        let last = action::help_lines(&keymap()).len() - 1;
+        // `cursor` is the top visible line, not a line index, so the last position is
+        // `lines - height`, not `lines - 1` (see `popup_rows`/`scroll_positions`).
+        let last = action::help_lines(&keymap())
+            .len()
+            .saturating_sub(state.popup_height);
         for _ in 0..500 {
             press(&mut state, KeyCode::Char('j'));
         }
@@ -831,29 +883,25 @@ mod tests {
         );
     }
 
-    /// The log opens on its newest line, and `k` scrolls up from there rather than
-    /// jumping to the top.
+    /// The log opens on its newest line, and `k` scrolls up from there by exactly one
+    /// line rather than jumping to the top — or sitting dead for several presses first.
     #[test]
     fn the_log_opens_at_the_end_and_scrolls_up_from_it() {
         let lines: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
 
         let mut state = state();
+        state.popup_height = 10;
         state.log.seed(&refs);
         open(&mut state, Action::LogMenu);
 
-        assert_eq!(state.mode.popup_state().unwrap().cursor, 19);
+        // 20 lines, a 10-line window: 11 scroll positions (0..=10). Opens on the last one.
+        assert_eq!(state.mode.popup_state().unwrap().cursor, 10);
         press(&mut state, KeyCode::Char('k'));
         assert_eq!(
             state.mode.popup_state().unwrap().cursor,
-            18,
-            "k scrolls up from the end, not to the top"
-        );
-
-        let shown = text(&state);
-        assert!(
-            shown.contains("line 19"),
-            "the newest line is visible: {shown}"
+            9,
+            "k scrolls up from the end by exactly one line, not to the top"
         );
     }
 
@@ -864,15 +912,16 @@ mod tests {
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
 
         let mut state = state();
+        state.popup_height = 10;
         state.log.seed(&refs);
         open(&mut state, Action::LogMenu);
-        assert_eq!(state.mode.popup_state().unwrap().cursor, 19);
+        assert_eq!(state.mode.popup_state().unwrap().cursor, 10);
 
         press_ctrl(&mut state, KeyCode::Char('u'));
-        assert_eq!(state.mode.popup_state().unwrap().cursor, 9);
+        assert_eq!(state.mode.popup_state().unwrap().cursor, 0);
 
         press_ctrl(&mut state, KeyCode::Char('d'));
-        assert_eq!(state.mode.popup_state().unwrap().cursor, 19);
+        assert_eq!(state.mode.popup_state().unwrap().cursor, 10);
     }
 
     /// `g` / `shift-G` jump to the top and bottom of a read-only text popup.
@@ -882,6 +931,7 @@ mod tests {
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
 
         let mut state = state();
+        state.popup_height = 10;
         state.log.seed(&refs);
         open(&mut state, Action::LogMenu);
 
@@ -889,7 +939,7 @@ mod tests {
         assert_eq!(state.mode.popup_state().unwrap().cursor, 0);
 
         press(&mut state, KeyCode::Char('G'));
-        assert_eq!(state.mode.popup_state().unwrap().cursor, 19);
+        assert_eq!(state.mode.popup_state().unwrap().cursor, 10);
     }
 
     /// `g` still jumps to a matching skin name rather than to the top of the list — the

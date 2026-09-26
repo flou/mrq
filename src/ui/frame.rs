@@ -17,7 +17,8 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
 use crate::app::action::{
-    DEFAULT_POPUP_WIDTH, HALF_PAGE_VIEWPORT, Mode, Popup, PopupState, ViewState,
+    DEFAULT_POPUP_HEIGHT, DEFAULT_POPUP_WIDTH, HALF_PAGE_VIEWPORT, Mode, Popup, PopupState,
+    ViewState,
 };
 use crate::app::state::Tabs;
 use crate::config::keymap::{self, Keymap};
@@ -116,6 +117,7 @@ impl World {
             log: LogBuffer::new(),
             viewport: HALF_PAGE_VIEWPORT,
             popup_width: DEFAULT_POPUP_WIDTH,
+            popup_height: DEFAULT_POPUP_HEIGHT,
         };
 
         let all = rows();
