@@ -70,9 +70,9 @@ pub struct Scene<'a> {
     pub now: jiff::Timestamp,
     /// Whether the terminal advertises OSC 8, so titles can be made clickable.
     pub hyperlinks: bool,
-    /// `[ui].assignee_trigram`: the ASSIGNED column shows the first assignee's initials
-    /// instead of `Yes`/`No`.
-    pub assignee_trigram: bool,
+    /// `[ui].assigned_display` / `approver_display` / `reviewer_display`: how each
+    /// people-naming column renders who is there.
+    pub people_display: table::PeopleDisplayModes,
 }
 
 /// The panel title: which filter the rows below belong to, and how many there are.
@@ -99,7 +99,12 @@ pub fn render(frame: &mut Frame, scene: &Scene<'_>) {
     frame.render_widget(Block::default().style(Style::default().bg(base)), area);
 
     let table_area = regions.table_inner();
-    let allocation = table::allocate(scene.columns, table_area.width, scene.rows);
+    let allocation = table::allocate(
+        scene.columns,
+        table_area.width,
+        scene.rows,
+        scene.people_display.assigned,
+    );
 
     let bar = tabbar::build(
         &scene.view.tabs,
@@ -123,7 +128,7 @@ pub fn render(frame: &mut Frame, scene: &Scene<'_>) {
         &allocation,
         scene.theme,
         scene.now,
-        scene.assignee_trigram,
+        scene.people_display,
     );
     frame.render_widget(widget, table_area);
 

@@ -132,10 +132,15 @@ pub struct Ui {
     /// here — validated at config load. Defaults to `[approver, reviewer]`, but only
     /// while `columns` is also left at its default — see `load::load`.
     pub wide_columns: Vec<Column>,
-    /// Show the first assignee's initials in the ASSIGNED column instead of `Yes`/`No`
-    /// (`Charles Billow` -> `CBI`), green when the assignee is you, `-` when there is
-    /// none.
-    pub assignee_trigram: bool,
+    /// How the ASSIGNED column names people. `Yes`/`No` against whether you are an
+    /// assignee, by default.
+    pub assigned_display: PeopleDisplay,
+    /// How the APPROVER column names people. The first approver's username, `+N` for the
+    /// rest, `-` for none, by default.
+    pub approver_display: PeopleDisplay,
+    /// How the REVIEWER column names people. The first reviewer's username, `+N` for the
+    /// rest, `-` for none, by default.
+    pub reviewer_display: PeopleDisplay,
 }
 
 impl Default for Ui {
@@ -148,9 +153,25 @@ impl Default for Ui {
             set_terminal_title: true,
             columns: Column::DEFAULT.to_vec(),
             wide_columns: vec![Column::Approver, Column::Reviewer],
-            assignee_trigram: false,
+            assigned_display: PeopleDisplay::YesNo,
+            approver_display: PeopleDisplay::Username,
+            reviewer_display: PeopleDisplay::Username,
         }
     }
+}
+
+/// How a people-naming column (`assigned`, `approver`, `reviewer`) renders who is there.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum PeopleDisplay {
+    /// Whether the current user is one of them.
+    YesNo,
+    /// The first person's username, `+N` for the rest, `-` for none.
+    Username,
+    /// The first person's trigram — initials, `Charles Billow` -> `CBI` — `-` for none.
+    Trigram,
 }
 
 // ------------------------------------------------------------------------------ [skin]
@@ -599,6 +620,9 @@ mod tests {
         assert!(!c.ui.mouse, "mouse off, so native selection keeps working");
         assert_eq!(c.ui.columns, Column::DEFAULT.to_vec());
         assert_eq!(c.ui.wide_columns, vec![Column::Approver, Column::Reviewer]);
+        assert_eq!(c.ui.assigned_display, PeopleDisplay::YesNo);
+        assert_eq!(c.ui.approver_display, PeopleDisplay::Username);
+        assert_eq!(c.ui.reviewer_display, PeopleDisplay::Username);
         assert_eq!(c.sort.column, Column::Updated);
         assert_eq!(c.sort.order, Order::Desc);
         assert!(c.sort.drafts_last);

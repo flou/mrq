@@ -21,7 +21,7 @@ use ratatui::widgets::{Cell, Row, Table};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::state::Tab;
-use crate::config::schema::Column;
+use crate::config::schema::{Column, PeopleDisplay};
 use crate::gitlab::model::MergeRequest;
 use crate::term::hyperlink;
 use crate::ui::columns::{self, Allocation};
@@ -46,10 +46,16 @@ pub const GUTTER_WIDTH: u16 = 1;
 ///
 /// `rows` should be the tab's full row set, not the visible window — measuring only what
 /// is on screen would make a column resize while scrolling.
-pub fn allocate(columns: &[Column], width: u16, rows: &[&MergeRequest]) -> Allocation {
+pub fn allocate(
+    columns: &[Column],
+    width: u16,
+    rows: &[&MergeRequest],
+    assigned_mode: PeopleDisplay,
+) -> Allocation {
     let fitted = columns::Fitted {
         author: author_fit(rows),
         repo: repo_fit(rows),
+        assigned: assigned_fit(rows, assigned_mode),
     };
     columns::allocate(columns, width.saturating_sub(GUTTER_WIDTH), fitted)
 }
@@ -67,6 +73,20 @@ fn author_fit(rows: &[&MergeRequest]) -> Option<u16> {
 /// header so `REPO` is never truncated and capped at [`columns::FIT_MAX`].
 fn repo_fit(rows: &[&MergeRequest]) -> Option<u16> {
     content_fit(rows.iter().map(|mr| mr.project_name.width()), Column::Repo)
+}
+
+/// The ASSIGNED column's content width in `username` display mode: the widest rendered
+/// cell on `rows`. `None` in `yes_no` or `trigram` mode, where the column stays the old
+/// fixed width regardless of content.
+fn assigned_fit(rows: &[&MergeRequest], mode: PeopleDisplay) -> Option<u16> {
+    if mode != PeopleDisplay::Username {
+        return None;
+    }
+    content_fit(
+        rows.iter()
+            .map(|mr| assigned_cell(mr, PeopleDisplay::Username).width()),
+        Column::Assigned,
+    )
 }
 
 /// Shared by [`author_fit`] and [`repo_fit`]: the widest of `widths`, floored at
@@ -218,24 +238,76 @@ fn trigram(name: Option<&str>, username: &str) -> String {
 /// No one to name, in a column that names people.
 const NOBODY_MARK: &str = "-";
 
-/// The ASSIGNED cell: `Yes`/`No` by default, or the first assignee's trigram when
-/// `[ui].assignee_trigram` is on.
-fn assigned_cell(mr: &MergeRequest, trigram_mode: bool) -> Cow<'_, str> {
-    if !trigram_mode {
-        return Cow::Borrowed(if mr.assigned_to_me() { "Yes" } else { "No" });
-    }
-    match mr.first_assignee() {
-        Some(user) => Cow::Owned(trigram(user.name.as_deref(), &user.username)),
-        None => Cow::Borrowed(NOBODY_MARK),
+/// The ASSIGNED cell, in whichever of the three [`PeopleDisplay`] modes is configured.
+fn assigned_cell(mr: &MergeRequest, mode: PeopleDisplay) -> Cow<'_, str> {
+    match mode {
+        PeopleDisplay::YesNo => Cow::Borrowed(if mr.assigned_to_me() { "Yes" } else { "No" }),
+        PeopleDisplay::Username => {
+            people_cell(mr.assignees.iter().map(|user| user.username.as_str()))
+        }
+        PeopleDisplay::Trigram => match mr.first_assignee() {
+            Some(user) => Cow::Owned(trigram(user.name.as_deref(), &user.username)),
+            None => Cow::Borrowed(NOBODY_MARK),
+        },
     }
 }
 
-/// The APPROVER / REVIEWER cell: the first username, `+N` for the rest, `-` for none.
-fn people_cell(people: &[String]) -> Cow<'_, str> {
-    match people.split_first() {
+/// The APPROVER cell, in whichever of the three [`PeopleDisplay`] modes is configured.
+fn approver_cell(mr: &MergeRequest, mode: PeopleDisplay) -> Cow<'_, str> {
+    match mode {
+        PeopleDisplay::YesNo => Cow::Borrowed(if mr.approved_by_me() { "Yes" } else { "No" }),
+        PeopleDisplay::Username => people_cell(mr.approved_by.iter().map(String::as_str)),
+        PeopleDisplay::Trigram => match mr.approved_by.first() {
+            Some(username) => Cow::Owned(trigram(None, username)),
+            None => Cow::Borrowed(NOBODY_MARK),
+        },
+    }
+}
+
+/// The REVIEWER cell, in whichever of the three [`PeopleDisplay`] modes is configured.
+fn reviewer_cell(mr: &MergeRequest, mode: PeopleDisplay) -> Cow<'_, str> {
+    match mode {
+        PeopleDisplay::YesNo => Cow::Borrowed(if mr.reviewing_me() { "Yes" } else { "No" }),
+        PeopleDisplay::Username => people_cell(mr.reviewers.iter().map(String::as_str)),
+        PeopleDisplay::Trigram => match mr.reviewers.first() {
+            Some(username) => Cow::Owned(trigram(None, username)),
+            None => Cow::Borrowed(NOBODY_MARK),
+        },
+    }
+}
+
+/// `username` display mode, shared by all three people-naming columns: the first
+/// person's username, `+N` for the rest, `-` for none.
+fn people_cell<'a>(mut people: impl Iterator<Item = &'a str>) -> Cow<'a, str> {
+    match people.next() {
         None => Cow::Borrowed(NOBODY_MARK),
-        Some((first, [])) => Cow::Borrowed(first),
-        Some((first, rest)) => Cow::Owned(format!("{first} +{}", rest.len())),
+        Some(first) => {
+            let rest = people.count();
+            if rest == 0 {
+                Cow::Borrowed(first)
+            } else {
+                Cow::Owned(format!("{first} +{rest}"))
+            }
+        }
+    }
+}
+
+/// Which [`PeopleDisplay`] mode each people-naming column uses, gathered so callers pass
+/// one value instead of three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeopleDisplayModes {
+    pub assigned: PeopleDisplay,
+    pub approver: PeopleDisplay,
+    pub reviewer: PeopleDisplay,
+}
+
+impl Default for PeopleDisplayModes {
+    fn default() -> Self {
+        Self {
+            assigned: PeopleDisplay::YesNo,
+            approver: PeopleDisplay::Username,
+            reviewer: PeopleDisplay::Username,
+        }
     }
 }
 
@@ -250,7 +322,7 @@ fn cell_text<'a>(
     column: Column,
     theme: &Theme,
     now: jiff::Timestamp,
-    trigram_mode: bool,
+    modes: PeopleDisplayModes,
 ) -> Cow<'a, str> {
     match column {
         Column::Approved => Cow::Owned(approved_cell(mr, theme)),
@@ -265,9 +337,9 @@ fn cell_text<'a>(
         }
         // Filled in by the caller, which has the theme and therefore the glyph set.
         Column::Pipeline => Cow::Borrowed(""),
-        Column::Assigned => assigned_cell(mr, trigram_mode),
-        Column::Approver => people_cell(&mr.approved_by),
-        Column::Reviewer => people_cell(&mr.reviewers),
+        Column::Assigned => assigned_cell(mr, modes.assigned),
+        Column::Approver => approver_cell(mr, modes.approver),
+        Column::Reviewer => reviewer_cell(mr, modes.reviewer),
         Column::Age => Cow::Owned(relative_time(mr.created_at, now)),
         Column::Updated => Cow::Owned(relative_time(mr.updated_at, now)),
         Column::Diff => Cow::Owned(diff_cell(mr)),
@@ -292,12 +364,12 @@ const fn cell_role(mr: &MergeRequest, column: Column) -> Role {
 
 /// Whether a cell should carry the "this is yours" highlight.
 ///
-/// `Assigned` only counts in trigram mode: the legacy `Yes`/`No` text already says it.
-const fn marks_me(mr: &MergeRequest, column: Column, trigram_mode: bool) -> bool {
+/// None of the three counts in `yes_no` mode: the text already says it.
+const fn marks_me(mr: &MergeRequest, column: Column, modes: PeopleDisplayModes) -> bool {
     match column {
-        Column::Assigned => trigram_mode && mr.assigned_to_me(),
-        Column::Approver => mr.approved_by_me(),
-        Column::Reviewer => mr.reviewing_me(),
+        Column::Assigned => !matches!(modes.assigned, PeopleDisplay::YesNo) && mr.assigned_to_me(),
+        Column::Approver => !matches!(modes.approver, PeopleDisplay::YesNo) && mr.approved_by_me(),
+        Column::Reviewer => !matches!(modes.reviewer, PeopleDisplay::YesNo) && mr.reviewing_me(),
         Column::Approved
         | Column::Author
         | Column::Repo
@@ -347,7 +419,7 @@ fn row<'a>(
     selected: bool,
     is_new: bool,
     now: jiff::Timestamp,
-    trigram_mode: bool,
+    modes: PeopleDisplayModes,
 ) -> Row<'a> {
     let gutter_cell = Cell::from(gutter(theme, selected, is_new).to_owned());
     let gutter_cell = if selected {
@@ -377,7 +449,7 @@ fn row<'a>(
             // glance rather than blending into the rest of the row.
             Column::Approved if mr.approved && !mr.draft => {
                 let text = truncate(
-                    &cell_text(mr, *column, theme, now, trigram_mode),
+                    &cell_text(mr, *column, theme, now, modes),
                     width,
                     theme.ellipsis(),
                 );
@@ -386,9 +458,9 @@ fn row<'a>(
             // Green, not bold: bold is APRV's signal, and this only marks the row as
             // yours. ASG carries the same fact `Yes`/`No` did before the trigram existed;
             // APPROVER and REVIEWER extend it to a name the ASG column never had.
-            other if marks_me(mr, *other, trigram_mode) && !mr.draft => {
+            other if marks_me(mr, *other, modes) && !mr.draft => {
                 let text = truncate(
-                    &cell_text(mr, *other, theme, now, trigram_mode),
+                    &cell_text(mr, *other, theme, now, modes),
                     width,
                     theme.ellipsis(),
                 );
@@ -396,7 +468,7 @@ fn row<'a>(
             }
             other => {
                 let text = truncate(
-                    &cell_text(mr, *other, theme, now, trigram_mode),
+                    &cell_text(mr, *other, theme, now, modes),
                     width,
                     theme.ellipsis(),
                 );
@@ -444,7 +516,7 @@ pub fn build<'a>(
     allocation: &Allocation,
     theme: &Theme,
     now: jiff::Timestamp,
-    trigram_mode: bool,
+    modes: PeopleDisplayModes,
 ) -> Table<'a> {
     let selected = tab.selected_id();
 
@@ -459,7 +531,7 @@ pub fn build<'a>(
                 selected == Some(mr.id.as_str()),
                 tab.is_new(&mr.id),
                 now,
-                trigram_mode,
+                modes,
             )
         })
         .collect();
@@ -506,9 +578,10 @@ pub fn windowed<T>(rows: &[T], scroll: usize, viewport: usize) -> &[T] {
 /// [`link_titles`] needs this again: the clickable region has to stop where the visible
 /// title does, not run on into the padding that fills out the rest of the column.
 fn title_text(mr: &MergeRequest, width: usize, theme: &Theme, now: jiff::Timestamp) -> String {
-    // The trigram flag only affects `Column::Assigned`, so its value here is moot.
+    // The display modes only affect the people-naming columns, so their value here is
+    // moot.
     truncate(
-        &cell_text(mr, Column::Title, theme, now, false),
+        &cell_text(mr, Column::Title, theme, now, PeopleDisplayModes::default()),
         width,
         theme.ellipsis(),
     )
@@ -673,11 +746,18 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let theme = theme(false);
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, width, &refs);
+        let allocation = allocate(&Column::DEFAULT, width, &refs, PeopleDisplay::YesNo);
 
         terminal
             .draw(|frame| {
-                let table = build(&refs, tab, &allocation, &theme, now(), false);
+                let table = build(
+                    &refs,
+                    tab,
+                    &allocation,
+                    &theme,
+                    now(),
+                    PeopleDisplayModes::default(),
+                );
                 frame.render_widget(table, frame.area());
             })
             .unwrap();
@@ -818,8 +898,8 @@ mod tests {
         let short = mr("a", "bo");
         let long = mr("b", &"x".repeat(25));
 
-        let narrow_author = allocate(&Column::DEFAULT, 120, &[&short]);
-        let wide_author = allocate(&Column::DEFAULT, 120, &[&long]);
+        let narrow_author = allocate(&Column::DEFAULT, 120, &[&short], PeopleDisplay::YesNo);
+        let wide_author = allocate(&Column::DEFAULT, 120, &[&long], PeopleDisplay::YesNo);
 
         let narrow_title = narrow_author.width_of(Column::Title).unwrap();
         let wide_title = wide_author.width_of(Column::Title).unwrap();
@@ -887,8 +967,8 @@ mod tests {
         let mut long = mr("b", "someone");
         long.project_name = "x".repeat(25);
 
-        let narrow_repo = allocate(&Column::DEFAULT, 120, &[&short]);
-        let wide_repo = allocate(&Column::DEFAULT, 120, &[&long]);
+        let narrow_repo = allocate(&Column::DEFAULT, 120, &[&short], PeopleDisplay::YesNo);
+        let wide_repo = allocate(&Column::DEFAULT, 120, &[&long], PeopleDisplay::YesNo);
 
         let narrow_title = narrow_repo.width_of(Column::Title).unwrap();
         let wide_title = wide_repo.width_of(Column::Title).unwrap();
@@ -896,6 +976,42 @@ mod tests {
         assert!(
             narrow_title > wide_title,
             "a short repo ({narrow_title}) should leave more room for the title than a long one ({wide_title})"
+        );
+    }
+
+    /// `assigned_fit` only measures in `username` display mode — `yes_no` and `trigram`
+    /// keep the column at its old fixed width regardless of content.
+    #[test]
+    fn assigned_fit_only_measures_in_username_mode() {
+        let mut m = mr("a", "someone");
+        m.assignees = vec![User::new("a-fairly-long-username")];
+
+        assert_eq!(
+            assigned_fit(&[&m], PeopleDisplay::Username),
+            Some("a-fairly-long-username".width() as u16)
+        );
+        assert_eq!(assigned_fit(&[&m], PeopleDisplay::YesNo), None);
+        assert_eq!(assigned_fit(&[&m], PeopleDisplay::Trigram), None);
+    }
+
+    /// In `username` mode, a wide assignee widens the ASSIGNED column exactly as a wide
+    /// author or repo would — and gives the title back the room it doesn't need.
+    #[test]
+    fn a_long_assignee_username_widens_the_assigned_column() {
+        let mut short = mr("a", "someone");
+        short.assignees = vec![User::new("ab")];
+        let mut long = mr("b", "someone");
+        long.assignees = vec![User::new("a-fairly-long-username")];
+
+        let narrow_assigned = allocate(&Column::DEFAULT, 200, &[&short], PeopleDisplay::Username);
+        let wide_assigned = allocate(&Column::DEFAULT, 200, &[&long], PeopleDisplay::Username);
+
+        // Floored at the ASG header's own width (3), not the old fixed 4 — that fixed
+        // width was never about the header, only about fitting `Yes`/`No`/a trigram.
+        assert_eq!(narrow_assigned.width_of(Column::Assigned), Some(3));
+        assert_eq!(
+            wide_assigned.width_of(Column::Assigned),
+            Some("a-fairly-long-username".width() as u16)
         );
     }
 
@@ -926,7 +1042,7 @@ mod tests {
         m.approved_by = vec!["jdoe".to_owned()];
 
         for column in Column::DEFAULT {
-            let text = cell_text(&m, column, &ascii, now(), false);
+            let text = cell_text(&m, column, &ascii, now(), PeopleDisplayModes::default());
             assert!(text.is_ascii(), "{column:?} rendered `{text}`");
         }
 
@@ -946,30 +1062,66 @@ mod tests {
         m.recompute_derived("me");
 
         assert_eq!(
-            cell_text(&m, Column::Author, &theme(false), now(), false),
+            cell_text(
+                &m,
+                Column::Author,
+                &theme(false),
+                now(),
+                PeopleDisplayModes::default()
+            ),
             "jdoe"
         );
         assert_eq!(
-            cell_text(&m, Column::Repo, &theme(false), now(), false),
+            cell_text(
+                &m,
+                Column::Repo,
+                &theme(false),
+                now(),
+                PeopleDisplayModes::default()
+            ),
             "web-app"
         );
         assert_eq!(
-            cell_text(&m, Column::Title, &theme(false), now(), false),
+            cell_text(
+                &m,
+                Column::Title,
+                &theme(false),
+                now(),
+                PeopleDisplayModes::default()
+            ),
             "Add dark mode"
         );
         assert_eq!(
-            cell_text(&m, Column::Assigned, &theme(false), now(), false),
+            cell_text(
+                &m,
+                Column::Assigned,
+                &theme(false),
+                now(),
+                PeopleDisplayModes::default()
+            ),
             "Yes"
         );
         assert_eq!(
-            cell_text(&m, Column::Diff, &theme(false), now(), false),
+            cell_text(
+                &m,
+                Column::Diff,
+                &theme(false),
+                now(),
+                PeopleDisplayModes::default()
+            ),
             "+310 -4"
         );
 
         m.assignees.clear();
         m.recompute_derived("me");
         assert_eq!(
-            cell_text(&m, Column::Assigned, &theme(false), now(), false),
+            cell_text(
+                &m,
+                Column::Assigned,
+                &theme(false),
+                now(),
+                PeopleDisplayModes::default()
+            ),
             "No"
         );
     }
@@ -977,10 +1129,10 @@ mod tests {
     /// `-` with nobody, the bare username with one, `name +N` with more.
     #[test]
     fn people_cell_names_the_first_and_counts_the_rest() {
-        assert_eq!(people_cell(&[]), "-");
-        assert_eq!(people_cell(&["jdoe".to_owned()]), "jdoe");
+        assert_eq!(people_cell(std::iter::empty::<&str>()), "-");
+        assert_eq!(people_cell(["jdoe"].into_iter()), "jdoe");
         assert_eq!(
-            people_cell(&["jdoe".to_owned(), "bwayne".to_owned(), "asmith".to_owned()]),
+            people_cell(["jdoe", "bwayne", "asmith"].into_iter()),
             "jdoe +2"
         );
     }
@@ -992,28 +1144,98 @@ mod tests {
         m.reviewers = vec!["bwayne".to_owned(), "cdavis".to_owned()];
 
         assert_eq!(
-            cell_text(&m, Column::Approver, &theme(false), now(), false),
+            cell_text(
+                &m,
+                Column::Approver,
+                &theme(false),
+                now(),
+                PeopleDisplayModes::default()
+            ),
             "asmith"
         );
         assert_eq!(
-            cell_text(&m, Column::Reviewer, &theme(false), now(), false),
+            cell_text(
+                &m,
+                Column::Reviewer,
+                &theme(false),
+                now(),
+                PeopleDisplayModes::default()
+            ),
             "bwayne +1"
         );
 
         m.approved_by.clear();
         m.reviewers.clear();
         assert_eq!(
-            cell_text(&m, Column::Approver, &theme(false), now(), false),
+            cell_text(
+                &m,
+                Column::Approver,
+                &theme(false),
+                now(),
+                PeopleDisplayModes::default()
+            ),
             "-"
         );
         assert_eq!(
-            cell_text(&m, Column::Reviewer, &theme(false), now(), false),
+            cell_text(
+                &m,
+                Column::Reviewer,
+                &theme(false),
+                now(),
+                PeopleDisplayModes::default()
+            ),
             "-"
         );
     }
 
-    /// The "this is yours" highlight: ASG only in trigram mode, APPROVER/REVIEWER
-    /// whenever the current user is anywhere in the list, not just shown first.
+    /// APPROVER and REVIEWER in `yes_no` mode read the personal flag, not the list;
+    /// in `trigram` mode they use the first username — there is no display name for an
+    /// approver or reviewer, unlike an assignee.
+    #[test]
+    fn approver_and_reviewer_cells_support_yes_no_and_trigram_too() {
+        let mut m = mr("a", "jdoe");
+        m.approved_by = vec!["me".to_owned()];
+        m.reviewers = vec!["bwayne".to_owned()];
+        m.recompute_derived("me");
+
+        let yes_no = PeopleDisplayModes {
+            assigned: PeopleDisplay::YesNo,
+            approver: PeopleDisplay::YesNo,
+            reviewer: PeopleDisplay::YesNo,
+        };
+        assert_eq!(
+            cell_text(&m, Column::Approver, &theme(false), now(), yes_no),
+            "Yes"
+        );
+        assert_eq!(
+            cell_text(&m, Column::Reviewer, &theme(false), now(), yes_no),
+            "No"
+        );
+
+        let trigram = PeopleDisplayModes {
+            assigned: PeopleDisplay::YesNo,
+            approver: PeopleDisplay::Trigram,
+            reviewer: PeopleDisplay::Trigram,
+        };
+        assert_eq!(
+            cell_text(&m, Column::Approver, &theme(false), now(), trigram),
+            "ME"
+        );
+        assert_eq!(
+            cell_text(&m, Column::Reviewer, &theme(false), now(), trigram),
+            "BWA"
+        );
+
+        m.approved_by.clear();
+        assert_eq!(
+            cell_text(&m, Column::Approver, &theme(false), now(), trigram),
+            "-"
+        );
+    }
+
+    /// The "this is yours" highlight: none of the three counts in `yes_no` mode, since
+    /// the text already says it; `username`/`trigram` mode marks whoever is in the list,
+    /// not just whoever is shown first.
     #[test]
     fn marks_me_reflects_the_current_user_in_each_column() {
         let mut m = mr("a", "jdoe");
@@ -1022,17 +1244,36 @@ mod tests {
         m.assignees = vec![User::new("me")];
         m.recompute_derived("me");
 
-        assert!(marks_me(&m, Column::Approver, false), "me is in the list");
+        let yes_no = PeopleDisplayModes {
+            assigned: PeopleDisplay::YesNo,
+            approver: PeopleDisplay::YesNo,
+            reviewer: PeopleDisplay::YesNo,
+        };
         assert!(
-            !marks_me(&m, Column::Reviewer, false),
+            !marks_me(&m, Column::Approver, yes_no),
+            "yes_no already says so"
+        );
+        assert!(
+            !marks_me(&m, Column::Reviewer, yes_no),
+            "yes_no already says so"
+        );
+        assert!(
+            !marks_me(&m, Column::Assigned, yes_no),
+            "yes_no already says so"
+        );
+
+        let named = PeopleDisplayModes {
+            assigned: PeopleDisplay::Trigram,
+            approver: PeopleDisplay::Username,
+            reviewer: PeopleDisplay::Username,
+        };
+        assert!(marks_me(&m, Column::Approver, named), "me is in the list");
+        assert!(
+            !marks_me(&m, Column::Reviewer, named),
             "me is not reviewing"
         );
-        assert!(
-            !marks_me(&m, Column::Assigned, false),
-            "trigram mode is off"
-        );
-        assert!(marks_me(&m, Column::Assigned, true), "trigram mode is on");
-        assert!(!marks_me(&m, Column::Title, true), "title never marks");
+        assert!(marks_me(&m, Column::Assigned, named), "me is the assignee");
+        assert!(!marks_me(&m, Column::Title, named), "title never marks");
     }
 
     #[test]
@@ -1042,7 +1283,13 @@ mod tests {
         m.title = "Migration guide".into();
 
         assert_eq!(
-            cell_text(&m, Column::Title, &theme(false), now(), false),
+            cell_text(
+                &m,
+                Column::Title,
+                &theme(false),
+                now(),
+                PeopleDisplayModes::default()
+            ),
             "[Draft] Migration guide"
         );
         assert_eq!(cell_role(&m, Column::Title), Role::Dim);
@@ -1084,10 +1331,11 @@ mod tests {
         assert_eq!(trigram(Some("Éowyn Baggins"), "eowyn"), "ÉBA");
     }
 
-    /// The ASG cell in trigram mode: the first assignee's trigram, `-` with none, and the
-    /// legacy `Yes`/`No` text when the mode is off.
+    /// The ASG cell in all three display modes: `Yes`/`No` by default, the first
+    /// assignee's username (or `-`) in `username` mode, and their trigram (or `-`) in
+    /// `trigram` mode.
     #[test]
-    fn the_assigned_column_has_two_modes() {
+    fn the_assigned_column_has_three_modes() {
         let mut m = mr("a", "jdoe");
         m.assignees = vec![User {
             username: "cbillow".to_owned(),
@@ -1095,19 +1343,63 @@ mod tests {
         }];
         m.recompute_derived("nobody");
 
+        let modes = |assigned| PeopleDisplayModes {
+            assigned,
+            ..PeopleDisplayModes::default()
+        };
+
         assert_eq!(
-            cell_text(&m, Column::Assigned, &theme(false), now(), true),
+            cell_text(
+                &m,
+                Column::Assigned,
+                &theme(false),
+                now(),
+                modes(PeopleDisplay::Trigram)
+            ),
             "CBI"
         );
         assert_eq!(
-            cell_text(&m, Column::Assigned, &theme(false), now(), false),
+            cell_text(
+                &m,
+                Column::Assigned,
+                &theme(false),
+                now(),
+                modes(PeopleDisplay::Username)
+            ),
+            "cbillow"
+        );
+        assert_eq!(
+            cell_text(
+                &m,
+                Column::Assigned,
+                &theme(false),
+                now(),
+                modes(PeopleDisplay::YesNo)
+            ),
             "No",
-            "the legacy text ignores who the assignee is"
+            "yes_no ignores who the assignee is"
         );
 
         m.assignees.clear();
         assert_eq!(
-            cell_text(&m, Column::Assigned, &theme(false), now(), true),
+            cell_text(
+                &m,
+                Column::Assigned,
+                &theme(false),
+                now(),
+                modes(PeopleDisplay::Trigram)
+            ),
+            "-",
+            "no assignee at all"
+        );
+        assert_eq!(
+            cell_text(
+                &m,
+                Column::Assigned,
+                &theme(false),
+                now(),
+                modes(PeopleDisplay::Username)
+            ),
             "-",
             "no assignee at all"
         );
@@ -1256,12 +1548,19 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(width, 4)).unwrap();
         let theme = theme(false);
         let rows: [&MergeRequest; 2] = [&wide, &plain];
-        let allocation = allocate(&Column::DEFAULT, width, &rows);
+        let allocation = allocate(&Column::DEFAULT, width, &rows, PeopleDisplay::YesNo);
         let tab = tab();
 
         terminal
             .draw(|frame| {
-                let table = build(&rows, &tab, &allocation, &theme, now(), false);
+                let table = build(
+                    &rows,
+                    &tab,
+                    &allocation,
+                    &theme,
+                    now(),
+                    PeopleDisplayModes::default(),
+                );
                 frame.render_widget(table, frame.area());
             })
             .unwrap();
@@ -1305,12 +1604,19 @@ mod tests {
 
         let mut terminal = Terminal::new(TestBackend::new(120, 4)).unwrap();
         let theme = theme(true);
-        let allocation = allocate(&Column::DEFAULT, 120, &[&m]);
+        let allocation = allocate(&Column::DEFAULT, 120, &[&m], PeopleDisplay::YesNo);
         let tab = tab();
 
         terminal
             .draw(|frame| {
-                let table = build(&[&m], &tab, &allocation, &theme, now(), false);
+                let table = build(
+                    &[&m],
+                    &tab,
+                    &allocation,
+                    &theme,
+                    now(),
+                    PeopleDisplayModes::default(),
+                );
                 frame.render_widget(table, frame.area());
             })
             .unwrap();
@@ -1350,7 +1656,7 @@ mod tests {
         for width in [80u16, 120, 200] {
             let mut terminal = Terminal::new(TestBackend::new(width, 3)).unwrap();
             let theme = theme(false);
-            let allocation = allocate(&Column::DEFAULT, width, &rows);
+            let allocation = allocate(&Column::DEFAULT, width, &rows, PeopleDisplay::YesNo);
             let area = Rect {
                 x: 0,
                 y: 0,
@@ -1360,7 +1666,14 @@ mod tests {
 
             terminal
                 .draw(|frame| {
-                    let table = build(&rows, &tab(), &allocation, &theme, now(), false);
+                    let table = build(
+                        &rows,
+                        &tab(),
+                        &allocation,
+                        &theme,
+                        now(),
+                        PeopleDisplayModes::default(),
+                    );
                     frame.render_widget(table, area);
                 })
                 .unwrap();
@@ -1402,7 +1715,7 @@ mod tests {
         let rows = [&m];
 
         for width in [60u16, 80, 100, 120, 200] {
-            let allocation = allocate(&Column::DEFAULT, width, &rows);
+            let allocation = allocate(&Column::DEFAULT, width, &rows, PeopleDisplay::YesNo);
             let area = Rect {
                 x: 0,
                 y: 0,
@@ -1443,7 +1756,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let theme = theme(false);
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, width, &refs);
+        let allocation = allocate(&Column::DEFAULT, width, &refs, PeopleDisplay::YesNo);
         let area = Rect {
             x: 0,
             y: 0,
@@ -1453,7 +1766,14 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                let table = build(&refs, &tab(), &allocation, &theme, now(), false);
+                let table = build(
+                    &refs,
+                    &tab(),
+                    &allocation,
+                    &theme,
+                    now(),
+                    PeopleDisplayModes::default(),
+                );
                 frame.render_widget(table, area);
                 if links {
                     link_titles(frame.buffer_mut(), area, &refs, &allocation, &theme, now());
@@ -1481,7 +1801,7 @@ mod tests {
         let rows = linked_rows();
         let buffer = buffer_of(&rows, 120, 4, true);
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, 120, &refs);
+        let allocation = allocate(&Column::DEFAULT, 120, &refs, PeopleDisplay::YesNo);
         let x = column_x(
             &allocation,
             Rect {
@@ -1516,7 +1836,7 @@ mod tests {
         let rows = linked_rows();
         let buffer = buffer_of(&rows, 120, 4, true);
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, 120, &refs);
+        let allocation = allocate(&Column::DEFAULT, 120, &refs, PeopleDisplay::YesNo);
         let x = column_x(
             &allocation,
             Rect {
@@ -1546,7 +1866,7 @@ mod tests {
         rows[0].title = "x".to_owned();
         let buffer = buffer_of(&rows, 120, 4, true);
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, 120, &refs);
+        let allocation = allocate(&Column::DEFAULT, 120, &refs, PeopleDisplay::YesNo);
         let x = column_x(
             &allocation,
             Rect {
@@ -1616,7 +1936,7 @@ mod tests {
         };
         let linked = buffer_of(&rows, width, 4, true);
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, width, &refs);
+        let allocation = allocate(&Column::DEFAULT, width, &refs, PeopleDisplay::YesNo);
 
         let blank = ratatui::buffer::Buffer::empty(area);
         let updates = blank.diff(&linked);
@@ -1662,7 +1982,7 @@ mod tests {
         };
         let rows = linked_rows();
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, width, &refs);
+        let allocation = allocate(&Column::DEFAULT, width, &refs, PeopleDisplay::YesNo);
 
         let sink = Sink::default();
         let mut terminal = Terminal::with_options(
@@ -1675,7 +1995,14 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                let table = build(&refs, &tab(), &allocation, &theme(false), now(), false);
+                let table = build(
+                    &refs,
+                    &tab(),
+                    &allocation,
+                    &theme(false),
+                    now(),
+                    PeopleDisplayModes::default(),
+                );
                 frame.render_widget(table, area);
                 link_titles(
                     frame.buffer_mut(),
@@ -1719,7 +2046,7 @@ mod tests {
         };
         let mut rows = linked_rows();
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, width, &refs);
+        let allocation = allocate(&Column::DEFAULT, width, &refs, PeopleDisplay::YesNo);
 
         let sink = Sink::default();
         let mut terminal = Terminal::with_options(
@@ -1733,7 +2060,14 @@ mod tests {
         let t = tab();
         terminal
             .draw(|frame| {
-                let table = build(&refs, &t, &allocation, &theme(false), now(), false);
+                let table = build(
+                    &refs,
+                    &t,
+                    &allocation,
+                    &theme(false),
+                    now(),
+                    PeopleDisplayModes::default(),
+                );
                 frame.render_widget(table, area);
                 link_titles(
                     frame.buffer_mut(),
@@ -1755,7 +2089,14 @@ mod tests {
         let refs2: Vec<&MergeRequest> = rows.iter().collect();
         terminal
             .draw(|frame| {
-                let table = build(&refs2, &t, &allocation, &theme(false), now(), false);
+                let table = build(
+                    &refs2,
+                    &t,
+                    &allocation,
+                    &theme(false),
+                    now(),
+                    PeopleDisplayModes::default(),
+                );
                 frame.render_widget(table, area);
                 link_titles(
                     frame.buffer_mut(),
@@ -1815,7 +2156,7 @@ mod tests {
             &mut empty,
             narrow,
             &refs,
-            &allocate(&[Column::Author], 10, &refs),
+            &allocate(&[Column::Author], 10, &refs, PeopleDisplay::YesNo),
             &theme(false),
             now(),
         );

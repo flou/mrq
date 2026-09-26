@@ -43,9 +43,17 @@
 # show_drafts = false
 # relative_times = true
 
-# Show the first assignee's initials (Charles Billow -> CBI) in the ASG column instead
-# of Yes/No. Green when the assignee is you, `-` when there is none.
-# assignee_trigram = false
+# How the ASG / APPROVER / REVIEWER columns name people. One of:
+#
+#   yes_no    "Yes"/"No" against whether you are one of them
+#   username  the first person's username, +N for the rest, `-` for none
+#   trigram   the first person's initials (Charles Billow -> CBI), `-` for none
+#
+# Green marks the row as yours in username and trigram mode; yes_no already says so in
+# text.
+# assigned_display = "yes_no"
+# approver_display = "username"
+# reviewer_display = "username"
 
 # Mouse capture. Off by default so the terminal keeps its native selection and copy.
 # mouse = false

@@ -97,6 +97,9 @@ pub struct Fitted {
     /// Widest project name on the current rows, already clamped by the caller to
     /// `header().width() ..= FIT_MAX`.
     pub repo: Option<u16>,
+    /// Widest ASSIGNED cell on the current rows, in `username` display mode only —
+    /// `None` in `yes_no` or `trigram` mode, where the column stays fixed-width.
+    pub assigned: Option<u16>,
 }
 
 /// How much a column is worth keeping, for widths below what whole-column dropping covers.
@@ -170,11 +173,19 @@ const fn rules(column: Column, fitted: Fitted) -> Rules {
             minimum: 2,
             flex: false,
         },
-        Column::Assigned => Rules {
-            preferred: 4,
-            minimum: 4,
-            flex: false,
-        },
+        // Fixed at 4 — wide enough for `Yes`/`No` and a trigram — unless `username`
+        // display mode measured wider content, the same treatment as `author`.
+        Column::Assigned => {
+            let preferred = match fitted.assigned {
+                Some(width) => width,
+                None => 4,
+            };
+            Rules {
+                preferred,
+                minimum: if preferred < 8 { preferred } else { 8 },
+                flex: false,
+            }
+        }
         Column::Approver => Rules {
             preferred: 14,
             minimum: 8,
@@ -765,7 +776,11 @@ mod tests {
     fn allocation_never_exceeds_available_width_for_any_fitted_width() {
         for author in [None, Some(6), Some(20), Some(FIT_MAX)] {
             for repo in [None, Some(10), Some(20), Some(FIT_MAX)] {
-                let fitted = Fitted { author, repo };
+                let fitted = Fitted {
+                    author,
+                    repo,
+                    assigned: None,
+                };
                 for width in [0, 20, 40, 60, 80, 100, 120, 200, 300] {
                     let allocation = allocate(&default_columns(), width, fitted);
                     assert!(
@@ -842,11 +857,33 @@ mod tests {
         let fitted = Fitted {
             author: Some(9),
             repo: Some(25),
+            assigned: None,
         };
         let allocation = allocate(&default_columns(), 200, fitted);
 
         assert_eq!(allocation.width_of(Column::Author), Some(9));
         assert_eq!(allocation.width_of(Column::Repo), Some(25));
+    }
+
+    /// `assigned` mirrors `author`/`repo`: a fitted width — only ever set in `username`
+    /// display mode — becomes its preferred width.
+    #[test]
+    fn a_fitted_assigned_width_becomes_the_preferred_width() {
+        let fitted = Fitted {
+            assigned: Some(14),
+            ..Fitted::default()
+        };
+        let allocation = allocate(&default_columns(), 200, fitted);
+
+        assert_eq!(allocation.width_of(Column::Assigned), Some(14));
+    }
+
+    /// No measurement — `yes_no` or `trigram` mode, or an empty tab — falls back to the
+    /// old fixed width.
+    #[test]
+    fn no_measurement_falls_back_to_the_fixed_assigned_width() {
+        let allocation = allocate(&default_columns(), 200, Fitted::default());
+        assert_eq!(allocation.width_of(Column::Assigned), Some(4));
     }
 }
 

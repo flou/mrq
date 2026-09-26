@@ -454,6 +454,7 @@ impl App {
             &self.visible_columns(),
             area.width,
             &self.view.visible_rows(),
+            self.config.ui.assigned_display,
         );
         let (Some(x), Some(width)) = (
             ui::table::column_x(&allocation, area, Column::Title),
@@ -653,7 +654,11 @@ impl Application for App {
             columns: &columns,
             now: jiff::Timestamp::now(),
             hyperlinks: self.hyperlinks,
-            assignee_trigram: self.config.ui.assignee_trigram,
+            people_display: ui::table::PeopleDisplayModes {
+                assigned: self.config.ui.assigned_display,
+                approver: self.config.ui.approver_display,
+                reviewer: self.config.ui.reviewer_display,
+            },
         };
 
         // The scene borrows `self`; `Terminal::draw` only takes `self.terminal`, and
