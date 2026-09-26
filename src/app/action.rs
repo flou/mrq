@@ -819,23 +819,32 @@ pub fn handle_key(state: &mut ViewState, keymap: &Keymap, key: KeyEvent) -> KeyO
             if key.code == KeyCode::Esc {
                 return close_popup(state, &popup);
             }
-            // A bare quit key (`q`) closes the popup instead of the whole app, the same
-            // as Esc — closing what's on screen is what every other popup key does. A
-            // modified one (Ctrl-C) still quits from inside a popup, so a broken popup
-            // can never trap the user.
-            if keymap.action_for(key) == Some(Action::Quit) {
-                if key.modifiers.is_empty() {
+
+            // In the Filter popup a bare printable character — including `q` and `f`,
+            // its own opening key — is query text, not a command, so it skips every
+            // check below and goes straight to `popup_key`. Only a modified key (like
+            // Ctrl-C) still reaches them.
+            let is_filter_text = popup.kind == Popup::Filter
+                && matches!(key.code, KeyCode::Char(_))
+                && key.modifiers.is_empty();
+
+            if !is_filter_text {
+                // A bare quit key (`q`) closes the popup instead of the whole app, the
+                // same as Esc — closing what's on screen is what every other popup key
+                // does. A modified one (Ctrl-C) still quits from inside a popup, so a
+                // broken popup can never trap the user.
+                if keymap.action_for(key) == Some(Action::Quit) {
+                    if key.modifiers.is_empty() {
+                        return close_popup(state, &popup);
+                    }
+                    return dispatch_key(state, keymap, key);
+                }
+                // The key that opened this popup closes it again, same as Esc.
+                if keymap.action_for(key) == Some(popup.kind.opening_action()) {
                     return close_popup(state, &popup);
                 }
-                return dispatch_key(state, keymap, key);
             }
-            // The key that opened this popup closes it again, same as Esc — except
-            // Filter, whose key doubles as ordinary query text and must keep typing.
-            if popup.kind != Popup::Filter
-                && keymap.action_for(key) == Some(popup.kind.opening_action())
-            {
-                return close_popup(state, &popup);
-            }
+
             popup_key(state, keymap, popup, key)
         }
 
@@ -977,9 +986,21 @@ fn popup_key(
     match key.code {
         KeyCode::Char('d') if ctrl => popup.cursor = next(popup.cursor, POPUP_PAGE, rows),
         KeyCode::Char('u') if ctrl => popup.cursor = previous(popup.cursor, POPUP_PAGE),
+        // Ctrl-N/Ctrl-P move by one line in every popup, Filter included — an escape
+        // hatch for it, where bare `j`/`k` are query text rather than navigation.
+        KeyCode::Char('n') if ctrl => popup.cursor = next(popup.cursor, 1, rows),
+        KeyCode::Char('p') if ctrl => popup.cursor = previous(popup.cursor, 1),
 
-        KeyCode::Char('j') | KeyCode::Down => popup.cursor = next(popup.cursor, 1, rows),
-        KeyCode::Char('k') | KeyCode::Up => popup.cursor = previous(popup.cursor, 1),
+        KeyCode::Down => popup.cursor = next(popup.cursor, 1, rows),
+        KeyCode::Up => popup.cursor = previous(popup.cursor, 1),
+        // `j`/`k` are navigation everywhere except Filter, where they are query text
+        // (handled by the `Char(c)` arm below).
+        KeyCode::Char('j') if popup.kind != Popup::Filter => {
+            popup.cursor = next(popup.cursor, 1, rows);
+        }
+        KeyCode::Char('k') if popup.kind != Popup::Filter => {
+            popup.cursor = previous(popup.cursor, 1);
+        }
         KeyCode::PageDown => popup.cursor = next(popup.cursor, POPUP_PAGE, rows),
         KeyCode::PageUp => popup.cursor = previous(popup.cursor, POPUP_PAGE),
         KeyCode::Home => popup.cursor = 0,
@@ -1006,7 +1027,8 @@ fn popup_key(
             popup.cursor = 0;
         }
         KeyCode::Char(c) => match popup.kind {
-            // Typing filters the list; there is no letter shortcut to collide with.
+            // Typing filters the list. `j`/`k`/`g`/`G` are excluded from navigation
+            // above (and quit/close from `handle_key`) so every letter lands here.
             Popup::Filter => {
                 popup.query.push(c);
                 popup.cursor = 0;
@@ -2895,6 +2917,47 @@ mod tests {
 
         assert!(state.mode.popup().is_some(), "still open");
         assert_eq!(state.mode.popup_state().unwrap().query, "f");
+    }
+
+    /// `q`, `j` and `k` are bound elsewhere (quit, down, up), but inside Filter's own
+    /// query box they are just letters, the same as any other character.
+    #[test]
+    fn filter_query_accepts_quit_and_navigation_letters() {
+        let keymap = keymap();
+        let mut state = state_with(rows(1));
+
+        dispatch(&mut state, Action::FilterMenu);
+        for c in ['q', 'j', 'k'] {
+            handle_key(&mut state, &keymap, key(KeyCode::Char(c)));
+        }
+
+        assert!(state.mode.popup().is_some(), "still open");
+        assert_eq!(state.mode.popup_state().unwrap().query, "qjk");
+    }
+
+    /// Ctrl-N/Ctrl-P are the Filter popup's way to move the cursor without `j`/`k`,
+    /// which are query text there.
+    #[test]
+    fn ctrl_n_and_ctrl_p_navigate_the_filter_popup() {
+        let keymap = keymap();
+        let mut state = state_with(rows(1));
+
+        dispatch(&mut state, Action::FilterMenu);
+        let start = state.mode.popup_state().unwrap().cursor;
+
+        handle_key(
+            &mut state,
+            &keymap,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+        );
+        assert!(state.mode.popup_state().unwrap().cursor > start);
+
+        handle_key(
+            &mut state,
+            &keymap,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.mode.popup_state().unwrap().cursor, start);
     }
 
     /// A popup swallows keys so the table underneath does not also act on them.
