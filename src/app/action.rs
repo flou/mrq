@@ -110,6 +110,9 @@ pub enum Mode {
     /// Typing a search query. Printable keys go into the query, not to actions.
     Search {
         query: String,
+        /// The tab's committed query when `/` opened this search, so Esc can restore
+        /// it rather than wiping out a saved search the user only meant to tweak.
+        original: Option<String>,
     },
     Popup(PopupState),
 }
@@ -301,7 +304,7 @@ impl ViewState {
     fn search_query_of(&self, index: usize) -> Option<&str> {
         let committed = self.tabs.get(index).and_then(|t| t.search.as_deref());
         match &self.mode {
-            Mode::Search { query } if index == self.tabs.active_index() => Some(query.as_str()),
+            Mode::Search { query, .. } if index == self.tabs.active_index() => Some(query.as_str()),
             Mode::Search { .. } | Mode::Normal | Mode::Popup(_) => committed,
         }
     }
@@ -731,12 +734,11 @@ pub fn dispatch(state: &mut ViewState, action: Action) -> (bool, Effect) {
         }
 
         Action::Search => {
-            let existing = state
-                .tabs
-                .active()
-                .and_then(|t| t.search.clone())
-                .unwrap_or_default();
-            state.mode = Mode::Search { query: existing };
+            let original = state.tabs.active().and_then(|t| t.search.clone());
+            state.mode = Mode::Search {
+                query: original.clone().unwrap_or_default(),
+                original,
+            };
             (true, Effect::None)
         }
         Action::ClearSearch => {
@@ -776,13 +778,14 @@ fn close_popup(state: &mut ViewState, popup: &PopupState) -> KeyOutcome {
 /// way that looks like random misbehaviour.
 pub fn handle_key(state: &mut ViewState, keymap: &Keymap, key: KeyEvent) -> KeyOutcome {
     match &state.mode {
-        Mode::Search { query } => {
+        Mode::Search { query, original } => {
             let mut query = query.clone();
+            let original = original.clone();
             match key.code {
                 KeyCode::Esc => {
                     state.mode = Mode::Normal;
                     if let Some(tab) = state.tabs.active_mut() {
-                        tab.search = None;
+                        tab.search = original;
                     }
                     return KeyOutcome::Handled { redraw: true };
                 }
@@ -796,8 +799,42 @@ pub fn handle_key(state: &mut ViewState, keymap: &Keymap, key: KeyEvent) -> KeyO
                 KeyCode::Backspace => {
                     query.pop();
                 }
-                // Ctrl-anything is not text; let it fall through so ctrl-c still quits
-                // from inside the search box.
+                // The row selection moves without leaving the search box, so the table
+                // can be scanned while the query is still being narrowed. Ctrl-P/Ctrl-N
+                // are the same, for a terminal that eats the arrow keys.
+                KeyCode::Up => {
+                    state.move_selection(-1);
+                    return KeyOutcome::Handled { redraw: true };
+                }
+                KeyCode::Down => {
+                    state.move_selection(1);
+                    return KeyOutcome::Handled { redraw: true };
+                }
+                KeyCode::PageUp => {
+                    state.move_selection(-state.half_page());
+                    return KeyOutcome::Handled { redraw: true };
+                }
+                KeyCode::PageDown => {
+                    state.move_selection(state.half_page());
+                    return KeyOutcome::Handled { redraw: true };
+                }
+                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    state.move_selection(-1);
+                    return KeyOutcome::Handled { redraw: true };
+                }
+                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    state.move_selection(1);
+                    return KeyOutcome::Handled { redraw: true };
+                }
+                // Ctrl-U/Ctrl-W are ordinary line editing, not table navigation.
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    query.clear();
+                }
+                KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    delete_last_word(&mut query);
+                }
+                // Any other Ctrl-anything is not text; let it fall through so ctrl-c
+                // still quits from inside the search box.
                 KeyCode::Char(_) if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     return dispatch_key(state, keymap, key);
                 }
@@ -809,7 +846,7 @@ pub fn handle_key(state: &mut ViewState, keymap: &Keymap, key: KeyEvent) -> KeyO
             if let Some(tab) = state.tabs.active_mut() {
                 tab.search = Some(query.clone());
             }
-            state.mode = Mode::Search { query };
+            state.mode = Mode::Search { query, original };
             KeyOutcome::Handled { redraw: true }
         }
 
@@ -873,16 +910,25 @@ fn handle_normal(state: &mut ViewState, keymap: &Keymap, key: KeyEvent) -> KeyOu
 /// single state update, control characters stripped so a trailing newline cannot corrupt
 /// the single-line status bar, and it is ignored anywhere else.
 pub fn handle_paste(state: &mut ViewState, text: &str) -> KeyOutcome {
-    let Mode::Search { query } = &state.mode else {
+    let Mode::Search { query, original } = &state.mode else {
         return KeyOutcome::Ignored;
     };
     let mut query = query.clone();
+    let original = original.clone();
     query.extend(text.chars().filter(|c| !c.is_control()));
     if let Some(tab) = state.tabs.active_mut() {
         tab.search = Some(query.clone());
     }
-    state.mode = Mode::Search { query };
+    state.mode = Mode::Search { query, original };
     KeyOutcome::Handled { redraw: true }
+}
+
+/// Delete the last word from a search query, Ctrl-W's usual line-editing meaning:
+/// trailing whitespace first, then the non-whitespace run before it.
+fn delete_last_word(query: &mut String) {
+    let trimmed = query.trim_end();
+    let cut = trimmed.rfind(char::is_whitespace).map_or(0, |i| i + 1);
+    query.truncate(cut);
 }
 
 /// Wheel-scroll moves the cursor, exactly like the keyboard: the view follows the
@@ -2062,7 +2108,10 @@ mod tests {
 
         assert_eq!(
             state.mode,
-            Mode::Search { query: "2".into() },
+            Mode::Search {
+                query: "2".into(),
+                original: None
+            },
             "the digit typed into the query"
         );
         assert_eq!(state.tabs.active_index(), 0);
@@ -2083,6 +2132,7 @@ mod tests {
             state.mode,
             Mode::Search {
                 query: "merge request 2".into(),
+                original: None,
             },
             "controls stripped, everything else kept, one update"
         );
@@ -2133,7 +2183,8 @@ mod tests {
         assert_eq!(
             state.mode,
             Mode::Search {
-                query: String::new()
+                query: String::new(),
+                original: None,
             }
         );
     }
@@ -2768,7 +2819,8 @@ mod tests {
         assert_eq!(
             state.mode,
             Mode::Search {
-                query: "dqs".into()
+                query: "dqs".into(),
+                original: None,
             }
         );
         assert_eq!(
@@ -2809,7 +2861,13 @@ mod tests {
         }
         handle_key(&mut state, &keymap, key(KeyCode::Backspace));
 
-        assert_eq!(state.mode, Mode::Search { query: "ab".into() });
+        assert_eq!(
+            state.mode,
+            Mode::Search {
+                query: "ab".into(),
+                original: None,
+            }
+        );
     }
 
     #[test]
@@ -2831,6 +2889,85 @@ mod tests {
 
         handle_key(&mut state, &keymap, key(KeyCode::Esc));
         assert_eq!(state.tabs.active().unwrap().search, None);
+    }
+
+    /// Arrow keys and Ctrl-P/Ctrl-N move the row selection without leaving the search
+    /// box, so the table can be scanned while the query is still being narrowed.
+    #[test]
+    fn search_mode_navigates_the_selection_without_losing_the_query() {
+        let mut state = state_with(rows(5));
+        let keymap = keymap();
+
+        dispatch(&mut state, Action::Down);
+        dispatch(&mut state, Action::Search);
+        for c in "merge".chars() {
+            handle_key(&mut state, &keymap, key(KeyCode::Char(c)));
+        }
+        let start = cursor_of(&state);
+
+        handle_key(&mut state, &keymap, key(KeyCode::Down));
+        assert_eq!(cursor_of(&state), start + 1);
+
+        handle_key(
+            &mut state,
+            &keymap,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(cursor_of(&state), start);
+
+        handle_key(
+            &mut state,
+            &keymap,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(cursor_of(&state), start + 1);
+
+        assert_eq!(
+            state.mode,
+            Mode::Search {
+                query: "merge".into(),
+                original: None,
+            },
+            "navigation did not touch the query"
+        );
+    }
+
+    /// Ctrl-U clears the query outright, and Ctrl-W deletes just its last word.
+    #[test]
+    fn ctrl_u_and_ctrl_w_edit_the_query() {
+        let mut state = state_with(rows(1));
+        let keymap = keymap();
+
+        dispatch(&mut state, Action::Search);
+        for c in "merge request".chars() {
+            handle_key(&mut state, &keymap, key(KeyCode::Char(c)));
+        }
+
+        handle_key(
+            &mut state,
+            &keymap,
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(
+            state.mode,
+            Mode::Search {
+                query: "merge ".into(),
+                original: None,
+            }
+        );
+
+        handle_key(
+            &mut state,
+            &keymap,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(
+            state.mode,
+            Mode::Search {
+                query: String::new(),
+                original: None,
+            }
+        );
     }
 
     /// A modal bug that traps the user in the search box is worse than a broken search.
@@ -3018,9 +3155,48 @@ mod tests {
         assert_eq!(
             state.mode,
             Mode::Search {
-                query: "req".into()
+                query: "req".into(),
+                original: Some("req".into()),
             }
         );
+    }
+
+    /// Esc during a reopened search restores the query it had before, rather than
+    /// wiping out a saved search the user only meant to tweak.
+    #[test]
+    fn escape_restores_the_query_a_reopened_search_started_with() {
+        let mut state = state_with(rows(5));
+        let keymap = keymap();
+
+        dispatch(&mut state, Action::Search);
+        for c in "req".chars() {
+            handle_key(&mut state, &keymap, key(KeyCode::Char(c)));
+        }
+        handle_key(&mut state, &keymap, key(KeyCode::Enter));
+
+        dispatch(&mut state, Action::Search);
+        for c in "uest 1".chars() {
+            handle_key(&mut state, &keymap, key(KeyCode::Char(c)));
+        }
+        handle_key(&mut state, &keymap, key(KeyCode::Esc));
+
+        assert!(state.mode.is_normal());
+        assert_eq!(state.tabs.active().unwrap().search.as_deref(), Some("req"));
+    }
+
+    /// Esc on a search that was never committed clears it, same as before — there is no
+    /// prior query to restore.
+    #[test]
+    fn escape_on_a_fresh_search_clears_it() {
+        let mut state = state_with(rows(5));
+        let keymap = keymap();
+
+        dispatch(&mut state, Action::Search);
+        handle_key(&mut state, &keymap, key(KeyCode::Char('x')));
+        handle_key(&mut state, &keymap, key(KeyCode::Esc));
+
+        assert!(state.mode.is_normal());
+        assert_eq!(state.tabs.active().unwrap().search, None);
     }
 
     #[test]
