@@ -760,6 +760,15 @@ pub enum KeyOutcome {
     Action { redraw: bool, effect: Effect },
 }
 
+/// Close the open popup, restoring the skin picker's preview if it changed one.
+fn close_popup(state: &mut ViewState, popup: &PopupState) -> KeyOutcome {
+    if let Some(skin) = &popup.previous_skin {
+        state.theme = state.theme.with_skin(skin);
+    }
+    state.mode = Mode::Normal;
+    KeyOutcome::Handled { redraw: true }
+}
+
 /// Route a key press.
 ///
 /// Modes capture keys before the keymap sees them: while typing a search, `d` is a
@@ -808,14 +817,16 @@ pub fn handle_key(state: &mut ViewState, keymap: &Keymap, key: KeyEvent) -> KeyO
             let popup = popup.clone();
             // Esc closes any popup, always, before anything else looks at the key.
             if key.code == KeyCode::Esc {
-                if let Some(skin) = &popup.previous_skin {
-                    state.theme = state.theme.with_skin(skin);
-                }
-                state.mode = Mode::Normal;
-                return KeyOutcome::Handled { redraw: true };
+                return close_popup(state, &popup);
             }
-            // Quit must work from inside a popup, or a modal bug traps the user.
+            // A bare quit key (`q`) closes the popup instead of the whole app, the same
+            // as Esc — closing what's on screen is what every other popup key does. A
+            // modified one (Ctrl-C) still quits from inside a popup, so a broken popup
+            // can never trap the user.
             if keymap.action_for(key) == Some(Action::Quit) {
+                if key.modifiers.is_empty() {
+                    return close_popup(state, &popup);
+                }
                 return dispatch_key(state, keymap, key);
             }
             // The key that opened this popup closes it again, same as Esc — except
@@ -823,11 +834,7 @@ pub fn handle_key(state: &mut ViewState, keymap: &Keymap, key: KeyEvent) -> KeyO
             if popup.kind != Popup::Filter
                 && keymap.action_for(key) == Some(popup.kind.opening_action())
             {
-                if let Some(skin) = &popup.previous_skin {
-                    state.theme = state.theme.with_skin(skin);
-                }
-                state.mode = Mode::Normal;
-                return KeyOutcome::Handled { redraw: true };
+                return close_popup(state, &popup);
             }
             popup_key(state, keymap, popup, key)
         }
@@ -2838,8 +2845,19 @@ mod tests {
         handle_key(&mut state, &keymap, key(KeyCode::Esc));
         assert!(state.mode.is_normal());
 
+        // A bare `q` closes the popup, the same as Esc, rather than quitting the app.
         dispatch(&mut state, Action::Help);
         let outcome = handle_key(&mut state, &keymap, key(KeyCode::Char('q')));
+        assert!(state.mode.is_normal(), "{outcome:?}");
+
+        // A modified quit key (Ctrl-C) still quits from inside a popup, so a modal bug
+        // can never trap the user.
+        dispatch(&mut state, Action::Help);
+        let outcome = handle_key(
+            &mut state,
+            &keymap,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        );
         assert!(
             matches!(
                 outcome,
