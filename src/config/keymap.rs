@@ -470,8 +470,8 @@ pub const DEFAULT_BINDINGS: &[(Action, &[&str])] = &[
     (Action::OpenProject, &["shift-O"]),
     (Action::CopyUrl, &["y"]),
     (Action::CopyBranch, &["shift-Y"]),
-    (Action::ShowDetails, &["i"]),
-    (Action::ToggleDrafts, &["d"]),
+    (Action::ShowDetails, &["d"]),
+    (Action::ToggleDrafts, &["ctrl-a"]),
     (Action::ToggleWide, &["w"]),
     (Action::SortMenu, &["shift-S"]),
     (Action::InvertSort, &["shift-I"]),
@@ -698,8 +698,8 @@ mod tests {
             ("shift-O", Action::OpenProject),
             ("y", Action::CopyUrl),
             ("shift-Y", Action::CopyBranch),
-            ("i", Action::ShowDetails),
-            ("d", Action::ToggleDrafts),
+            ("d", Action::ShowDetails),
+            ("ctrl-a", Action::ToggleDrafts),
             ("w", Action::ToggleWide),
             ("shift-S", Action::SortMenu),
             ("shift-I", Action::InvertSort),
@@ -810,18 +810,18 @@ mod tests {
     #[test]
     fn swapping_two_bindings_is_allowed() {
         let map = resolve(&user(&[
-            ("toggle_drafts", &["o"]),
-            ("open_mr", &["d", "enter"]),
+            ("show_details", &["ctrl-a"]),
+            ("toggle_drafts", &["d"]),
         ]))
         .unwrap();
 
         assert_eq!(
-            map.action_for(press(KeyCode::Char('o'), KeyModifiers::empty())),
-            Some(Action::ToggleDrafts)
+            map.action_for(press(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            Some(Action::ShowDetails)
         );
         assert_eq!(
             map.action_for(press(KeyCode::Char('d'), KeyModifiers::empty())),
-            Some(Action::OpenMr)
+            Some(Action::ToggleDrafts)
         );
     }
 

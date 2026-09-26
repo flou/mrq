@@ -882,12 +882,12 @@ fn an_empty_list_unbinds_and_frees_the_key_for_another_action() {
 fn swapping_two_bindings_in_one_file_is_allowed() {
     let map = keymap_from(&doc("
 [keys]
-toggle_drafts = [\"o\"]
-open_mr = [\"d\", \"enter\"]
+show_details = [\"ctrl-a\"]
+toggle_drafts = [\"d\"]
 "));
 
-    assert_eq!(specs_for(&map, Action::ToggleDrafts), ["o"]);
-    assert_eq!(specs_for(&map, Action::OpenMr), ["d", "enter"]);
+    assert_eq!(specs_for(&map, Action::ShowDetails), ["ctrl-a"]);
+    assert_eq!(specs_for(&map, Action::ToggleDrafts), ["d"]);
 }
 
 /// The help popup is generated from the resolved map, so it cannot lie to a

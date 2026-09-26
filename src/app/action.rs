@@ -2601,7 +2601,7 @@ mod tests {
         dispatch(&mut state, Action::ShowDetails);
         assert!(state.mode.popup().is_some());
 
-        handle_key(&mut state, &keymap, key(KeyCode::Char('i')));
+        handle_key(&mut state, &keymap, key(KeyCode::Char('d')));
         assert!(state.mode.is_normal());
     }
 
@@ -3109,7 +3109,11 @@ mod tests {
 
         dispatch(&mut state, Action::Help);
         let before = state.tabs.active().unwrap().show_drafts();
-        let outcome = handle_key(&mut state, &keymap, key(KeyCode::Char('d')));
+        let outcome = handle_key(
+            &mut state,
+            &keymap,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+        );
 
         assert_eq!(outcome, KeyOutcome::Handled { redraw: false });
         assert_eq!(state.tabs.active().unwrap().show_drafts(), before);
