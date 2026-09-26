@@ -894,7 +894,7 @@ open_mr = [\"d\", \"enter\"]
 /// user who has rebound something, and it must not advertise an unbound action.
 #[test]
 fn the_resolved_map_is_what_the_help_popup_reads() {
-    let map = keymap_from("[keys]\nquit = [\"ctrl-q\"]\nhelp = []\n");
+    let map = keymap_from("[keys]\nquit = [\"ctrl-q\"]\nhelp = []\nlog_menu = []\n");
 
     assert_eq!(specs_for(&map, Action::Quit), ["ctrl-q"]);
     let app = map.bound_in(keymap::Category::Application);
@@ -905,7 +905,7 @@ fn the_resolved_map_is_what_the_help_popup_reads() {
     );
     assert!(
         !app.contains(&Action::LogMenu),
-        "and neither are the ones that ship unbound"
+        "including one unbound by the user rather than by default"
     );
 }
 

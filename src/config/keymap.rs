@@ -455,13 +455,10 @@ impl Keymap {
 }
 
 /// The default bindings, exactly as shipped in the `[keys]` block.
-///
-/// `refresh_visible` and `log_menu` are deliberately unbound: reserved actions with no
-/// default key.
 pub const DEFAULT_BINDINGS: &[(Action, &[&str])] = &[
     (Action::Quit, &["q", "ctrl-c"]),
     (Action::Refresh, &["ctrl-r"]),
-    (Action::RefreshVisible, &[]),
+    (Action::RefreshVisible, &["r"]),
     (Action::Down, &["j", "down"]),
     (Action::Up, &["k", "up"]),
     (Action::PageDown, &["ctrl-d", "pagedown"]),
@@ -479,13 +476,13 @@ pub const DEFAULT_BINDINGS: &[(Action, &[&str])] = &[
     (Action::SortMenu, &["shift-S"]),
     (Action::InvertSort, &["shift-I"]),
     (Action::SkinMenu, &["ctrl-t"]),
-    (Action::NextFilter, &["]", "right"]),
-    (Action::PrevFilter, &["[", "left"]),
+    (Action::NextFilter, &["]", "right", "tab"]),
+    (Action::PrevFilter, &["[", "left", "shift-tab"]),
     (Action::FilterMenu, &["f"]),
     (Action::Search, &["/"]),
     (Action::ClearSearch, &["esc"]),
     (Action::Help, &["?", "f1"]),
-    (Action::LogMenu, &[]),
+    (Action::LogMenu, &["shift-L"]),
 ];
 
 /// Build the keymap from the defaults merged with a user `[keys]` table.
@@ -613,8 +610,7 @@ mod tests {
         let map = resolve(&BTreeMap::new()).unwrap();
         assert_eq!(
             map.action_for(press(KeyCode::BackTab, KeyModifiers::SHIFT)),
-            None,
-            "shift-tab is no longer bound by default"
+            Some(Action::PrevFilter),
         );
     }
 
@@ -737,10 +733,12 @@ mod tests {
     }
 
     #[test]
-    fn reserved_actions_ship_unbound_but_are_still_bindable() {
+    fn log_menu_default_can_still_be_overridden() {
         let map = resolve(&BTreeMap::new()).unwrap();
-        assert!(map.keys_for(Action::RefreshVisible).is_empty());
-        assert!(map.keys_for(Action::LogMenu).is_empty());
+        assert_eq!(
+            map.action_for(press(KeyCode::Char('L'), KeyModifiers::SHIFT)),
+            Some(Action::LogMenu)
+        );
 
         let map = resolve(&user(&[("log_menu", &["e"])])).unwrap();
         assert_eq!(
@@ -844,7 +842,7 @@ mod tests {
     /// Help is generated from the resolved map, so it reflects rebinding.
     #[test]
     fn the_map_is_queryable_by_action_for_the_help_popup() {
-        let map = resolve(&user(&[("quit", &["ctrl-q"])])).unwrap();
+        let map = resolve(&user(&[("quit", &["ctrl-q"]), ("log_menu", &[])])).unwrap();
 
         let rendered: Vec<String> = map
             .keys_for(Action::Quit)
