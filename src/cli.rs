@@ -75,7 +75,12 @@ pub enum Command {
     },
 
     /// Validate the configuration, verify the token and check connectivity, then exit
-    Check,
+    Check {
+        /// Stop before connecting: report the resolved config, filters and token source
+        /// without opening a connection, so a CI job or a pre-commit hook can run it
+        #[arg(long)]
+        offline: bool,
+    },
 
     /// Print the JSON Schema for the configuration file
     Schema,
@@ -175,7 +180,14 @@ mod tests {
             parse(&["init-config", "--force"]).command,
             Some(Command::InitConfig { force: true })
         );
-        assert_eq!(parse(&["check"]).command, Some(Command::Check));
+        assert_eq!(
+            parse(&["check"]).command,
+            Some(Command::Check { offline: false })
+        );
+        assert_eq!(
+            parse(&["check", "--offline"]).command,
+            Some(Command::Check { offline: true })
+        );
         assert_eq!(parse(&["schema"]).command, Some(Command::Schema));
         assert_eq!(
             parse(&["completion", "zsh"]).command,
@@ -190,7 +202,7 @@ mod tests {
     #[test]
     fn global_flags_work_with_subcommands() {
         let cli = parse(&["check", "--config", "/tmp/c.toml", "--log-level", "trace"]);
-        assert_eq!(cli.command, Some(Command::Check));
+        assert_eq!(cli.command, Some(Command::Check { offline: false }));
         assert_eq!(cli.config, Some(PathBuf::from("/tmp/c.toml")));
         assert_eq!(cli.log_level(), Ok(Some(tracing::Level::TRACE)));
     }

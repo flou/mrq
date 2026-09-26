@@ -98,6 +98,9 @@ mrq
 # Validate config and check connectivity
 mrq check
 
+# Validate the config only: no connection, and no token needed
+mrq check --offline
+
 # Print JSON Schema for config validation
 mrq schema
 

@@ -13,16 +13,17 @@ mod logging;
 mod term;
 mod ui;
 
-use std::io::Write;
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser};
 
 use crate::app::event::QuitReason;
 use crate::cli::{Cli, Command};
+use crate::config::keymap;
 use crate::config::paths::{Env, Paths};
 use crate::config::schema::Filter;
-use crate::config::token::{self, TokenEnv};
+use crate::config::token::{self, Token, TokenEnv};
+use crate::config::validate::Clamped;
 use crate::config::{load, validate};
 use crate::error::{ConfigError, Error, LimitKind};
 use crate::gitlab::client::Client;
@@ -110,7 +111,10 @@ fn run(cli: &Cli, log: &logging::LogHandle) -> Result<ExitCode, Error> {
     // The config layer promises a *validated* Config (see config/mod.rs); a filter that
     // relies on `validate` catching it — a root-only argument on a current-user scope, an
     // out-of-range max_results — must never reach the rest of the program unvalidated.
-    for clamp in validate::validate(&mut loaded.config)? {
+    // The clamps are kept rather than dropped: `check` has to report them, because it
+    // prints the clamped value and nothing else would say it had been changed.
+    let clamps = validate::validate(&mut loaded.config)?;
+    for clamp in &clamps {
         tracing::warn!(%clamp, "config value out of range, clamped");
     }
 
@@ -118,7 +122,14 @@ fn run(cli: &Cli, log: &logging::LogHandle) -> Result<ExitCode, Error> {
         Some(Command::InitConfig { force }) => {
             init_config(&loaded, *force, &mut std::io::stdout().lock()).map(|()| ExitCode::SUCCESS)
         }
-        Some(Command::Check) => check(&loaded).map(|()| ExitCode::SUCCESS),
+        Some(Command::Check { offline }) => check(
+            &loaded,
+            &clamps,
+            &TokenEnv::from_process(),
+            *offline,
+            &mut std::io::stdout().lock(),
+        )
+        .map(|()| ExitCode::SUCCESS),
         Some(Command::Schema) => unreachable!("handled above, before the config was loaded"),
         Some(Command::Completion { shell }) => {
             completion((*shell).into(), &mut std::io::stdout().lock()).map(|()| ExitCode::SUCCESS)
@@ -156,23 +167,61 @@ fn init_config(
 /// Config and filters print first regardless of what happens next: they are the more
 /// common reason someone reaches for this command, and they are worth showing even when
 /// the network call after them fails.
-fn check(loaded: &load::Loaded) -> Result<(), Error> {
-    let mut out = std::io::stdout().lock();
+///
+/// `--offline` ends the command at the token line. Every stage up to there is local, so
+/// the whole config half runs with no connection and no token — which is what a CI job or
+/// a pre-commit hook has.
+fn check(
+    loaded: &load::Loaded,
+    clamps: &[Clamped],
+    token_env: &TokenEnv,
+    offline: bool,
+    out: &mut impl std::io::Write,
+) -> Result<(), Error> {
+    print_resolved_config(loaded, out)?;
+    print_clamps(clamps, out)?;
+    print_resolved_filters(&loaded.config.filters, out)?;
 
-    print_resolved_config(loaded, &mut out)?;
-    print_resolved_filters(&loaded.config.filters, &mut out)?;
+    // The last no-network stage of the config pipeline, and one `check` used to skip: a
+    // key claimed by two actions is fatal in `app::run` and the user looks here to find
+    // out why, so the check belongs here rather than at the first frame of the TUI.
+    keymap::resolve(&loaded.config.keys)?;
 
-    let resolved = token::resolve(
-        &loaded.config.gitlab,
-        &TokenEnv::from_process(),
-        loaded.paths.config_file(),
-    )?;
+    let resolved = token::resolve(&loaded.config.gitlab, token_env, loaded.paths.config_file());
+
+    // A token is only needed to open the connection, and `--offline` opens none: report
+    // the outcome and stop. A token that does not resolve is not a configuration error
+    // for a command that never connects, which is what makes this callable from a CI job
+    // or a pre-commit hook where no token exists.
+    if offline {
+        return match &resolved {
+            Ok(resolved) => print_token(resolved, out),
+            Err(err) => writeln!(out, "token: not resolved: {err}").map_err(io_err),
+        };
+    }
+
+    let resolved = resolved?;
+    print_token(&resolved, out)?;
+    check_instance(loaded, resolved.token, out)
+}
+
+/// Report where the token came from, never its value.
+fn print_token(resolved: &token::Resolved, out: &mut impl std::io::Write) -> Result<(), Error> {
     for warning in &resolved.warnings {
         writeln!(out, "token: warning: {warning}").map_err(io_err)?;
     }
     writeln!(out, "token: resolved from {}", resolved.token.source()).map_err(io_err)?;
+    Ok(())
+}
 
-    let client = Client::new(&loaded.config.gitlab, resolved.token)?;
+/// The half of `check` that needs a network: confirm the token authenticates, then report
+/// the instance's real complexity ceiling.
+fn check_instance(
+    loaded: &load::Loaded,
+    token: Token,
+    out: &mut impl std::io::Write,
+) -> Result<(), Error> {
+    let client = Client::new(&loaded.config.gitlab, token)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -226,6 +275,16 @@ fn print_resolved_config(
             _ => value,
         };
         writeln!(out, "  {key} = {value} ({})", source.as_str()).map_err(io_err)?;
+    }
+    Ok(())
+}
+
+/// Report the values `validate` changed in place, which the report above would otherwise
+/// print as ordinary resolved values: `filter[0].max_results = 500 (file)` is
+/// indistinguishable from a user who wrote 500.
+fn print_clamps(clamps: &[Clamped], out: &mut impl std::io::Write) -> Result<(), Error> {
+    for clamp in clamps {
+        writeln!(out, "config: warning: {clamp}").map_err(io_err)?;
     }
     Ok(())
 }
@@ -313,4 +372,211 @@ fn tui(loaded: load::Loaded, log: logging::LogBuffer) -> Result<ExitCode, Error>
         // because `QuitReason` cannot say so at the type level.
         QuitReason::Fatal => ExitCode::from(crate::error::EXIT_FAILURE),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::load::Overrides;
+    use wiremock::MockServer;
+
+    /// The smallest config that validates: one currentUser-scoped filter, no token.
+    const MINIMAL: &str = r#"
+[gitlab]
+url = "https://gitlab.example.com"
+
+[[filter]]
+name = "Assigned"
+scope = "assigned"
+"#;
+
+    const FILE_TOKEN: &str = r#"
+[gitlab]
+token = "glpat-from-the-file"
+
+[[filter]]
+name = "Assigned"
+scope = "assigned"
+"#;
+
+    struct Report {
+        _tmp: tempfile::TempDir,
+        outcome: Result<(), Error>,
+        printed: String,
+    }
+
+    /// The config half of `run` followed by `check`, in the order `run` uses, so a
+    /// rejected config fails before a single line is printed.
+    ///
+    /// The environment is injected rather than read from the process for the reason
+    /// `config::suite` gives: the harness runs tests as threads, and `check` resolving a
+    /// token out of the developer's own `$MRQ_TOKEN` would make the token assertions
+    /// depend on the machine.
+    fn report(body: &str, token_env: &TokenEnv, offline: bool) -> Report {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, body).unwrap();
+
+        let home = Env {
+            home: Some(tmp.path().to_path_buf()),
+            ..Env::default()
+        };
+        let paths = Paths::resolve(&home, Some(&path)).unwrap();
+        let mut out = Vec::new();
+
+        let outcome = load::load(paths, &Overrides::default())
+            .map_err(Error::from)
+            .and_then(|mut loaded| {
+                let clamps = validate::validate(&mut loaded.config).map_err(Error::from)?;
+                check(&loaded, &clamps, token_env, offline, &mut out)
+            });
+
+        Report {
+            _tmp: tmp,
+            outcome,
+            printed: String::from_utf8(out).unwrap(),
+        }
+    }
+
+    fn env_token(value: &str) -> TokenEnv {
+        TokenEnv {
+            mrq_token: Some(value.to_owned()),
+            gitlab_token: None,
+        }
+    }
+
+    /// The whole config half, and nothing that needs a connection.
+    #[test]
+    fn offline_reports_the_config_the_filters_and_the_token_source() {
+        let r = report(MINIMAL, &env_token("glpat-x"), true);
+        r.outcome.unwrap();
+
+        assert!(r.printed.contains("gitlab.url ="), "{}", r.printed);
+        assert!(r.printed.contains("Assigned -> "), "{}", r.printed);
+        assert!(
+            r.printed.contains("token: resolved from $MRQ_TOKEN"),
+            "{}",
+            r.printed
+        );
+        assert!(!r.printed.contains("gitlab: connected"), "{}", r.printed);
+        assert!(!r.printed.contains("complexity:"), "{}", r.printed);
+        assert!(
+            !r.printed.contains("glpat-x"),
+            "the token value must not be printed: {}",
+            r.printed
+        );
+    }
+
+    /// The acceptance criterion, proved rather than asserted: the instance is a live
+    /// listener, so a request that slipped through would be recorded.
+    #[tokio::test]
+    async fn offline_opens_no_connection() {
+        let server = MockServer::start().await;
+        let body = format!(
+            "[gitlab]\nurl = \"{}\"\n\n[[filter]]\nname = \"Assigned\"\nscope = \"assigned\"\n",
+            server.uri()
+        );
+
+        report(&body, &env_token("glpat-x"), true).outcome.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert!(
+            requests.is_empty(),
+            "the offline path sent {} request(s)",
+            requests.len()
+        );
+    }
+
+    /// A CI job or a pre-commit hook has no token, and validating a config does not need
+    /// one: the run succeeds and says where it looked.
+    #[test]
+    fn offline_succeeds_with_no_token_anywhere() {
+        let r = report(MINIMAL, &TokenEnv::default(), true);
+        r.outcome.unwrap();
+
+        assert!(r.printed.contains("token: not resolved"), "{}", r.printed);
+    }
+
+    #[test]
+    fn offline_reports_a_token_from_the_config_file() {
+        let r = report(FILE_TOKEN, &TokenEnv::default(), true);
+        r.outcome.unwrap();
+
+        assert!(
+            r.printed.contains("token: resolved from the config file"),
+            "{}",
+            r.printed
+        );
+        assert!(
+            !r.printed.contains("glpat-from-the-file"),
+            "the token value must not be printed: {}",
+            r.printed
+        );
+    }
+
+    /// A validator that cannot fail is a report, not a check.
+    #[test]
+    fn offline_fails_on_a_config_error() {
+        let r = report("[refresh]\ninterval_secs = 5\n", &TokenEnv::default(), true);
+        let err = r.outcome.unwrap_err();
+
+        assert_eq!(err.exit_code(), crate::error::EXIT_CONFIG, "{err}");
+        assert!(err.to_string().contains("interval_secs"), "{err}");
+    }
+
+    /// A value `validate` changed in place is otherwise printed as if the user had
+    /// written it.
+    #[test]
+    fn a_clamped_value_is_reported_rather_than_shown_silently_changed() {
+        let r = report(
+            "[[filter]]\nname = \"Assigned\"\nscope = \"assigned\"\nmax_results = 5000\n",
+            &TokenEnv::default(),
+            true,
+        );
+        r.outcome.unwrap();
+
+        assert!(
+            r.printed
+                .contains("filter[0].max_results: 5000 is out of range, using 500"),
+            "{}",
+            r.printed
+        );
+    }
+
+    /// A key claimed by two actions is fatal when the TUI starts, and `check` is where
+    /// someone looks for the reason — so it fails here too, in both modes. It is checked
+    /// before the token on purpose: `check` used to pass a duplicate keybind and fail only
+    /// at the first frame.
+    #[test]
+    fn a_duplicate_keybind_fails_the_check_in_both_modes() {
+        for offline in [false, true] {
+            let r = report(
+                "[keys]\ntoggle_drafts = [\"o\"]\n",
+                &TokenEnv::default(),
+                offline,
+            );
+            let err = r.outcome.unwrap_err();
+
+            assert!(
+                matches!(err, Error::Config(ConfigError::DuplicateKeybind { .. })),
+                "offline={offline}: {err:?}"
+            );
+        }
+    }
+
+    /// The no-flag path is unchanged: the connection needs a token, so a missing one is
+    /// still fatal — and the config report is still worth printing first.
+    #[test]
+    fn a_missing_token_is_still_fatal_without_the_flag() {
+        let r = report(MINIMAL, &TokenEnv::default(), false);
+        let err = r.outcome.unwrap_err();
+
+        assert!(
+            matches!(err, Error::Config(ConfigError::MissingToken)),
+            "{err:?}"
+        );
+        assert_eq!(err.exit_code(), crate::error::EXIT_CONFIG, "{err}");
+        assert!(r.printed.contains("config:"), "{}", r.printed);
+        assert!(r.printed.contains("filters:"), "{}", r.printed);
+    }
 }
