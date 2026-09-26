@@ -393,9 +393,11 @@ impl App {
 
     /// A mouse event inside the table, when `[ui].mouse` is on.
     ///
-    /// Wheel scrolls the cursor — or an open popup, if one has the keyboard; a click
+    /// Wheel scrolls the cursor — or an open popup, if one has the keyboard. A click
     /// selects the row under it, and a click on the title cell also opens that merge
-    /// request. Everything else — hover, drag, the other buttons — changes nothing.
+    /// request; with a popup open, a click does nothing rather than acting on the row
+    /// hidden behind it. Everything else — hover, drag, the other buttons — changes
+    /// nothing.
     fn handle_mouse(&mut self, event: MouseEvent) -> bool {
         match event.kind {
             MouseEventKind::ScrollUp => action::popup_wheel(&mut self.view, &self.keymap, true)
@@ -403,6 +405,11 @@ impl App {
             MouseEventKind::ScrollDown => action::popup_wheel(&mut self.view, &self.keymap, false)
                 .unwrap_or_else(|| action::mouse_wheel(&mut self.view, false)),
             MouseEventKind::Up(MouseButton::Left) => {
+                // A popup has the keyboard; a click must not reach the table hidden
+                // behind it, the same way a keypress can't.
+                if self.view.mode.popup_state().is_some() {
+                    return false;
+                }
                 // One terminal size query for both checks below, rather than one each.
                 let Some(area) = self.table_area() else {
                     return false;
