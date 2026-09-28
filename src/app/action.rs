@@ -334,10 +334,10 @@ impl ViewState {
             .as_ref()
             .and_then(|id| self.rows_of(filter).iter().position(|mr| &mr.id == id));
 
-        let Some(tab) = self.tabs.get_mut(filter) else {
+        if self.tabs.get(filter).is_none() {
             return Vec::new();
-        };
-        let arrived = tab.apply_snapshot(snapshot, at);
+        }
+        let arrived = self.tabs.apply_snapshot(filter, snapshot, at);
 
         self.reconcile_selection(filter, selected.as_deref(), previous_index);
         arrived

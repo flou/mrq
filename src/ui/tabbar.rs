@@ -1,8 +1,8 @@
 //! The filter tab bar.
 //!
 //! One tab per configured filter, each showing the number of rows that
-//! filter is currently displaying, the `1`..`9` position that jumps to it, and a marker
-//! when it needs attention.
+//! filter is currently displaying, the `1`..`9` position that jumps to it, a marker when
+//! it has unseen arrivals, and a marker when it needs attention.
 //!
 //! # Overflow keeps the active tab
 //!
@@ -24,11 +24,14 @@ use crate::ui::theme::{Role, Theme};
 ///
 /// Kept apart rather than formatted into one string because each is coloured
 /// independently: the shortcut says which key, the name says which filter, the count says
-/// how much is in it, and the marker says how bad.
+/// how much is in it, the unseen marker says something arrived while you were elsewhere,
+/// and the attention marker says how bad.
 struct Entry {
     shortcut: String,
     name: String,
     count: String,
+    /// Set when a fetch brought new merge requests while this tab was not on screen.
+    unseen: bool,
     marker: &'static str,
     attention: Attention,
     active: bool,
@@ -38,11 +41,17 @@ impl Entry {
     /// Including the padding that makes the active tab a bar rather than bare text, and
     /// the divider after it. Counting a divider for the last tab too overestimates by one
     /// cell, which only ever makes the window fit more conservatively.
-    fn width(&self) -> usize {
+    fn width(&self, theme: &Theme) -> usize {
+        let unseen = if self.unseen {
+            theme.new_marker().width()
+        } else {
+            0
+        };
         1 + self.shortcut.width()
             + self.name.width()
             + 1
             + self.count.width()
+            + unseen
             + self.marker.width()
             + 2
     }
@@ -69,6 +78,7 @@ fn entries(tabs: &Tabs, counts: &[usize], theme: &Theme) -> Vec<Entry> {
                 shortcut: shortcut(index),
                 name: tab.name.clone(),
                 count: count.to_string(),
+                unseen: tab.has_unseen_arrivals(),
                 marker: theme.attention_marker(attention),
                 attention,
                 active: index == tabs.active_index(),
@@ -78,7 +88,7 @@ fn entries(tabs: &Tabs, counts: &[usize], theme: &Theme) -> Vec<Entry> {
 }
 
 /// The slice of tabs to show, as `(start, end)`, always containing the active one.
-fn window(entries: &[Entry], active: usize, width: usize) -> (usize, usize) {
+fn window(entries: &[Entry], active: usize, width: usize, theme: &Theme) -> (usize, usize) {
     if entries.is_empty() {
         return (0, 0);
     }
@@ -87,18 +97,18 @@ fn window(entries: &[Entry], active: usize, width: usize) -> (usize, usize) {
     // handful of filters where everything fits and this returns the whole range.
     let mut start = active;
     let mut end = active + 1;
-    let mut used = entries[active].width();
+    let mut used = entries[active].width(theme);
 
     loop {
-        let grew_right = end < entries.len() && used + entries[end].width() <= width;
+        let grew_right = end < entries.len() && used + entries[end].width(theme) <= width;
         if grew_right {
-            used += entries[end].width();
+            used += entries[end].width(theme);
             end += 1;
         }
-        let grew_left = start > 0 && used + entries[start - 1].width() <= width;
+        let grew_left = start > 0 && used + entries[start - 1].width(theme) <= width;
         if grew_left {
             start -= 1;
-            used += entries[start].width();
+            used += entries[start].width(theme);
         }
         if !grew_right && !grew_left {
             return (start, end);
@@ -121,14 +131,19 @@ pub fn build<'a>(tabs: &Tabs, counts: &[usize], theme: &Theme, width: u16) -> Li
     // The `…` and `…+N` markers occupy width of their own. Budgeting for both even when
     // only one ends up shown costs a couple of cells and removes the circularity in
     // sizing a window whose markers depend on the window.
-    let total: usize = entries.iter().map(Entry::width).sum();
+    let total: usize = entries.iter().map(|entry| entry.width(theme)).sum();
     let reserve = if total <= width {
         0
     } else {
         2 * theme.ellipsis().width() + 1 + entries.len().to_string().width()
     };
 
-    let (start, end) = window(&entries, tabs.active_index(), width.saturating_sub(reserve));
+    let (start, end) = window(
+        &entries,
+        tabs.active_index(),
+        width.saturating_sub(reserve),
+        theme,
+    );
     let hidden = start + (entries.len() - end);
     let mut spans: Vec<Span<'a>> = Vec::new();
 
@@ -162,11 +177,23 @@ pub fn build<'a>(tabs: &Tabs, counts: &[usize], theme: &Theme, width: u16) -> Li
             (Role::Dim, Role::Normal)
         };
 
+        let name_style = if entry.unseen {
+            base.patch(theme.emphasise(name_role))
+        } else {
+            part(name_role)
+        };
+
         spans.push(Span::styled(" ".to_owned(), base));
         spans.push(Span::styled(entry.shortcut.clone(), part(shortcut_role)));
-        spans.push(Span::styled(entry.name.clone(), part(name_role)));
+        spans.push(Span::styled(entry.name.clone(), name_style));
         spans.push(Span::styled(" ".to_owned(), base));
         spans.push(Span::styled(entry.count.clone(), part(Role::Dim)));
+        if entry.unseen {
+            spans.push(Span::styled(
+                theme.new_marker().to_owned(),
+                part(Role::Marker),
+            ));
+        }
         if !entry.marker.is_empty() {
             spans.push(Span::styled(
                 entry.marker.to_owned(),
@@ -417,5 +444,100 @@ mod tests {
 
         let line = rendered(&tabs, &[1], 80);
         assert!(line.contains("One 1"), "the visible count wins: {line}");
+    }
+
+    /// A tab with something unseen carries the same `*` the row gutter uses for a fresh
+    /// arrival, right after its count.
+    #[test]
+    fn an_unseen_tab_carries_the_new_marker() {
+        let mut tabs = tabs(&["One", "Two"]);
+        tabs.get_mut(1)
+            .unwrap()
+            .apply_rows(vec![mr("a", "x")], Instant::now());
+        tabs.apply_snapshot(
+            1,
+            crate::gitlab::fetch::Snapshot {
+                merge_requests: vec![mr("a", "x"), mr("b", "x")],
+                truncated: false,
+                fragment: Fragment::full(),
+                partial: false,
+                anomalies: crate::gitlab::wire::Anomalies::default(),
+            },
+            Instant::now(),
+        );
+
+        let line = rendered(&tabs, &[0, 2], 200);
+        assert!(
+            line.contains(&format!("Two 2{}", theme().new_marker())),
+            "{line}"
+        );
+    }
+
+    /// The active tab never carries it: the row `*`s already show the same fact for a
+    /// tab you are looking at.
+    #[test]
+    fn the_active_tab_never_carries_the_unseen_marker() {
+        let tabs = tabs(&["One"]);
+        let line = rendered(&tabs, &[0], 200);
+
+        assert!(!line.contains(theme().new_marker()), "{line}");
+    }
+
+    /// The marker keeps the same role as the row gutter's, independent of the label.
+    #[test]
+    fn the_unseen_marker_is_coloured_like_a_fresh_arrival() {
+        let mut tabs = tabs(&["One", "Two"]);
+        tabs.get_mut(1)
+            .unwrap()
+            .apply_rows(vec![mr("a", "x")], Instant::now());
+        tabs.apply_snapshot(
+            1,
+            crate::gitlab::fetch::Snapshot {
+                merge_requests: vec![mr("a", "x"), mr("b", "x")],
+                truncated: false,
+                fragment: Fragment::full(),
+                partial: false,
+                anomalies: crate::gitlab::wire::Anomalies::default(),
+            },
+            Instant::now(),
+        );
+
+        let line = build(&tabs, &[0, 0], &theme(), 200);
+        let marker = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == theme().new_marker())
+            .expect("the marker is its own span");
+        assert_eq!(marker.style, theme().style(Role::Marker));
+    }
+
+    /// The unseen marker's width has to count towards the overflow budget too, or the
+    /// window can size a tab short and panic in `clip`.
+    #[test]
+    fn an_unseen_tab_does_not_break_the_width_bound() {
+        let mut tabs = tabs(&["Alpha", "Bravo", "Charlie", "Delta", "Echo"]);
+        tabs.get_mut(4)
+            .unwrap()
+            .apply_rows(vec![mr("a", "x")], Instant::now());
+        tabs.apply_snapshot(
+            4,
+            crate::gitlab::fetch::Snapshot {
+                merge_requests: vec![mr("a", "x"), mr("b", "x")],
+                truncated: false,
+                fragment: Fragment::full(),
+                partial: false,
+                anomalies: crate::gitlab::wire::Anomalies::default(),
+            },
+            Instant::now(),
+        );
+
+        for width in 0..40 {
+            let line = rendered(&tabs, &[0; 5], width);
+            assert!(
+                line.width() <= usize::from(width),
+                "width {width}: `{line}` is {} cells",
+                line.width()
+            );
+        }
     }
 }

@@ -97,6 +97,14 @@ pub struct Tab {
     /// visible row asks [`Self::is_new`] once per frame.
     new_ids: HashSet<String>,
 
+    /// Set when a fetch brought new merge requests while this tab was not the one on
+    /// screen, for the tab bar's own `*`.
+    ///
+    /// Unlike `new_ids`, this is not replaced by the next fetch: it is only cleared by
+    /// [`Tabs::activate`] and friends, because it exists to say "you have not looked at
+    /// this yet", and a later refresh landing before you do must not erase that.
+    unseen_arrivals: bool,
+
     /// How old the cached rows were when they were loaded, when this tab was warm-started
     /// from the cache and no live fetch has landed yet.
     ///
@@ -128,6 +136,7 @@ impl Tab {
             scroll: 0,
             selected_id: None,
             new_ids: HashSet::new(),
+            unseen_arrivals: false,
             cached_age: None,
         }
     }
@@ -176,6 +185,11 @@ impl Tab {
     /// Whether a merge request arrived in the most recent refresh.
     pub fn is_new(&self, id: &str) -> bool {
         self.new_ids.contains(id)
+    }
+
+    /// Whether the tab bar should mark this tab as having something unseen.
+    pub const fn has_unseen_arrivals(&self) -> bool {
+        self.unseen_arrivals
     }
 
     /// Drop one row's `*`, because the user has moved the cursor onto it.
@@ -372,9 +386,13 @@ impl Tabs {
     }
 
     /// Switch to a tab by index, ignoring an out-of-range one.
-    pub const fn activate(&mut self, index: usize) -> bool {
+    ///
+    /// Landing on a tab is what "seeing" it means, so this is the one place that clears
+    /// its unseen-arrivals marker.
+    pub fn activate(&mut self, index: usize) -> bool {
         if index < self.tabs.len() {
             self.active = index;
+            self.tabs[index].unseen_arrivals = false;
             return true;
         }
         false
@@ -388,17 +406,36 @@ impl Tabs {
     }
 
     /// Cycle forward, wrapping.
-    pub const fn next(&mut self) {
+    pub fn next(&mut self) {
         if !self.tabs.is_empty() {
-            self.active = (self.active + 1) % self.tabs.len();
+            let index = (self.active + 1) % self.tabs.len();
+            self.activate(index);
         }
     }
 
     /// Cycle backward, wrapping.
-    pub const fn previous(&mut self) {
+    pub fn previous(&mut self) {
         if !self.tabs.is_empty() {
-            self.active = (self.active + self.tabs.len() - 1) % self.tabs.len();
+            let index = (self.active + self.tabs.len() - 1) % self.tabs.len();
+            self.activate(index);
         }
+    }
+
+    /// Apply a fetched snapshot to one tab, returning the ids that arrived.
+    ///
+    /// Marks the tab as having unseen arrivals when it is not the one on screen: the
+    /// active tab already shows its own arrivals through the row `*`s, so marking it too
+    /// would just repeat the same fact one level up.
+    pub fn apply_snapshot(&mut self, index: usize, snapshot: Snapshot, at: Instant) -> Vec<String> {
+        let active = self.active;
+        let Some(tab) = self.tabs.get_mut(index) else {
+            return Vec::new();
+        };
+        let arrived = tab.apply_snapshot(snapshot, at);
+        if !arrived.is_empty() && index != active {
+            tab.unseen_arrivals = true;
+        }
+        arrived
     }
 }
 
@@ -854,5 +891,110 @@ mod tests {
 
         let tabs = Tabs::new(&[filter], Sort::default(), false, None);
         assert_eq!(tabs.get(0).unwrap().name, "Merged");
+    }
+
+    fn arrival_snapshot(ids: &[&str]) -> Snapshot {
+        Snapshot {
+            merge_requests: ids.iter().map(|id| mr(id, "x")).collect(),
+            truncated: false,
+            fragment: Fragment::full(),
+            partial: false,
+            anomalies: crate::gitlab::wire::Anomalies::default(),
+        }
+    }
+
+    /// A fetch that lands on a tab you are not looking at has to say so, since the row
+    /// `*`s that would otherwise carry that fact are on a tab you cannot see.
+    #[test]
+    fn a_snapshot_on_an_inactive_tab_marks_it_unseen() {
+        let mut tabs = tabs(&["One", "Two"]);
+        tabs.get_mut(1)
+            .unwrap()
+            .apply_rows(vec![mr("a", "x")], Instant::now());
+
+        let arrived = tabs.apply_snapshot(1, arrival_snapshot(&["a", "b"]), Instant::now());
+
+        assert_eq!(arrived, ["b"]);
+        assert!(tabs.get(1).unwrap().has_unseen_arrivals());
+    }
+
+    #[test]
+    fn a_snapshot_on_the_active_tab_does_not_mark_it_unseen() {
+        let mut tabs = tabs(&["One"]);
+        tabs.get_mut(0)
+            .unwrap()
+            .apply_rows(vec![mr("a", "x")], Instant::now());
+
+        tabs.apply_snapshot(0, arrival_snapshot(&["a", "b"]), Instant::now());
+
+        assert!(
+            !tabs.get(0).unwrap().has_unseen_arrivals(),
+            "the row `*`s already say this for the tab you are looking at"
+        );
+    }
+
+    #[test]
+    fn a_first_fetch_does_not_mark_the_tab_unseen() {
+        let mut tabs = tabs(&["One", "Two"]);
+
+        tabs.apply_snapshot(1, arrival_snapshot(&["a", "b"]), Instant::now());
+
+        assert!(!tabs.get(1).unwrap().has_unseen_arrivals());
+    }
+
+    /// Unlike `new_ids`, which is replaced by every fetch, the tab marker is not a
+    /// snapshot of the latest refresh: it stands for "you have not looked yet".
+    #[test]
+    fn a_later_quiet_fetch_does_not_clear_the_unseen_marker() {
+        let mut tabs = tabs(&["One", "Two"]);
+        tabs.get_mut(1)
+            .unwrap()
+            .apply_rows(vec![mr("a", "x")], Instant::now());
+        tabs.apply_snapshot(1, arrival_snapshot(&["a", "b"]), Instant::now());
+        assert!(tabs.get(1).unwrap().has_unseen_arrivals());
+
+        tabs.apply_snapshot(1, arrival_snapshot(&["a", "b"]), Instant::now());
+
+        assert!(tabs.get(1).unwrap().has_unseen_arrivals());
+    }
+
+    #[test]
+    fn activating_a_tab_clears_its_unseen_marker() {
+        let mut tabs = tabs(&["One", "Two"]);
+        tabs.get_mut(1)
+            .unwrap()
+            .apply_rows(vec![mr("a", "x")], Instant::now());
+        tabs.apply_snapshot(1, arrival_snapshot(&["a", "b"]), Instant::now());
+        assert!(tabs.get(1).unwrap().has_unseen_arrivals());
+
+        tabs.activate(1);
+
+        assert!(!tabs.get(1).unwrap().has_unseen_arrivals());
+    }
+
+    #[test]
+    fn cycling_forward_onto_a_tab_clears_its_unseen_marker() {
+        let mut tabs = tabs(&["One", "Two"]);
+        tabs.get_mut(1)
+            .unwrap()
+            .apply_rows(vec![mr("a", "x")], Instant::now());
+        tabs.apply_snapshot(1, arrival_snapshot(&["a", "b"]), Instant::now());
+
+        tabs.next();
+
+        assert!(!tabs.get(1).unwrap().has_unseen_arrivals());
+    }
+
+    #[test]
+    fn cycling_backward_onto_a_tab_clears_its_unseen_marker() {
+        let mut tabs = tabs(&["One", "Two"]);
+        tabs.get_mut(1)
+            .unwrap()
+            .apply_rows(vec![mr("a", "x")], Instant::now());
+        tabs.apply_snapshot(1, arrival_snapshot(&["a", "b"]), Instant::now());
+
+        tabs.previous();
+
+        assert!(!tabs.get(1).unwrap().has_unseen_arrivals());
     }
 }
