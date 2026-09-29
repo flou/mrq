@@ -201,6 +201,7 @@ scope = "assigned"
 # open_mr         = ["o", "enter"]
 # open_pipeline   = ["p"]
 # open_project    = ["shift-O"]
+# open_diffs      = ["shift-D"]
 # copy_url        = ["y"]
 # copy_branch     = ["shift-Y"]
 # show_details    = ["d"]

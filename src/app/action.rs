@@ -614,6 +614,10 @@ pub fn dispatch(state: &mut ViewState, action: Action) -> (bool, Effect) {
             Some(mr) => (true, Effect::Open(mr.web_url)),
             None => (false, Effect::None),
         },
+        Action::OpenDiffs => match state.selected() {
+            Some(mr) => (true, Effect::Open(format!("{}/diffs", mr.web_url))),
+            None => (false, Effect::None),
+        },
         Action::OpenPipeline => match state.selected().and_then(|mr| mr.pipeline) {
             Some(pipeline) => (true, Effect::Open(pipeline.url)),
             // Say so in the status bar and ring nothing.
@@ -1869,6 +1873,18 @@ mod tests {
     }
 
     #[test]
+    fn opening_the_diffs_appends_the_diffs_path() {
+        let mut state = state_with(rows(1));
+        dispatch(&mut state, Action::Down);
+
+        let (_, effect) = dispatch(&mut state, Action::OpenDiffs);
+        match effect {
+            Effect::Open(url) => assert!(url.ends_with("/-/merge_requests/0/diffs"), "{url}"),
+            other => panic!("expected Effect::Open, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn opening_the_project_trims_the_merge_request_path() {
         let mut state = state_with(rows(1));
         dispatch(&mut state, Action::Down);
@@ -1999,6 +2015,7 @@ mod tests {
         for action in [
             Action::OpenMr,
             Action::OpenProject,
+            Action::OpenDiffs,
             Action::CopyUrl,
             Action::CopyBranch,
         ] {
