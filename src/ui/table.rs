@@ -387,7 +387,7 @@ const fn gutter(theme: &Theme, selected: bool, is_new: bool) -> &str {
     if selected {
         theme.selection_marker()
     } else if is_new {
-        theme.new_marker()
+        theme.new_block()
     } else {
         theme.blank_marker()
     }
@@ -422,8 +422,11 @@ fn row<'a>(
     modes: PeopleDisplayModes,
 ) -> Row<'a> {
     let gutter_cell = Cell::from(gutter(theme, selected, is_new).to_owned());
+    let fresh = is_new && !selected;
     let gutter_cell = if selected {
         gutter_cell.style(theme.style(Role::Marker))
+    } else if fresh {
+        gutter_cell.style(theme.style(Role::Fresh))
     } else {
         gutter_cell
     };
@@ -445,6 +448,18 @@ fn row<'a>(
             }
             // Additions and deletions are coloured separately, so the cell is two spans.
             Column::Diff if !mr.draft => diff_spans(mr, width, theme),
+            // The block covers the checkmark: an unseen MR is not one to skim past.
+            Column::Approved if fresh => {
+                Cell::from(theme.new_block().repeat(width)).style(theme.style(Role::Fresh))
+            }
+            Column::Title if fresh => {
+                let text = truncate(
+                    &cell_text(mr, *column, theme, now, modes),
+                    width,
+                    theme.ellipsis(),
+                );
+                Cell::from(pad(&text, width)).style(theme.style(Role::Fresh))
+            }
             // Bold on top of `Role::Success`'s green, so an approved MR stands out at a
             // glance rather than blending into the rest of the row.
             Column::Approved if mr.approved && !mr.draft => {
@@ -1437,7 +1452,7 @@ mod tests {
         let theme = theme(false);
 
         assert_eq!(gutter(&theme, true, false), theme.selection_marker());
-        assert_eq!(gutter(&theme, false, true), theme.new_marker());
+        assert_eq!(gutter(&theme, false, true), theme.new_block());
         assert_eq!(gutter(&theme, false, false), theme.blank_marker());
         assert_eq!(
             gutter(&theme, true, true),
@@ -1473,6 +1488,69 @@ mod tests {
         assert!(lines[1].starts_with(marker), "row: {:?}", lines[1]);
     }
 
+    fn fresh_buffer(select: Option<&str>) -> (ratatui::buffer::Buffer, Allocation) {
+        let mut approved = mr("gid://1", "jdoe");
+        approved.approved = true;
+        let mut tab = tab();
+        tab.apply_rows(vec![mr("gid://0", "x")], std::time::Instant::now());
+        tab.apply_rows(
+            vec![mr("gid://0", "x"), approved.clone()],
+            std::time::Instant::now(),
+        );
+        tab.select(select.map(str::to_owned));
+
+        let theme = theme(false);
+        let refs = [&approved];
+        let allocation = allocate(&Column::DEFAULT, 120, &refs, PeopleDisplay::YesNo);
+        let area = Rect::new(0, 0, 120, 3);
+        let mut terminal = Terminal::new(TestBackend::new(120, 3)).unwrap();
+        terminal
+            .draw(|frame| {
+                let table = build(
+                    &refs,
+                    &tab,
+                    &allocation,
+                    &theme,
+                    now(),
+                    PeopleDisplayModes::default(),
+                );
+                frame.render_widget(table, area);
+            })
+            .unwrap();
+        (terminal.backend().buffer().clone(), allocation)
+    }
+
+    #[test]
+    fn a_new_row_draws_a_block_over_the_gutter_and_approval_and_a_fresh_title() {
+        let (buffer, allocation) = fresh_buffer(None);
+        let theme = theme(false);
+        let block = theme.new_block();
+        let fresh = theme.style(Role::Fresh);
+        let area = Rect::new(0, 0, 120, 3);
+        let title_x = column_x(&allocation, area, Column::Title).unwrap();
+        let approved_x = column_x(&allocation, area, Column::Approved).unwrap();
+        let approved_width = allocation.width_of(Column::Approved).unwrap();
+
+        for x in 0..approved_x + approved_width {
+            let cell = &buffer[(x, 1)];
+            assert_eq!(cell.symbol(), block, "block at x={x}");
+            assert_eq!(Some(cell.fg), fresh.fg, "fresh colour at x={x}");
+        }
+        assert_eq!(Some(buffer[(title_x, 1)].fg), fresh.fg, "title is fresh");
+    }
+
+    #[test]
+    fn a_new_row_under_the_cursor_drops_the_fresh_styling() {
+        let (buffer, allocation) = fresh_buffer(Some("gid://1"));
+        let theme = theme(false);
+        let area = Rect::new(0, 0, 120, 3);
+        let title_x = column_x(&allocation, area, Column::Title).unwrap();
+
+        assert_eq!(buffer[(0, 1)].symbol(), theme.selection_marker());
+        assert_ne!(Some(buffer[(title_x, 1)].fg), theme.style(Role::Fresh).fg);
+        assert_ne!(buffer[(1, 1)].symbol(), theme.new_block());
+    }
+
     #[test]
     fn a_newly_arrived_row_is_marked_until_it_is_not_new() {
         let m = mr("gid://1", "jdoe");
@@ -1484,7 +1562,11 @@ mod tests {
         );
 
         let lines = render(std::slice::from_ref(&m), &tab, 120, 5);
-        assert!(lines[1].starts_with('*'), "row: {:?}", lines[1]);
+        assert!(
+            lines[1].starts_with(theme(false).new_block()),
+            "row: {:?}",
+            lines[1]
+        );
 
         // The marker lasts one refresh cycle: the next fetch brings nothing new, so it
         // goes (mrq-zv4.3).
@@ -1493,7 +1575,11 @@ mod tests {
             std::time::Instant::now(),
         );
         let lines = render(&[m], &tab, 120, 5);
-        assert!(!lines[1].starts_with('*'), "row: {:?}", lines[1]);
+        assert!(
+            !lines[1].starts_with(theme(false).new_block()),
+            "row: {:?}",
+            lines[1]
+        );
     }
 
     #[test]

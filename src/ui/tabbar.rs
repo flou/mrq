@@ -191,7 +191,7 @@ pub fn build<'a>(tabs: &Tabs, counts: &[usize], theme: &Theme, width: u16) -> Li
         if entry.unseen {
             spans.push(Span::styled(
                 theme.new_marker().to_owned(),
-                part(Role::Marker),
+                part(Role::Fresh),
             ));
         }
         if !entry.marker.is_empty() {
@@ -508,7 +508,7 @@ mod tests {
             .iter()
             .find(|s| s.content.as_ref() == theme().new_marker())
             .expect("the marker is its own span");
-        assert_eq!(marker.style, theme().style(Role::Marker));
+        assert_eq!(marker.style, theme().style(Role::Fresh));
     }
 
     /// The unseen marker's width has to count towards the overflow budget too, or the

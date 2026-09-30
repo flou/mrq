@@ -48,6 +48,8 @@ pub enum Role {
     Accent,
     /// The gutter marker on the selected row, and a markdown list marker.
     Marker,
+    /// A merge request that arrived since the last refresh.
+    Fresh,
     /// Inline or fenced markdown code.
     Code,
     /// A markdown link.
@@ -196,6 +198,7 @@ impl Theme {
             | Role::Removed
             | Role::Accent
             | Role::Marker
+            | Role::Fresh
             | Role::Code => match self.colour(role) {
                 Some(colour) => style.fg(colour),
                 None => style,
@@ -244,6 +247,7 @@ impl Theme {
             Role::Warning => skin.peach,
             Role::Accent | Role::Link => skin.sapphire,
             Role::Marker => skin.yellow,
+            Role::Fresh => skin.sky,
             Role::Code => skin.teal,
             // Bold/italic carry the meaning; the colour underneath is body text.
             Role::Strong | Role::Emphasis => skin.text,
@@ -256,7 +260,7 @@ impl Theme {
         match role {
             Role::Normal | Role::Selection | Role::Strong | Role::Emphasis => Color::Reset,
             Role::Dim | Role::Border => Color::DarkGray,
-            Role::Header => Color::Cyan,
+            Role::Header | Role::Fresh => Color::Cyan,
             Role::Success | Role::Added => Color::Green,
             Role::Failure | Role::Removed => Color::Red,
             Role::Pending | Role::Warning | Role::Marker | Role::ColumnHeader => Color::Yellow,
@@ -343,6 +347,11 @@ impl Theme {
     /// The marker for a merge request that arrived since the last refresh.
     pub const fn new_marker(&self) -> &'static str {
         "*"
+    }
+
+    /// The block a new row draws over its gutter and APRV cells, so it reads without colour.
+    pub const fn new_block(&self) -> &'static str {
+        if self.ascii { "#" } else { "█" }
     }
 
     /// The gutter cell when a row is neither selected nor new.
@@ -568,7 +577,7 @@ mod tests {
         }
     }
 
-    const ALL_ROLES: [Role; 18] = [
+    const ALL_ROLES: [Role; 19] = [
         Role::Normal,
         Role::Dim,
         Role::Header,
@@ -583,6 +592,7 @@ mod tests {
         Role::Removed,
         Role::Accent,
         Role::Marker,
+        Role::Fresh,
         Role::Code,
         Role::Link,
         Role::Strong,
