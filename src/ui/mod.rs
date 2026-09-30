@@ -40,7 +40,7 @@ mod frame;
 use ratatui::Frame;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Block;
+use ratatui::widgets::{Block, Borders};
 
 use crate::app::action::ViewState;
 use crate::app::state::Tab;
@@ -115,7 +115,11 @@ pub fn render(frame: &mut Frame, scene: &Scene<'_>) {
     frame.render_widget(bar, regions.tab_bar);
 
     if regions.bordered() {
-        frame.render_widget(scene.theme.panel(panel_title(scene)), regions.table);
+        let panel = scene
+            .theme
+            .panel(panel_title(scene))
+            .borders(Borders::TOP | Borders::BOTTOM);
+        frame.render_widget(panel, regions.table);
     }
 
     let widget = table::build(

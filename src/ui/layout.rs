@@ -39,16 +39,16 @@ impl Frame {
         self.table.height >= MIN_HEIGHT_FOR_BORDER && self.table.width >= MIN_WIDTH_FOR_BORDER
     }
 
-    /// Where the table itself is drawn: inside the border, when there is one.
+    /// Where the table itself is drawn: between the top and bottom rules, when there are
+    /// any. The panel has no side borders, so the full width is kept.
     pub const fn table_inner(&self) -> Rect {
         if !self.bordered() {
             return self.table;
         }
         Rect {
-            x: self.table.x + 1,
             y: self.table.y + 1,
-            width: self.table.width - 2,
             height: self.table.height - 2,
+            ..self.table
         }
     }
 }
@@ -193,17 +193,17 @@ mod tests {
         assert_eq!(frame.table.width, 120, "the table takes the whole body");
     }
 
-    /// The border costs a cell on each side, and the table has to be told about it: a
-    /// widget drawn over its own frame is how the top row of data disappears.
+    /// The rules cost a row at the top and bottom, and the table has to be told about it:
+    /// a widget drawn over its own frame is how the top row of data disappears.
     #[test]
     fn the_table_is_drawn_inside_the_border() {
         let frame = compute(area(120, 30));
 
         assert!(frame.bordered());
         let inner = frame.table_inner();
-        assert_eq!(inner.x, frame.table.x + 1);
+        assert_eq!(inner.x, frame.table.x);
         assert_eq!(inner.y, frame.table.y + 1);
-        assert_eq!(inner.width, frame.table.width - 2);
+        assert_eq!(inner.width, frame.table.width);
         assert_eq!(inner.height, frame.table.height - 2);
     }
 

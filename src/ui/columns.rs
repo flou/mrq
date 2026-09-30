@@ -131,11 +131,10 @@ const fn keep_priority(column: Column) -> u8 {
 const fn rules(column: Column, fitted: Fitted) -> Rules {
     // `preferred == minimum` means fixed; a larger preferred means shrinkable.
     match column {
-        // Wide enough for the mark plus one cell of padding; there is no header text to
-        // fit any more.
+        // Just the mark; the gap after it is the padding. There is no header text.
         Column::Approved => Rules {
-            preferred: 2,
-            minimum: 2,
+            preferred: 1,
+            minimum: 1,
             flex: false,
         },
         // `preferred` comes from the caller's measurement, falling back to the old fixed
@@ -903,6 +902,7 @@ mod tests {
     fn no_measurement_falls_back_to_the_fixed_assigned_width() {
         let allocation = allocate(&default_columns(), 200, Fitted::default());
         assert_eq!(allocation.width_of(Column::Assigned), Some(4));
+    }
 
     #[test]
     fn fitted_approver_and_reviewer_widths_become_the_preferred_widths() {
@@ -923,7 +923,6 @@ mod tests {
 
         assert_eq!(allocation.width_of(Column::Approver), Some(14));
         assert_eq!(allocation.width_of(Column::Reviewer), Some(14));
-    }
     }
 }
 
