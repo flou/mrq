@@ -100,6 +100,10 @@ pub struct Fitted {
     /// Widest ASSIGNED cell on the current rows, in `username` display mode only —
     /// `None` in `yes_no` or `trigram` mode, where the column stays fixed-width.
     pub assigned: Option<u16>,
+    /// Widest APPROVER cell on the current rows, in any display mode.
+    pub approver: Option<u16>,
+    /// Widest REVIEWER cell on the current rows, in any display mode.
+    pub reviewer: Option<u16>,
 }
 
 /// How much a column is worth keeping, for widths below what whole-column dropping covers.
@@ -186,16 +190,29 @@ const fn rules(column: Column, fitted: Fitted) -> Rules {
                 flex: false,
             }
         }
-        Column::Approver => Rules {
-            preferred: 14,
-            minimum: 8,
-            flex: false,
-        },
-        Column::Reviewer => Rules {
-            preferred: 14,
-            minimum: 8,
-            flex: false,
-        },
+        // Same treatment as `author`, falling back to 14 with nothing to measure.
+        Column::Approver => {
+            let preferred = match fitted.approver {
+                Some(width) => width,
+                None => 14,
+            };
+            Rules {
+                preferred,
+                minimum: if preferred < 8 { preferred } else { 8 },
+                flex: false,
+            }
+        }
+        Column::Reviewer => {
+            let preferred = match fitted.reviewer {
+                Some(width) => width,
+                None => 14,
+            };
+            Rules {
+                preferred,
+                minimum: if preferred < 8 { preferred } else { 8 },
+                flex: false,
+            }
+        }
         Column::Age => Rules {
             preferred: 6,
             minimum: 6,
@@ -278,7 +295,7 @@ pub fn for_wide_mode(columns: &[Column], wide_columns: &[Column], wide: bool) ->
 /// Allocate widths for `columns` within `available`.
 ///
 /// `fitted` carries widths measured from the current rows, for columns whose preferred
-/// width is content-dependent rather than a fixed constant (currently just `author`); pass
+/// width is content-dependent rather than a fixed constant; pass
 /// [`Fitted::default`] to get the old fixed-width behaviour for every column.
 pub fn allocate(columns: &[Column], available: u16, fitted: Fitted) -> Allocation {
     let mut visible: Vec<Column> = columns.to_vec();
@@ -422,7 +439,7 @@ mod tests {
         assert!(allocation.dropped.is_empty());
         assert_eq!(allocation.width_of(Column::Author), Some(12));
         assert_eq!(allocation.width_of(Column::Repo), Some(20));
-        assert_eq!(allocation.width_of(Column::Approved), Some(2));
+        assert_eq!(allocation.width_of(Column::Approved), Some(1));
         assert_eq!(allocation.width_of(Column::Pipeline), Some(2));
         assert_eq!(allocation.width_of(Column::Diff), Some(11));
     }
@@ -438,7 +455,7 @@ mod tests {
 
         assert_eq!(
             wide_title - narrow_title,
-            76,
+            77,
             "the extra 80 columns went to the title, apart from what approver/reviewer \
              still needed to reach their own preferred width"
         );
@@ -779,7 +796,9 @@ mod tests {
                 let fitted = Fitted {
                     author,
                     repo,
-                    assigned: None,
+                    approver: Some(FIT_MAX),
+                    reviewer: Some(FIT_MAX),
+                    ..Fitted::default()
                 };
                 for width in [0, 20, 40, 60, 80, 100, 120, 200, 300] {
                     let allocation = allocate(&default_columns(), width, fitted);
@@ -857,7 +876,7 @@ mod tests {
         let fitted = Fitted {
             author: Some(9),
             repo: Some(25),
-            assigned: None,
+            ..Fitted::default()
         };
         let allocation = allocate(&default_columns(), 200, fitted);
 
@@ -884,6 +903,27 @@ mod tests {
     fn no_measurement_falls_back_to_the_fixed_assigned_width() {
         let allocation = allocate(&default_columns(), 200, Fitted::default());
         assert_eq!(allocation.width_of(Column::Assigned), Some(4));
+
+    #[test]
+    fn fitted_approver_and_reviewer_widths_become_the_preferred_widths() {
+        let fitted = Fitted {
+            approver: Some(10),
+            reviewer: Some(18),
+            ..Fitted::default()
+        };
+        let allocation = allocate(&default_columns(), 200, fitted);
+
+        assert_eq!(allocation.width_of(Column::Approver), Some(10));
+        assert_eq!(allocation.width_of(Column::Reviewer), Some(18));
+    }
+
+    #[test]
+    fn no_measurement_falls_back_to_the_fixed_approver_and_reviewer_width() {
+        let allocation = allocate(&default_columns(), 200, Fitted::default());
+
+        assert_eq!(allocation.width_of(Column::Approver), Some(14));
+        assert_eq!(allocation.width_of(Column::Reviewer), Some(14));
+    }
     }
 }
 

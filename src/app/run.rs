@@ -460,13 +460,21 @@ impl App {
         )
     }
 
+    const fn people_display_modes(&self) -> ui::table::PeopleDisplayModes {
+        ui::table::PeopleDisplayModes {
+            assigned: self.config.ui.assigned_display,
+            approver: self.config.ui.approver_display,
+            reviewer: self.config.ui.reviewer_display,
+        }
+    }
+
     /// Whether a screen column falls inside the title column of the current layout.
     fn title_at(&self, area: Rect, column: u16) -> bool {
         let allocation = ui::table::allocate(
             &self.visible_columns(),
             area.width,
             &self.view.visible_rows(),
-            self.config.ui.assigned_display,
+            self.people_display_modes(),
         );
         let (Some(x), Some(width)) = (
             ui::table::column_x(&allocation, area, Column::Title),
@@ -666,11 +674,7 @@ impl Application for App {
             columns: &columns,
             now: jiff::Timestamp::now(),
             hyperlinks: self.hyperlinks,
-            people_display: ui::table::PeopleDisplayModes {
-                assigned: self.config.ui.assigned_display,
-                approver: self.config.ui.approver_display,
-                reviewer: self.config.ui.reviewer_display,
-            },
+            people_display: self.people_display_modes(),
         };
 
         // The scene borrows `self`; `Terminal::draw` only takes `self.terminal`, and

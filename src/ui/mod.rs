@@ -103,7 +103,7 @@ pub fn render(frame: &mut Frame, scene: &Scene<'_>) {
         scene.columns,
         table_area.width,
         scene.rows,
-        scene.people_display.assigned,
+        scene.people_display,
     );
 
     let bar = tabbar::build(

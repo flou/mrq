@@ -42,7 +42,7 @@ pub const GUTTER_WIDTH: u16 = 1;
 ///
 /// The only correct way to build an [`Allocation`] for [`build`]; calling
 /// [`columns::allocate`] with the raw area width silently overcommits by [`GUTTER_WIDTH`],
-/// and skips the `author`/`repo` measurements below.
+/// and skips the content measurements below.
 ///
 /// `rows` should be the tab's full row set, not the visible window — measuring only what
 /// is on screen would make a column resize while scrolling.
@@ -50,12 +50,14 @@ pub fn allocate(
     columns: &[Column],
     width: u16,
     rows: &[&MergeRequest],
-    assigned_mode: PeopleDisplay,
+    modes: PeopleDisplayModes,
 ) -> Allocation {
     let fitted = columns::Fitted {
         author: author_fit(rows),
         repo: repo_fit(rows),
-        assigned: assigned_fit(rows, assigned_mode),
+        assigned: assigned_fit(rows, modes.assigned),
+        approver: approver_fit(rows, modes.approver),
+        reviewer: reviewer_fit(rows, modes.reviewer),
     };
     columns::allocate(columns, width.saturating_sub(GUTTER_WIDTH), fitted)
 }
@@ -89,7 +91,24 @@ fn assigned_fit(rows: &[&MergeRequest], mode: PeopleDisplay) -> Option<u16> {
     )
 }
 
-/// Shared by [`author_fit`] and [`repo_fit`]: the widest of `widths`, floored at
+/// The APPROVER column's content width: the widest rendered cell on `rows`, in any
+/// display mode — `Yes`/`No` and trigram cells simply floor at the header.
+fn approver_fit(rows: &[&MergeRequest], mode: PeopleDisplay) -> Option<u16> {
+    content_fit(
+        rows.iter().map(|mr| approver_cell(mr, mode).width()),
+        Column::Approver,
+    )
+}
+
+/// The REVIEWER column's content width; see [`approver_fit`].
+fn reviewer_fit(rows: &[&MergeRequest], mode: PeopleDisplay) -> Option<u16> {
+    content_fit(
+        rows.iter().map(|mr| reviewer_cell(mr, mode).width()),
+        Column::Reviewer,
+    )
+}
+
+/// Shared by the `*_fit` helpers: the widest of `widths`, floored at
 /// `column`'s header (so the header is never truncated) and capped at
 /// [`columns::FIT_MAX`].
 ///
@@ -732,6 +751,14 @@ mod tests {
         "2026-09-11T12:00:00Z".parse().unwrap()
     }
 
+    fn all(mode: PeopleDisplay) -> PeopleDisplayModes {
+        PeopleDisplayModes {
+            assigned: mode,
+            approver: mode,
+            reviewer: mode,
+        }
+    }
+
     fn theme(ascii: bool) -> Theme {
         Theme::builtin(
             "catppuccin-mocha",
@@ -761,7 +788,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let theme = theme(false);
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, width, &refs, PeopleDisplay::YesNo);
+        let allocation = allocate(&Column::DEFAULT, width, &refs, all(PeopleDisplay::YesNo));
 
         terminal
             .draw(|frame| {
@@ -913,8 +940,8 @@ mod tests {
         let short = mr("a", "bo");
         let long = mr("b", &"x".repeat(25));
 
-        let narrow_author = allocate(&Column::DEFAULT, 120, &[&short], PeopleDisplay::YesNo);
-        let wide_author = allocate(&Column::DEFAULT, 120, &[&long], PeopleDisplay::YesNo);
+        let narrow_author = allocate(&Column::DEFAULT, 120, &[&short], all(PeopleDisplay::YesNo));
+        let wide_author = allocate(&Column::DEFAULT, 120, &[&long], all(PeopleDisplay::YesNo));
 
         let narrow_title = narrow_author.width_of(Column::Title).unwrap();
         let wide_title = wide_author.width_of(Column::Title).unwrap();
@@ -982,8 +1009,8 @@ mod tests {
         let mut long = mr("b", "someone");
         long.project_name = "x".repeat(25);
 
-        let narrow_repo = allocate(&Column::DEFAULT, 120, &[&short], PeopleDisplay::YesNo);
-        let wide_repo = allocate(&Column::DEFAULT, 120, &[&long], PeopleDisplay::YesNo);
+        let narrow_repo = allocate(&Column::DEFAULT, 120, &[&short], all(PeopleDisplay::YesNo));
+        let wide_repo = allocate(&Column::DEFAULT, 120, &[&long], all(PeopleDisplay::YesNo));
 
         let narrow_title = narrow_repo.width_of(Column::Title).unwrap();
         let wide_title = wide_repo.width_of(Column::Title).unwrap();
@@ -1018,8 +1045,18 @@ mod tests {
         let mut long = mr("b", "someone");
         long.assignees = vec![User::new("a-fairly-long-username")];
 
-        let narrow_assigned = allocate(&Column::DEFAULT, 200, &[&short], PeopleDisplay::Username);
-        let wide_assigned = allocate(&Column::DEFAULT, 200, &[&long], PeopleDisplay::Username);
+        let narrow_assigned = allocate(
+            &Column::DEFAULT,
+            200,
+            &[&short],
+            all(PeopleDisplay::Username),
+        );
+        let wide_assigned = allocate(
+            &Column::DEFAULT,
+            200,
+            &[&long],
+            all(PeopleDisplay::Username),
+        );
 
         // Floored at the ASG header's own width (3), not the old fixed 4 — that fixed
         // width was never about the header, only about fitting `Yes`/`No`/a trigram.
@@ -1028,6 +1065,67 @@ mod tests {
             wide_assigned.width_of(Column::Assigned),
             Some("a-fairly-long-username".width() as u16)
         );
+    }
+
+    #[test]
+    fn approver_and_reviewer_fit_measure_the_rendered_cell() {
+        let mut m = mr("a", "someone");
+        m.approved_by = vec!["alice-anderson".to_owned(), "bob".to_owned()];
+        m.reviewers = vec!["carol-the-reviewer".to_owned()];
+
+        assert_eq!(
+            approver_fit(&[&m], PeopleDisplay::Username),
+            Some("alice-anderson +1".width() as u16)
+        );
+        assert_eq!(
+            reviewer_fit(&[&m], PeopleDisplay::Username),
+            Some("carol-the-reviewer".width() as u16)
+        );
+    }
+
+    #[test]
+    fn approver_and_reviewer_fit_floor_at_the_header_and_cap_at_the_maximum() {
+        let mut short = mr("a", "someone");
+        short.approved_by = vec!["al".to_owned()];
+        short.reviewers = vec!["al".to_owned()];
+        let mut long = mr("b", "someone");
+        long.approved_by = vec!["x".repeat(50)];
+        long.reviewers = vec!["x".repeat(50)];
+
+        let header = u16::try_from(Column::Approver.header().width()).unwrap();
+        assert_eq!(
+            approver_fit(&[&short], PeopleDisplay::Username),
+            Some(header)
+        );
+        assert_eq!(approver_fit(&[&short], PeopleDisplay::YesNo), Some(header));
+        assert_eq!(
+            approver_fit(&[&long], PeopleDisplay::Username),
+            Some(columns::FIT_MAX)
+        );
+        assert_eq!(
+            reviewer_fit(&[&long], PeopleDisplay::Username),
+            Some(columns::FIT_MAX)
+        );
+        assert_eq!(approver_fit(&[], PeopleDisplay::Username), None);
+    }
+
+    #[test]
+    fn a_long_approver_username_widens_the_approver_and_narrows_the_title() {
+        let mut short = mr("a", "someone");
+        short.approved_by = vec!["al".to_owned()];
+        let mut long = mr("b", "someone");
+        long.approved_by = vec!["a-fairly-long-username".to_owned()];
+
+        let modes = all(PeopleDisplay::Username);
+        let narrow = allocate(&Column::DEFAULT, 200, &[&short], modes);
+        let wide = allocate(&Column::DEFAULT, 200, &[&long], modes);
+
+        assert_eq!(narrow.width_of(Column::Approver), Some(8));
+        assert_eq!(
+            wide.width_of(Column::Approver),
+            Some("a-fairly-long-username".width() as u16)
+        );
+        assert!(wide.width_of(Column::Title) < narrow.width_of(Column::Title));
     }
 
     /// Two modes.
@@ -1501,7 +1599,7 @@ mod tests {
 
         let theme = theme(false);
         let refs = [&approved];
-        let allocation = allocate(&Column::DEFAULT, 120, &refs, PeopleDisplay::YesNo);
+        let allocation = allocate(&Column::DEFAULT, 120, &refs, all(PeopleDisplay::YesNo));
         let area = Rect::new(0, 0, 120, 3);
         let mut terminal = Terminal::new(TestBackend::new(120, 3)).unwrap();
         terminal
@@ -1634,7 +1732,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(width, 4)).unwrap();
         let theme = theme(false);
         let rows: [&MergeRequest; 2] = [&wide, &plain];
-        let allocation = allocate(&Column::DEFAULT, width, &rows, PeopleDisplay::YesNo);
+        let allocation = allocate(&Column::DEFAULT, width, &rows, all(PeopleDisplay::YesNo));
         let tab = tab();
 
         terminal
@@ -1690,7 +1788,7 @@ mod tests {
 
         let mut terminal = Terminal::new(TestBackend::new(120, 4)).unwrap();
         let theme = theme(true);
-        let allocation = allocate(&Column::DEFAULT, 120, &[&m], PeopleDisplay::YesNo);
+        let allocation = allocate(&Column::DEFAULT, 120, &[&m], all(PeopleDisplay::YesNo));
         let tab = tab();
 
         terminal
@@ -1742,7 +1840,7 @@ mod tests {
         for width in [80u16, 120, 200] {
             let mut terminal = Terminal::new(TestBackend::new(width, 3)).unwrap();
             let theme = theme(false);
-            let allocation = allocate(&Column::DEFAULT, width, &rows, PeopleDisplay::YesNo);
+            let allocation = allocate(&Column::DEFAULT, width, &rows, all(PeopleDisplay::YesNo));
             let area = Rect {
                 x: 0,
                 y: 0,
@@ -1801,7 +1899,7 @@ mod tests {
         let rows = [&m];
 
         for width in [60u16, 80, 100, 120, 200] {
-            let allocation = allocate(&Column::DEFAULT, width, &rows, PeopleDisplay::YesNo);
+            let allocation = allocate(&Column::DEFAULT, width, &rows, all(PeopleDisplay::YesNo));
             let area = Rect {
                 x: 0,
                 y: 0,
@@ -1842,7 +1940,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let theme = theme(false);
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, width, &refs, PeopleDisplay::YesNo);
+        let allocation = allocate(&Column::DEFAULT, width, &refs, all(PeopleDisplay::YesNo));
         let area = Rect {
             x: 0,
             y: 0,
@@ -1887,7 +1985,7 @@ mod tests {
         let rows = linked_rows();
         let buffer = buffer_of(&rows, 120, 4, true);
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, 120, &refs, PeopleDisplay::YesNo);
+        let allocation = allocate(&Column::DEFAULT, 120, &refs, all(PeopleDisplay::YesNo));
         let x = column_x(
             &allocation,
             Rect {
@@ -1922,7 +2020,7 @@ mod tests {
         let rows = linked_rows();
         let buffer = buffer_of(&rows, 120, 4, true);
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, 120, &refs, PeopleDisplay::YesNo);
+        let allocation = allocate(&Column::DEFAULT, 120, &refs, all(PeopleDisplay::YesNo));
         let x = column_x(
             &allocation,
             Rect {
@@ -1952,7 +2050,7 @@ mod tests {
         rows[0].title = "x".to_owned();
         let buffer = buffer_of(&rows, 120, 4, true);
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, 120, &refs, PeopleDisplay::YesNo);
+        let allocation = allocate(&Column::DEFAULT, 120, &refs, all(PeopleDisplay::YesNo));
         let x = column_x(
             &allocation,
             Rect {
@@ -2022,7 +2120,7 @@ mod tests {
         };
         let linked = buffer_of(&rows, width, 4, true);
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, width, &refs, PeopleDisplay::YesNo);
+        let allocation = allocate(&Column::DEFAULT, width, &refs, all(PeopleDisplay::YesNo));
 
         let blank = ratatui::buffer::Buffer::empty(area);
         let updates = blank.diff(&linked);
@@ -2068,7 +2166,7 @@ mod tests {
         };
         let rows = linked_rows();
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, width, &refs, PeopleDisplay::YesNo);
+        let allocation = allocate(&Column::DEFAULT, width, &refs, all(PeopleDisplay::YesNo));
 
         let sink = Sink::default();
         let mut terminal = Terminal::with_options(
@@ -2132,7 +2230,7 @@ mod tests {
         };
         let mut rows = linked_rows();
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, width, &refs, PeopleDisplay::YesNo);
+        let allocation = allocate(&Column::DEFAULT, width, &refs, all(PeopleDisplay::YesNo));
 
         let sink = Sink::default();
         let mut terminal = Terminal::with_options(
@@ -2242,7 +2340,7 @@ mod tests {
             &mut empty,
             narrow,
             &refs,
-            &allocate(&[Column::Author], 10, &refs, PeopleDisplay::YesNo),
+            &allocate(&[Column::Author], 10, &refs, all(PeopleDisplay::YesNo)),
             &theme(false),
             now(),
         );
