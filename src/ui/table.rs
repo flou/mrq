@@ -12,6 +12,7 @@
 //! the title on that row, which corrupts the whole table.
 
 use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::io;
 
 use ratatui::backend::Backend;
@@ -740,21 +741,29 @@ impl Links {
             self.drawn.clear();
         }
 
+        // Spans are matched by where they start and what they open, so "unchanged since
+        // last frame" is a lookup, not a scan of every span.
+        let key = |span: &LinkSpan| {
+            let (x, y) = span.cells.first().map_or((0, 0), |&(x, y, _)| (x, y));
+            (x, y, span.open.clone())
+        };
+        let drawn: HashMap<_, &LinkSpan> = self.drawn.iter().map(|s| (key(s), s)).collect();
+        let current: HashMap<_, &LinkSpan> = spans.iter().map(|s| (key(s), s)).collect();
+
         let fresh: Vec<&LinkSpan> = spans
             .iter()
-            .filter(|span| !self.drawn.contains(span))
+            .filter(|span| drawn.get(&key(span)) != Some(span))
             .collect();
-        let covered = |x: u16, y: u16| {
-            fresh
-                .iter()
-                .any(|span| span.cells.iter().any(|&(cx, cy, _)| (cx, cy) == (x, y)))
-        };
+        let covered: HashSet<(u16, u16)> = fresh
+            .iter()
+            .flat_map(|span| span.cells.iter().map(|&(x, y, _)| (x, y)))
+            .collect();
         let stale: Vec<(u16, u16)> = self
             .drawn
             .iter()
-            .filter(|span| !spans.contains(span))
+            .filter(|span| current.get(&key(span)) != Some(span))
             .flat_map(|span| span.cells.iter().map(|&(x, y, _)| (x, y)))
-            .filter(|&(x, y)| !covered(x, y))
+            .filter(|cell| !covered.contains(cell))
             // A trailing half of a wide glyph now drawn there: printing it would blank
             // the glyph's right half.
             .filter(|&(x, y)| {
@@ -770,17 +779,29 @@ impl Links {
             return Ok(());
         }
 
-        backend.draw(
-            stale
-                .iter()
-                .filter_map(|&(x, y)| buffer.cell((x, y)).map(|c| (x, y, c))),
-        )?;
-        for span in &fresh {
-            backend.write_all(span.open.as_bytes())?;
-            backend.draw(span.cells.iter().map(|(x, y, cell)| (*x, *y, cell)))?;
-            backend.write_all(hyperlink::CLOSE.as_bytes())?;
+        // A failure partway must not leave the terminal inside a link, or the next frame's
+        // plain cells would join it; and `drawn` no longer describes the screen, so the
+        // next call reprints everything.
+        let printed = (|| {
+            backend.draw(
+                stale
+                    .iter()
+                    .filter_map(|&(x, y)| buffer.cell((x, y)).map(|c| (x, y, c))),
+            )?;
+            for span in &fresh {
+                backend.write_all(span.open.as_bytes())?;
+                backend.draw(span.cells.iter().map(|(x, y, cell)| (*x, *y, cell)))?;
+                backend.write_all(hyperlink::CLOSE.as_bytes())?;
+            }
+            Backend::flush(backend)?;
+            Ok(())
+        })();
+        if printed.is_err() {
+            let _ = backend.write_all(hyperlink::CLOSE.as_bytes());
+            let _ = Backend::flush(backend);
+            self.drawn.clear();
+            return printed;
         }
-        Backend::flush(backend)?;
 
         self.drawn = spans;
         Ok(())
@@ -2172,6 +2193,357 @@ mod tests {
 
         for mr in &rows {
             assert!(written.contains(&hyperlink::open(&mr.id, &mr.web_url)));
+        }
+    }
+
+    /// A big window over many rows, drawn the way `App::draw` does, with a terminal replay.
+    struct Big {
+        area: Rect,
+        terminal: Terminal<CrosstermBackend<Sink>>,
+        sink: Sink,
+        links: Links,
+        screen: Screen,
+        rows: Vec<MergeRequest>,
+        allocation: Allocation,
+    }
+
+    impl Big {
+        fn new(count: usize, title: impl Fn(usize) -> String) -> Self {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width: 200,
+                height: 30,
+            };
+            let rows: Vec<MergeRequest> = (0..count)
+                .map(|i| {
+                    let mut m = mr(&i.to_string(), "jdoe");
+                    m.title = title(i);
+                    m.web_url =
+                        format!("https://gitlab.example.com/group/project/-/merge_requests/{i}");
+                    m
+                })
+                .collect();
+            let refs: Vec<&MergeRequest> = rows.iter().collect();
+            let allocation = allocate(
+                &Column::DEFAULT,
+                area.width,
+                &refs,
+                all(PeopleDisplay::YesNo),
+            );
+            let sink = Sink::default();
+            Self {
+                area,
+                terminal: Terminal::with_options(
+                    CrosstermBackend::new(sink.clone()),
+                    TerminalOptions {
+                        viewport: Viewport::Fixed(area),
+                    },
+                )
+                .unwrap(),
+                sink,
+                links: Links::default(),
+                screen: Screen::default(),
+                rows,
+                allocation,
+            }
+        }
+
+        fn window(&self) -> usize {
+            usize::from(self.area.height) - 1
+        }
+
+        /// Draw `window` rows from `scroll`, selecting `selected`; returns the bytes written.
+        fn draw(&mut self, scroll: usize, selected: Option<usize>) -> String {
+            let shown: Vec<&MergeRequest> =
+                self.rows[scroll..scroll + self.window()].iter().collect();
+            let mut t = tab();
+            t.select(selected.map(|i| self.rows[i].id.clone()));
+            let mut spans = Vec::new();
+            let completed = self
+                .terminal
+                .draw(|frame| {
+                    let table = build(
+                        &shown,
+                        &t,
+                        &self.allocation,
+                        &theme(false),
+                        now(),
+                        PeopleDisplayModes::default(),
+                    );
+                    frame.render_widget(table, self.area);
+                    spans = link_spans(
+                        frame.buffer_mut(),
+                        self.area,
+                        &shown,
+                        &self.allocation,
+                        Column::Title,
+                        &theme(false),
+                        now(),
+                    );
+                })
+                .unwrap();
+            let buffer = completed.buffer.clone();
+            self.links
+                .write(self.terminal.backend_mut(), &buffer, spans)
+                .unwrap();
+            let written = self.sink.take();
+            self.screen.feed(&written);
+            written
+        }
+
+        /// Every title cell links to its own merge request, and nothing else is linked.
+        fn assert_linked(&self, scroll: usize) {
+            let x = column_x(&self.allocation, self.area, Column::Title).unwrap();
+            let width = usize::from(self.allocation.width_of(Column::Title).unwrap());
+            for offset in 0..self.window() {
+                let mr = &self.rows[scroll + offset];
+                let text = linked_text(mr, Column::Title, width, &theme(false), now());
+                assert_row_linked(&self.screen, 1 + offset as u16, x, &text, &mr.web_url);
+            }
+            assert!(!self.screen.link_open());
+        }
+    }
+
+    /// Titles that start and end the same and differ only in the middle, so almost every
+    /// cell is identical from one frame to the next.
+    fn alike(i: usize) -> String {
+        format!("Fix the thing {i} in the same place")
+    }
+
+    #[test]
+    fn scrolling_a_big_window_keeps_every_cell_linked_to_its_own_row() {
+        let mut big = Big::new(200, alike);
+        for scroll in [0, 1, 2, 5, 6, 3, 0, 100, 101, 29, 170] {
+            big.draw(scroll, Some(scroll));
+            big.assert_linked(scroll);
+        }
+    }
+
+    /// Selecting a row changes its cell styles but not its text, which the span comparison
+    /// has to notice: the row is resent by ratatui, so it has to be relinked.
+    #[test]
+    fn moving_the_selection_keeps_both_rows_linked() {
+        let mut big = Big::new(60, alike);
+        for selected in [3, 4, 5, 4, 20, 3] {
+            big.draw(0, Some(selected));
+            big.assert_linked(0);
+        }
+    }
+
+    /// A scroll in a big window sends one open and close per row plus the text, not an
+    /// escape per cell (~400 KiB before the overlay).
+    #[test]
+    fn a_scroll_frame_stays_small() {
+        let mut big = Big::new(200, alike);
+        big.draw(0, None);
+        let written = big.draw(1, None);
+        assert!(written.len() < 20_000, "{} bytes", written.len());
+        assert_eq!(
+            written.matches("\x1b]8;id=").count(),
+            big.window(),
+            "one link per row"
+        );
+    }
+
+    /// A resize clears the screen, links included: everything has to be linked again.
+    #[test]
+    fn a_resize_relinks_every_row() {
+        let mut big = Big::new(60, alike);
+        big.draw(0, None);
+        // Same rows, different buffer area: as `Terminal` hands over after a resize.
+        let shown: Vec<&MergeRequest> = big.rows[..big.window()].iter().collect();
+        let area = Rect {
+            height: big.area.height + 1,
+            ..big.area
+        };
+        let buffer = Buffer::empty(area);
+        let spans = link_spans(
+            &buffer,
+            big.area,
+            &shown,
+            &big.allocation,
+            Column::Title,
+            &theme(false),
+            now(),
+        );
+        let sink = Sink::default();
+        let mut backend = CrosstermBackend::new(sink.clone());
+        big.links.write(&mut backend, &buffer, spans).unwrap();
+        let written = sink.take();
+        assert_eq!(written.matches("\x1b]8;id=").count(), big.window());
+    }
+
+    /// A writer that fails once, after `limit` bytes, then behaves.
+    struct Flaky {
+        sink: Sink,
+        limit: usize,
+        written: usize,
+    }
+
+    impl std::io::Write for Flaky {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.written + buf.len() > self.limit && self.limit != usize::MAX {
+                self.limit = usize::MAX;
+                return Err(std::io::Error::other("flaky"));
+            }
+            self.written += buf.len();
+            self.sink.write(buf)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Whether `bytes` stops at the end of an escape sequence, not partway through one.
+    fn ends_between_sequences(bytes: &str) -> bool {
+        let Some(start) = bytes.rfind('\x1b') else {
+            return true;
+        };
+        let rest = &bytes[start + 1..];
+        match rest.chars().next() {
+            None => false,
+            Some('[') => rest[1..].chars().any(|c| c.is_ascii_alphabetic()),
+            Some(']') => rest.ends_with("\x1b\\"),
+            Some(_) => true,
+        }
+    }
+
+    /// A write that dies between an open and its close must not leave the terminal inside
+    /// the link, and the next frame must link everything again.
+    #[test]
+    fn a_failed_write_closes_the_link_and_relinks_next_time() {
+        let big = Big::new(60, alike);
+        let shown: Vec<&MergeRequest> = big.rows[..big.window()].iter().collect();
+        let buffer = Buffer::empty(big.area);
+        let spans = || {
+            link_spans(
+                &buffer,
+                big.area,
+                &shown,
+                &big.allocation,
+                Column::Title,
+                &theme(false),
+                now(),
+            )
+        };
+
+        // Whichever write fails, wherever it lands in the escape/text sequence.
+        for limit in (0..2_500).step_by(5) {
+            let sink = Sink::default();
+            let mut backend = CrosstermBackend::new(Flaky {
+                sink: sink.clone(),
+                limit,
+                written: 0,
+            });
+            let mut links = Links::default();
+            assert!(links.write(&mut backend, &buffer, spans()).is_err());
+            let sent = sink.take();
+            // A write that dies inside an escape sequence leaves the terminal in a state
+            // nothing can repair; only failures between sequences are checked.
+            let prefix = sent.strip_suffix(hyperlink::CLOSE).unwrap_or(&sent);
+            if ends_between_sequences(prefix) {
+                let mut screen = Screen::default();
+                screen.feed(&sent);
+                assert!(
+                    !screen.link_open(),
+                    "failing after {limit} bytes left the terminal inside a link"
+                );
+            }
+
+            links.write(&mut backend, &buffer, spans()).unwrap();
+            let written = sink.take();
+            assert_eq!(
+                written.matches("\x1b]8;id=").count(),
+                big.window(),
+                "failing after {limit} bytes"
+            );
+        }
+    }
+
+    /// Time and bytes of the link overlay for a one-row and a page scroll in a big window.
+    #[test]
+    #[ignore = "measurement: run with --release --nocapture"]
+    fn measure_link_overlay_cost() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 200,
+            height: 60,
+        };
+        let rows: Vec<MergeRequest> = (0..2000)
+            .map(|i| {
+                let mut m = mr(&i.to_string(), "jdoe");
+                m.title = format!("Merge request number {i} with a reasonably long title");
+                m.web_url =
+                    format!("https://gitlab.example.com/group/project/-/merge_requests/{i}");
+                m
+            })
+            .collect();
+        let all_rows: Vec<&MergeRequest> = rows.iter().collect();
+        let allocation = allocate(
+            &Column::DEFAULT,
+            area.width,
+            &all_rows,
+            all(PeopleDisplay::YesNo),
+        );
+        let window = usize::from(area.height) - 1;
+
+        for (name, step) in [("one-row", 1usize), ("page", window)] {
+            let sink = Sink::default();
+            let mut terminal = Terminal::with_options(
+                CrosstermBackend::new(sink.clone()),
+                TerminalOptions {
+                    viewport: Viewport::Fixed(area),
+                },
+            )
+            .unwrap();
+            let mut links = Links::default();
+            let t = tab();
+            let (mut draw_time, mut link_time, mut bytes) =
+                (std::time::Duration::ZERO, std::time::Duration::ZERO, 0usize);
+            let frames = 30;
+            for frame_no in 0..frames {
+                let scroll = frame_no * step;
+                let shown = &all_rows[scroll..scroll + window];
+                sink.0.lock().unwrap().clear();
+                let started = std::time::Instant::now();
+                let mut spans = Vec::new();
+                let completed = terminal
+                    .draw(|frame| {
+                        let table = build(
+                            shown,
+                            &t,
+                            &allocation,
+                            &theme(false),
+                            now(),
+                            PeopleDisplayModes::default(),
+                        );
+                        frame.render_widget(table, area);
+                        spans = link_spans(
+                            frame.buffer_mut(),
+                            area,
+                            shown,
+                            &allocation,
+                            Column::Title,
+                            &theme(false),
+                            now(),
+                        );
+                    })
+                    .unwrap();
+                let buffer = completed.buffer.clone();
+                draw_time += started.elapsed();
+                let started = std::time::Instant::now();
+                links.write(terminal.backend_mut(), &buffer, spans).unwrap();
+                link_time += started.elapsed();
+                bytes = sink.0.lock().unwrap().len();
+            }
+            println!(
+                "{name}: draw+spans {:?}/frame, Links::write {:?}/frame, {bytes} bytes (last frame)",
+                draw_time / frames as u32,
+                link_time / frames as u32
+            );
         }
     }
 
