@@ -132,6 +132,8 @@ pub struct Ui {
     /// here — validated at config load. Defaults to `[approver, reviewer]`, but only
     /// while `columns` is also left at its default — see `load::load`.
     pub wide_columns: Vec<Column>,
+    /// Starts with wide mode on, as if `w` had been pressed at launch.
+    pub wide: bool,
     /// How the ASSIGNED column names people. `Yes`/`No` against whether you are an
     /// assignee, by default.
     pub assigned_display: PeopleDisplay,
@@ -153,6 +155,7 @@ impl Default for Ui {
             set_terminal_title: true,
             columns: Column::DEFAULT.to_vec(),
             wide_columns: vec![Column::Approver, Column::Reviewer],
+            wide: false,
             assigned_display: PeopleDisplay::YesNo,
             approver_display: PeopleDisplay::Username,
             reviewer_display: PeopleDisplay::Username,
@@ -620,6 +623,7 @@ mod tests {
         assert!(!c.ui.mouse, "mouse off, so native selection keeps working");
         assert_eq!(c.ui.columns, Column::DEFAULT.to_vec());
         assert_eq!(c.ui.wide_columns, vec![Column::Approver, Column::Reviewer]);
+        assert!(!c.ui.wide, "wide mode starts off");
         assert_eq!(c.ui.assigned_display, PeopleDisplay::YesNo);
         assert_eq!(c.ui.approver_display, PeopleDisplay::Username);
         assert_eq!(c.ui.reviewer_display, PeopleDisplay::Username);

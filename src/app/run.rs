@@ -886,7 +886,7 @@ pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> 
     let mut view = ViewState {
         tabs,
         mode: Mode::Normal,
-        wide: false,
+        wide: config.ui.wide,
         theme,
         drafts_last: config.sort.drafts_last,
         flash: None,

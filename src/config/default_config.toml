@@ -71,6 +71,9 @@
 # reverts to hiding nothing extra unless you list it here too.
 # wide_columns = []
 
+# Start with wide mode on; w still toggles it.
+# wide = false
+
 [skin]
 # The colour palette. One of:
 #
