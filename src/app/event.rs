@@ -87,6 +87,15 @@ pub enum AppEvent {
     /// biggest variant on every event (see `the_event_enum_stays_small`).
     IdentityFailed { error: Box<Error> },
 
+    /// The comments popup's fetch finished. `Err` carries the message the popup shows.
+    ///
+    /// Boxed like the other large payloads (see `the_event_enum_stays_small`).
+    DiscussionsLoaded {
+        id: String,
+        updated_at: jiff::Timestamp,
+        result: Box<Result<Vec<crate::gitlab::discussions::Discussion>, String>>,
+    },
+
     /// Shut down: a signal arrived, or the user quit.
     Quit(QuitReason),
 }

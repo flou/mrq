@@ -362,10 +362,12 @@ fn cell_text<'a>(
         Column::Repo => Cow::Borrowed(mr.project_name.as_str()),
         Column::Id => Cow::Owned(format!("!{}", mr.iid)),
         Column::Title => {
-            if mr.draft {
-                Cow::Owned(format!("[Draft] {}", mr.title))
-            } else {
-                Cow::Borrowed(mr.title.as_str())
+            let mark = discussion_prefix(mr, theme);
+            match (mark.is_empty(), mr.draft) {
+                (true, false) => Cow::Borrowed(mr.title.as_str()),
+                (true, true) => Cow::Owned(format!("[Draft] {}", mr.title)),
+                (false, false) => Cow::Owned(format!("{mark}{}", mr.title)),
+                (false, true) => Cow::Owned(format!("{mark}[Draft] {}", mr.title)),
             }
         }
         // Filled in by the caller, which has the theme and therefore the glyph set.
@@ -377,6 +379,15 @@ fn cell_text<'a>(
         Column::Updated => Cow::Owned(relative_time(mr.updated_at, now)),
         Column::Diff => Cow::Owned(diff_cell(mr)),
         Column::Branch => Cow::Borrowed(mr.source_branch.as_str()),
+    }
+}
+
+/// The marker shown before the title while discussions are unresolved, else empty.
+const fn discussion_prefix(mr: &MergeRequest, theme: &Theme) -> &'static str {
+    if mr.unresolved_discussions > 0 {
+        theme.discussion_mark()
+    } else {
+        ""
     }
 }
 
@@ -696,7 +707,13 @@ pub fn link_spans(
 
         let end = x + text_width;
         let mut cells = Vec::new();
-        let mut cell_x = x;
+        // The discussion marker is a status, not part of the title: leave it unlinked.
+        let skip = if column == Column::Title {
+            u16::try_from(discussion_prefix(mr, theme).width()).unwrap_or(0)
+        } else {
+            0
+        };
+        let mut cell_x = x + skip.min(text_width);
         while cell_x < end {
             let Some(cell) = buffer.cell((cell_x, y)) else {
                 break;
@@ -1526,6 +1543,67 @@ mod tests {
             "[Draft] Migration guide"
         );
         assert_eq!(cell_role(&m, Column::Title), Role::Dim);
+    }
+
+    #[test]
+    fn unresolved_discussions_put_a_marker_before_the_title() {
+        let title = |m: &MergeRequest, ascii: bool| {
+            cell_text(
+                m,
+                Column::Title,
+                &theme(ascii),
+                now(),
+                PeopleDisplayModes::default(),
+            )
+            .into_owned()
+        };
+        let mut m = mr("a", "someone");
+        m.title = "Migration guide".into();
+
+        m.unresolved_discussions = 0;
+        assert_eq!(title(&m, false), "Migration guide");
+
+        m.unresolved_discussions = 3;
+        assert_eq!(title(&m, false), "💬 Migration guide");
+        assert_eq!(title(&m, true), "* Migration guide");
+
+        m.draft = true;
+        assert_eq!(title(&m, false), "💬 [Draft] Migration guide");
+    }
+
+    #[test]
+    fn the_discussion_marker_is_not_part_of_the_link() {
+        let mut rows = linked_rows();
+        rows[0].title = "Plain".to_owned();
+        rows[0].unresolved_discussions = 1;
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 120,
+            height: 4,
+        };
+        let buffer = Buffer::empty(area);
+        let refs: Vec<&MergeRequest> = rows.iter().collect();
+        let allocation = allocate(&Column::DEFAULT, 120, &refs, all(PeopleDisplay::YesNo));
+        let x = column_x(&allocation, area, Column::Title).unwrap();
+        let spans = link_spans(
+            &buffer,
+            area,
+            &refs,
+            &allocation,
+            Column::Title,
+            &theme(false),
+            now(),
+        );
+
+        let (first_x, _, _) = spans[0].cells[0];
+        assert_eq!(
+            first_x,
+            x + 3,
+            "the link starts after the marker and its space"
+        );
+        let (plain_x, _, _) = spans[1].cells[0];
+        assert_eq!(plain_x, x, "a row without discussions links from the start");
     }
 
     /// The trigram, spelled out: `Charles Billow` -> `CBI`, `Leeroy Feist` -> `LFE` — the

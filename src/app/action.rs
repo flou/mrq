@@ -17,9 +17,11 @@
 
 use std::time::{Duration, Instant};
 
+use crate::app::discussions::{self, DiscussionsCache, DiscussionsView};
 use crate::app::state::Tabs;
 use crate::config::keymap::{Action, Keymap};
 use crate::config::schema::Column;
+use crate::gitlab::discussions::Discussion;
 use crate::gitlab::fetch::Snapshot;
 use crate::gitlab::model::{MergeRequest, MergeStatus};
 use crate::logging::LogBuffer;
@@ -37,6 +39,7 @@ pub enum Popup {
     Skin,
     Log,
     Details,
+    Discussions,
 }
 
 impl Popup {
@@ -49,6 +52,7 @@ impl Popup {
             Self::Skin => Action::SkinMenu,
             Self::Log => Action::LogMenu,
             Self::Details => Action::ShowDetails,
+            Self::Discussions => Action::ShowDiscussions,
         }
     }
 }
@@ -87,6 +91,9 @@ pub struct PopupState {
     /// The picker previews as the cursor moves, so cancelling has to put back something,
     /// and by then the theme no longer remembers what.
     pub previous_skin: Option<String>,
+    /// What the comments popup is showing; unused by every other popup. The merge
+    /// request it belongs to is `source`.
+    pub discussions: DiscussionsView,
 }
 
 impl PopupState {
@@ -99,6 +106,7 @@ impl PopupState {
             styled: Vec::new(),
             source: None,
             previous_skin: None,
+            discussions: DiscussionsView::Loading,
         }
     }
 }
@@ -149,6 +157,14 @@ pub enum Effect {
     Open(String),
     /// Put text on the clipboard.
     Copy(String),
+    /// Fetch a merge request's discussions for the comments popup.
+    FetchDiscussions {
+        id: String,
+        /// The merge request's `updated_at` when asked, which the answer is filed under.
+        updated_at: jiff::Timestamp,
+        project_path: String,
+        iid: String,
+    },
     Quit,
 }
 
@@ -196,6 +212,8 @@ pub struct ViewState {
     /// Written the same way as `popup_width`; [`DEFAULT_POPUP_HEIGHT`] stands in until the
     /// first of those.
     pub popup_height: usize,
+    /// Discussions fetched for the comments popup, so reopening it is instant.
+    pub discussions: DiscussionsCache,
 }
 
 /// The columns the sort menu offers, in menu order.
@@ -233,6 +251,41 @@ impl Flash {
 }
 
 impl ViewState {
+    /// Take in the result of a [`Effect::FetchDiscussions`].
+    ///
+    /// Successes are remembered under the `updated_at` the request was made at, so a
+    /// merge request that changed meanwhile is simply a cache miss next time. A popup
+    /// still open on that merge request is brought up to date; one closed, or opened
+    /// on another merge request since, is left alone. Returns whether to redraw.
+    pub fn discussions_loaded(
+        &mut self,
+        id: &str,
+        updated_at: jiff::Timestamp,
+        result: Result<Vec<Discussion>, String>,
+    ) -> bool {
+        let view = match result {
+            Ok(found) => {
+                self.discussions
+                    .insert(id.to_owned(), updated_at, found.clone());
+                DiscussionsView::Loaded(found)
+            }
+            Err(message) => DiscussionsView::Failed(message),
+        };
+
+        let Mode::Popup(popup) = &mut self.mode else {
+            return false;
+        };
+        if popup.kind != Popup::Discussions || popup.source.as_ref().is_none_or(|mr| mr.id != id) {
+            return false;
+        }
+        popup.discussions = view;
+        if let Some(mr) = popup.source.as_deref() {
+            popup.styled =
+                discussions::lines(mr, &popup.discussions, &self.theme, self.popup_width);
+        }
+        true
+    }
+
     /// The rows the active tab currently shows, filtered and sorted.
     ///
     /// Borrowed rather than cloned: the draw path asks for this every frame, and every
@@ -726,6 +779,29 @@ pub fn dispatch(state: &mut ViewState, action: Action) -> (bool, Effect) {
             state.mode = Mode::Popup(popup);
             (true, Effect::None)
         }
+        Action::ShowDiscussions => match state.selected() {
+            Some(mr) => {
+                let mut popup = PopupState::new(Popup::Discussions);
+                let effect = match state.discussions.get(&mr) {
+                    Some(found) => {
+                        popup.discussions = DiscussionsView::Loaded(found.clone());
+                        Effect::None
+                    }
+                    None => Effect::FetchDiscussions {
+                        id: mr.id.clone(),
+                        updated_at: mr.updated_at,
+                        project_path: mr.project_path.clone(),
+                        iid: mr.iid.clone(),
+                    },
+                };
+                popup.styled =
+                    discussions::lines(&mr, &popup.discussions, &state.theme, state.popup_width);
+                popup.source = Some(Box::new(mr));
+                state.mode = Mode::Popup(popup);
+                (true, effect)
+            }
+            None => (false, Effect::None),
+        },
         Action::ShowDetails => match state.selected() {
             Some(mr) => {
                 let mut popup = PopupState::new(Popup::Details);
@@ -1073,10 +1149,20 @@ fn popup_key(
         // `g` / `shift-G` jump to top/bottom in the read-only text popups, matching the
         // table's own Top/Bottom keys. Sort and Skin keep bare letters as jump-to-entry
         // shortcuts instead, so they are excluded here.
-        KeyCode::Char('g') if matches!(popup.kind, Popup::Log | Popup::Help | Popup::Details) => {
+        KeyCode::Char('g')
+            if matches!(
+                popup.kind,
+                Popup::Log | Popup::Help | Popup::Details | Popup::Discussions
+            ) =>
+        {
             popup.cursor = 0;
         }
-        KeyCode::Char('G') if matches!(popup.kind, Popup::Log | Popup::Help | Popup::Details) => {
+        KeyCode::Char('G')
+            if matches!(
+                popup.kind,
+                Popup::Log | Popup::Help | Popup::Details | Popup::Discussions
+            ) =>
+        {
             popup.cursor = rows.saturating_sub(1);
         }
 
@@ -1114,7 +1200,7 @@ fn popup_key(
                     popup.cursor = index;
                 }
             }
-            Popup::Help | Popup::Log | Popup::Details => {
+            Popup::Help | Popup::Log | Popup::Details | Popup::Discussions => {
                 return KeyOutcome::Handled { redraw: false };
             }
         },
@@ -1147,7 +1233,9 @@ fn popup_rows(state: &ViewState, keymap: &Keymap, popup: &PopupState) -> usize {
         Popup::Filter => matching_filters(state, &popup.query).len(),
         Popup::Skin => skins::BUILTIN_NAMES.len(),
         Popup::Log => scroll_positions(popup.lines.len(), state.popup_height),
-        Popup::Details => scroll_positions(popup.styled.len(), state.popup_height),
+        Popup::Details | Popup::Discussions => {
+            scroll_positions(popup.styled.len(), state.popup_height)
+        }
         Popup::Help => scroll_positions(help_lines(keymap).len(), state.popup_height),
     }
 }
@@ -1179,13 +1267,16 @@ pub fn resize_popup(state: &mut ViewState, keymap: &Keymap, width: usize, height
 
     // Re-wrapping only rebuilds `styled` on a width change; the height alone does not
     // affect how the description wraps.
-    if width_changed
-        && popup.kind == Popup::Details
-        && let Some(mr) = popup.source.clone()
-    {
-        // Cloned out before rebuilding: `detail_lines` needs `&state.theme` while `popup`
+    if width_changed && let Some(mr) = popup.source.clone() {
+        // Cloned out before rebuilding: the builders need `&state.theme` while `popup`
         // is still borrowed mutably here.
-        popup.styled = detail_lines(&mr, &state.theme, width);
+        match popup.kind {
+            Popup::Details => popup.styled = detail_lines(&mr, &state.theme, width),
+            Popup::Discussions => {
+                popup.styled = discussions::lines(&mr, &popup.discussions, &state.theme, width);
+            }
+            _ => {}
+        }
     }
 
     // A taller/shorter window shifts how many scroll positions Help/Log/Details have;
@@ -1201,7 +1292,7 @@ pub fn resize_popup(state: &mut ViewState, keymap: &Keymap, width: usize, height
                 .cursor
                 .min(scroll_positions(popup.lines.len(), height) - 1)
         }
-        Popup::Details => {
+        Popup::Details | Popup::Discussions => {
             popup.cursor = popup
                 .cursor
                 .min(scroll_positions(popup.styled.len(), height) - 1);
@@ -1416,7 +1507,7 @@ fn apply_popup(state: &mut ViewState, kind: Popup, popup: &PopupState) -> KeyOut
         // Already applied, one preview at a time; Enter is what stops Esc undoing it.
         Popup::Skin => state.flash(format!("skin: {}", state.theme.skin())),
         // Nothing to apply; Enter just closes them.
-        Popup::Help | Popup::Log | Popup::Details => {}
+        Popup::Help | Popup::Log | Popup::Details | Popup::Discussions => {}
     }
     KeyOutcome::Handled { redraw: true }
 }
@@ -1468,6 +1559,158 @@ mod tests {
         line.iter().map(|segment| segment.text.as_str()).collect()
     }
 
+    /// One merge request, selected, as the comments tests need.
+    fn with_selection() -> ViewState {
+        let mut state = state_with(vec![mr("a", "x")]);
+        dispatch(&mut state, Action::Down);
+        state
+    }
+
+    fn thread(body: &str, resolved: bool) -> Discussion {
+        use crate::gitlab::discussions::Note;
+        Discussion {
+            resolvable: true,
+            resolved,
+            notes: vec![Note {
+                author: User::new("jdoe"),
+                body: body.to_owned(),
+                created_at: None,
+                position: None,
+            }],
+        }
+    }
+
+    fn popup_text(state: &ViewState) -> String {
+        let Mode::Popup(popup) = &state.mode else {
+            panic!("no popup open");
+        };
+        popup
+            .styled
+            .iter()
+            .map(joined)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_comments_popup_opens_loading_and_asks_for_the_threads() {
+        let mut state = with_selection();
+        let selected = state.selected().unwrap();
+
+        let (redraw, effect) = dispatch(&mut state, Action::ShowDiscussions);
+
+        assert!(redraw);
+        assert_eq!(state.mode.popup(), Some(Popup::Discussions));
+        assert_eq!(
+            effect,
+            Effect::FetchDiscussions {
+                id: selected.id.clone(),
+                updated_at: selected.updated_at,
+                project_path: selected.project_path.clone(),
+                iid: selected.iid,
+            }
+        );
+        assert!(
+            popup_text(&state).contains("Loading"),
+            "{}",
+            popup_text(&state)
+        );
+    }
+
+    #[test]
+    fn a_result_fills_the_open_popup_and_is_remembered() {
+        let mut state = with_selection();
+        let selected = state.selected().unwrap();
+        dispatch(&mut state, Action::ShowDiscussions);
+
+        let redraw = state.discussions_loaded(
+            &selected.id,
+            selected.updated_at,
+            Ok(vec![thread("Please rename this", false)]),
+        );
+
+        assert!(redraw);
+        let text = popup_text(&state);
+        assert!(
+            text.contains("[unresolved]") && text.contains("Please rename this"),
+            "{text}"
+        );
+
+        // Reopened: served from memory, nothing to fetch.
+        let (_, effect) = dispatch(&mut state, Action::ShowDiscussions);
+        assert_eq!(effect, Effect::None);
+        assert!(popup_text(&state).contains("Please rename this"));
+    }
+
+    #[test]
+    fn a_changed_merge_request_is_fetched_again() {
+        let mut state = with_selection();
+        let selected = state.selected().unwrap();
+        state.discussions_loaded(&selected.id, selected.updated_at, Ok(Vec::new()));
+
+        let newer: jiff::Timestamp = "2026-10-01T00:00:00Z".parse().unwrap();
+        state.tabs.active_mut().unwrap().apply_rows(
+            vec![{
+                let mut changed = selected.clone();
+                changed.updated_at = newer;
+                changed
+            }],
+            Instant::now(),
+        );
+
+        let (_, effect) = dispatch(&mut state, Action::ShowDiscussions);
+        assert!(
+            matches!(effect, Effect::FetchDiscussions { updated_at, .. } if updated_at == newer)
+        );
+    }
+
+    #[test]
+    fn a_failure_is_shown_and_not_remembered() {
+        let mut state = with_selection();
+        let selected = state.selected().unwrap();
+        dispatch(&mut state, Action::ShowDiscussions);
+
+        assert!(state.discussions_loaded(
+            &selected.id,
+            selected.updated_at,
+            Err("HTTP 500".into())
+        ));
+        assert!(popup_text(&state).contains("HTTP 500"));
+
+        dispatch(&mut state, Action::ShowDiscussions); // closes
+        let (_, effect) = dispatch(&mut state, Action::ShowDiscussions);
+        assert!(
+            matches!(effect, Effect::FetchDiscussions { .. }),
+            "retry fetches again"
+        );
+    }
+
+    #[test]
+    fn a_result_for_another_merge_request_leaves_the_popup_alone() {
+        let mut state = with_selection();
+        let selected = state.selected().unwrap();
+        dispatch(&mut state, Action::ShowDiscussions);
+
+        let redraw = state.discussions_loaded(
+            "gid://gitlab/MergeRequest/other",
+            selected.updated_at,
+            Ok(vec![thread("Not yours", false)]),
+        );
+
+        assert!(!redraw);
+        assert!(popup_text(&state).contains("Loading"));
+        assert!(!popup_text(&state).contains("Not yours"));
+    }
+
+    #[test]
+    fn a_result_after_the_popup_closed_is_only_remembered() {
+        let mut state = with_selection();
+        let selected = state.selected().unwrap();
+
+        assert!(!state.discussions_loaded(&selected.id, selected.updated_at, Ok(Vec::new())));
+        assert!(state.discussions.get(&selected).is_some());
+    }
+
     fn state_with(rows: Vec<MergeRequest>) -> ViewState {
         let mut tabs = Tabs::new(
             &[
@@ -1493,6 +1736,7 @@ mod tests {
             viewport: HALF_PAGE_VIEWPORT,
             popup_width: DEFAULT_POPUP_WIDTH,
             popup_height: DEFAULT_POPUP_HEIGHT,
+            discussions: DiscussionsCache::default(),
         }
     }
 
@@ -3320,6 +3564,7 @@ mod perf {
             viewport: HALF_PAGE_VIEWPORT,
             popup_width: DEFAULT_POPUP_WIDTH,
             popup_height: DEFAULT_POPUP_HEIGHT,
+            discussions: DiscussionsCache::default(),
         }
     }
 

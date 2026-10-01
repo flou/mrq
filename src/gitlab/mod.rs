@@ -13,6 +13,7 @@
 //! - `error`   — HTTP/GraphQL error classification and the retry policy
 
 pub mod client;
+pub mod discussions;
 pub mod error;
 pub mod model;
 pub mod probe;

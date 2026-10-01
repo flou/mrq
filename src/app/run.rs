@@ -48,6 +48,9 @@ type Backend = CrosstermBackend<std::io::Stdout>;
 /// The application state the loop owns.
 pub struct App {
     view: ViewState,
+    /// For the comments popup's on-demand fetch.
+    client: Client,
+    events: EventSender,
     config: Config,
     keymap: Keymap,
     refresh: RefreshHandle,
@@ -264,6 +267,19 @@ impl App {
             // The open half lands in `open`; the copy half is implemented in `copy`.
             Effect::Open(url) => self.open(&url),
             Effect::Copy(text) => self.copy(&text),
+            Effect::FetchDiscussions {
+                id,
+                updated_at,
+                project_path,
+                iid,
+            } => crate::app::discussions::spawn(
+                self.events.clone(),
+                self.client.clone(),
+                id,
+                updated_at,
+                project_path,
+                iid,
+            ),
         }
     }
 
@@ -621,6 +637,12 @@ impl Application for App {
 
             AppEvent::Identified { username } => self.view.identify(&username),
 
+            AppEvent::DiscussionsLoaded {
+                id,
+                updated_at,
+                result,
+            } => self.view.discussions_loaded(&id, updated_at, *result),
+
             AppEvent::IdentityFailed { error } => {
                 // The same invariant that made plain propagation correct before the
                 // guard existed: the recovery taxonomy agrees every failure this probe
@@ -924,7 +946,7 @@ pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> 
     let refresh = scheduler::spawn(
         &mut tasks,
         events.clone(),
-        client,
+        client.clone(),
         &config,
         identity_rx,
         cache_dir,
@@ -945,11 +967,14 @@ pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> 
         viewport: action::HALF_PAGE_VIEWPORT,
         popup_width: action::DEFAULT_POPUP_WIDTH,
         popup_height: action::DEFAULT_POPUP_HEIGHT,
+        discussions: crate::app::discussions::DiscussionsCache::default(),
     };
     view.select_initial_rows();
 
     let mut app = App {
         view,
+        client,
+        events,
         config,
         keymap,
         refresh,

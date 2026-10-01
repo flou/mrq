@@ -108,6 +108,7 @@ mod tests {
             AppEvent::RefreshesPaused { .. } => "paused",
             AppEvent::Identified { .. } => "identified",
             AppEvent::IdentityFailed { .. } => "identity_failed",
+            AppEvent::DiscussionsLoaded { .. } => "discussions",
             AppEvent::Quit(_) => "quit",
         }
     }

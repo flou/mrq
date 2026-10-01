@@ -407,7 +407,7 @@ pub(crate) mod fixtures {
                 title: "frontend".to_owned(),
                 color: Some("#428BCA".to_owned()),
             }],
-            unresolved_discussions: 2,
+            unresolved_discussions: 0,
             notes_count: 7,
             conflicts: false,
             merge_status: MergeStatus::CanBeMerged,

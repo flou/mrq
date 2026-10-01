@@ -215,6 +215,7 @@ scope = "assigned"
 # copy_url        = ["y"]
 # copy_branch     = ["shift-Y"]
 # show_details    = ["d"]
+# show_discussions = ["shift-C"]
 # toggle_drafts   = ["ctrl-a"]
 # toggle_wide     = ["w"]
 # sort_menu       = ["shift-S"]

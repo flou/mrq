@@ -61,6 +61,7 @@ const fn title(kind: Popup) -> &'static str {
         Popup::Skin => " Skin ",
         Popup::Log => " Log ",
         Popup::Details => " Details ",
+        Popup::Discussions => " Comments ",
     }
 }
 
@@ -85,7 +86,7 @@ pub fn build<'a>(
         Popup::Filter => filter_lines(state, popup, theme, now, inner_width),
         Popup::Skin => skin_lines(popup, theme, inner_width),
         Popup::Log => log_lines(popup, theme, inner_width),
-        Popup::Details => details_lines(popup, theme, inner_width),
+        Popup::Details | Popup::Discussions => details_lines(popup, theme, inner_width),
     };
 
     let block = theme
@@ -96,7 +97,9 @@ pub fn build<'a>(
     // Filter/Skin move a selection over a short list instead, where `scroll_to`'s
     // proportional mapping still applies.
     let scrolled = match popup.kind {
-        Popup::Help | Popup::Log | Popup::Details => scroll_from(lines, popup.cursor, inner_height),
+        Popup::Help | Popup::Log | Popup::Details | Popup::Discussions => {
+            scroll_from(lines, popup.cursor, inner_height)
+        }
         Popup::Sort | Popup::Filter | Popup::Skin => scroll_to(lines, popup.cursor, inner_height),
     };
     Some((Clear, Paragraph::new(scrolled).block(block)))
@@ -344,8 +347,8 @@ fn log_lines<'a>(popup: &PopupState, theme: &Theme, width: usize) -> Vec<Line<'a
         .collect()
 }
 
-/// The merge request details popup: header fields and the markdown-rendered description,
-/// exactly as `action::detail_lines` built them when the popup opened.
+/// The details and comments popups: the styled lines `action::detail_lines` or
+/// `discussions::lines` built when the popup opened (or last changed width).
 fn details_lines<'a>(popup: &PopupState, theme: &Theme, width: usize) -> Vec<Line<'a>> {
     popup
         .styled
@@ -432,6 +435,7 @@ mod tests {
             viewport: HALF_PAGE_VIEWPORT,
             popup_width: action::DEFAULT_POPUP_WIDTH,
             popup_height: action::DEFAULT_POPUP_HEIGHT,
+            discussions: Default::default(),
         }
     }
 
@@ -724,6 +728,43 @@ mod tests {
         assert!(shown.contains("Description:"), "{shown}");
     }
 
+    #[test]
+    fn the_comments_popup_is_titled_and_shows_the_threads() {
+        use crate::gitlab::discussions::{Discussion, Note};
+        use crate::gitlab::model::User;
+
+        let mut state = state();
+        state
+            .tabs
+            .active_mut()
+            .unwrap()
+            .select(Some("a".to_owned()));
+        open(&mut state, Action::ShowDiscussions);
+        assert!(text(&state).contains("Loading"), "{}", text(&state));
+
+        let selected = state.selected().unwrap();
+        state.discussions_loaded(
+            &selected.id,
+            selected.updated_at,
+            Ok(vec![Discussion {
+                resolvable: true,
+                resolved: false,
+                notes: vec![Note {
+                    author: User::new("jdoe"),
+                    body: "Please rename this".to_owned(),
+                    created_at: None,
+                    position: None,
+                }],
+            }]),
+        );
+
+        let shown = text(&state);
+        assert!(shown.contains("Comments"), "{shown}");
+        assert!(shown.contains("[unresolved]"), "{shown}");
+        assert!(shown.contains("@jdoe"), "{shown}");
+        assert!(shown.contains("Please rename this"), "{shown}");
+    }
+
     /// The log popup shows the last 50 lines, which is the ring's capacity.
     #[test]
     fn the_log_popup_snapshots_the_ring_when_it_opens() {
@@ -763,6 +804,7 @@ mod tests {
             Action::SkinMenu,
             Action::LogMenu,
             Action::ShowDetails,
+            Action::ShowDiscussions,
         ] {
             let mut state = state();
             state

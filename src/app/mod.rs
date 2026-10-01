@@ -27,6 +27,7 @@ pub mod state;
 
 pub mod cache;
 pub mod diff;
+pub mod discussions;
 pub mod identity;
 pub mod notify;
 pub mod sort;

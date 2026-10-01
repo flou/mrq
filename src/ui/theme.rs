@@ -398,6 +398,11 @@ impl Theme {
         if self.ascii { "y" } else { "✔" }
     }
 
+    /// The prefix on the title of a merge request with unresolved discussions.
+    pub const fn discussion_mark(&self) -> &'static str {
+        if self.ascii { "* " } else { "💬 " }
+    }
+
     /// The dash introducing a status-bar explanation — `stale — retrying in 8s`.
     pub const fn dash(&self) -> &'static str {
         if self.ascii { " - " } else { " — " }
@@ -990,6 +995,7 @@ mod tests {
         glyphs.push(theme.separator());
         glyphs.push(theme.tab_divider());
         glyphs.push(theme.ellipsis());
+        glyphs.push(theme.discussion_mark());
         glyphs.extend(theme.spinner_frames());
 
         let border = theme.border_set();

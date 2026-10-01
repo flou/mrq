@@ -20,6 +20,7 @@ use crate::app::action::{
     DEFAULT_POPUP_HEIGHT, DEFAULT_POPUP_WIDTH, HALF_PAGE_VIEWPORT, Mode, Popup, PopupState,
     ViewState,
 };
+use crate::app::discussions::DiscussionsView;
 use crate::app::state::Tabs;
 use crate::config::keymap::{self, Keymap};
 use crate::config::schema::{Column, Config, Filter, Scope, Sort};
@@ -118,6 +119,7 @@ impl World {
             viewport: HALF_PAGE_VIEWPORT,
             popup_width: DEFAULT_POPUP_WIDTH,
             popup_height: DEFAULT_POPUP_HEIGHT,
+            discussions: Default::default(),
         };
 
         let all = rows();
@@ -142,6 +144,7 @@ impl World {
             styled: Vec::new(),
             source: None,
             previous_skin: None,
+            discussions: DiscussionsView::Loading,
         });
         self
     }

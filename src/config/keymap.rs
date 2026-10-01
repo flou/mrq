@@ -41,6 +41,7 @@ pub enum Action {
     CopyUrl,
     CopyBranch,
     ShowDetails,
+    ShowDiscussions,
     ToggleDrafts,
     ToggleWide,
     SortMenu,
@@ -87,7 +88,7 @@ impl Category {
 
 impl Action {
     /// Every action, in help-popup order.
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 31] = [
         Self::Down,
         Self::Up,
         Self::PageDown,
@@ -103,6 +104,7 @@ impl Action {
         Self::CopyUrl,
         Self::CopyBranch,
         Self::ShowDetails,
+        Self::ShowDiscussions,
         Self::ToggleDrafts,
         Self::ToggleWide,
         Self::SortMenu,
@@ -141,6 +143,7 @@ impl Action {
             Self::CopyUrl => "copy_url",
             Self::CopyBranch => "copy_branch",
             Self::ShowDetails => "show_details",
+            Self::ShowDiscussions => "show_discussions",
             Self::ToggleDrafts => "toggle_drafts",
             Self::ToggleWide => "toggle_wide",
             Self::SortMenu => "sort_menu",
@@ -181,6 +184,7 @@ impl Action {
             Self::CopyUrl => "Copy the merge request URL",
             Self::CopyBranch => "Copy the source branch name",
             Self::ShowDetails => "Show merge request details",
+            Self::ShowDiscussions => "Show merge request comments",
             Self::ToggleDrafts => "Show or hide drafts",
             Self::ToggleWide => "Show or hide wide-only columns",
             Self::SortMenu => "Choose the sort column",
@@ -212,7 +216,8 @@ impl Action {
             | Self::OpenDiffs
             | Self::CopyUrl
             | Self::CopyBranch
-            | Self::ShowDetails => Category::Actions,
+            | Self::ShowDetails
+            | Self::ShowDiscussions => Category::Actions,
             Self::ToggleDrafts
             | Self::ToggleWide
             | Self::SortMenu
@@ -492,6 +497,7 @@ pub const DEFAULT_BINDINGS: &[(Action, &[&str])] = &[
     (Action::CopyUrl, &["y"]),
     (Action::CopyBranch, &["shift-Y"]),
     (Action::ShowDetails, &["d"]),
+    (Action::ShowDiscussions, &["shift-C"]),
     (Action::ToggleDrafts, &["ctrl-a"]),
     (Action::ToggleWide, &["w"]),
     (Action::SortMenu, &["shift-S"]),
