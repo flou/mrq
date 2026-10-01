@@ -675,42 +675,25 @@ pub fn link_titles(
             continue;
         }
 
-        // Computed from `text` itself, not found by scanning the buffer: ratatui fills a
-        // wide grapheme's trailing cell with a literal space, not an empty symbol, so
-        // "the last non-blank cell" is indistinguishable from ordinary padding — and that
-        // trailing cell is skipped by the terminal diff regardless of what is written
-        // into it, because the diff advances past it on the *preceding* cell's width, not
-        // this one's content. Ending on it would silently drop the close.
-        let last_width = text
-            .chars()
-            .next_back()
-            .and_then(|c| c.width())
-            .unwrap_or(1);
-        let close_x = if last_width >= 2 {
-            x + text_width - 2
-        } else {
-            x + text_width - 1
-        };
-
-        if close_x == x {
-            // The whole title is a single cell (a lone wide glyph, or one narrow
-            // character): open and close land on the same cell. Combine them into one
-            // rewrite — a second call would measure the width of the string the first
-            // call already rewrote, not the original glyph's.
-            rewrite(buffer, x, y, |symbol| {
-                format!(
-                    "{}{symbol}{}",
-                    hyperlink::open(&mr.id, &mr.web_url),
-                    hyperlink::CLOSE
-                )
+        // Every cell carries its own open and close, with the row's shared `id` so the
+        // terminal still sees one link. Ratatui's diff resends only the cells that
+        // changed: with a single open/close pair, a scroll that leaves the closing cell
+        // identical (same last character) resends the new open but never the close, and
+        // the link swallows everything printed after it. Self-contained cells make the
+        // link independent of which neighbours get resent.
+        let open = hyperlink::open(&mr.id, &mr.web_url);
+        let end = x + text_width;
+        let mut cell_x = x;
+        while cell_x < end {
+            // A wide glyph's trailing cell is skipped by the terminal diff, so it is left
+            // alone; the step is the width the cell had before it was rewritten.
+            let step = buffer
+                .cell((cell_x, y))
+                .map_or(1, |cell| cell.symbol().width().max(1));
+            rewrite(buffer, cell_x, y, |symbol| {
+                format!("{open}{symbol}{}", hyperlink::CLOSE)
             });
-        } else {
-            rewrite(buffer, x, y, |symbol| {
-                format!("{}{symbol}", hyperlink::open(&mr.id, &mr.web_url))
-            });
-            rewrite(buffer, close_x, y, |symbol| {
-                format!("{symbol}{}", hyperlink::CLOSE)
-            });
+            cell_x += u16::try_from(step).unwrap_or(1);
         }
     }
 }
@@ -2253,6 +2236,66 @@ mod tests {
             assert!(
                 written.contains(after_the_title),
                 "`{after_the_title}` was skipped after the link:\n{written:?}"
+            );
+        }
+    }
+
+    /// Scrolling swaps which merge request sits on a row. Whatever the diff decides to
+    /// resend, every link it writes must be closed again: a cell left out of the second
+    /// draw (same glyph as before) must not take the only close with it.
+    #[test]
+    fn a_scrolled_redraw_never_leaves_a_link_open() {
+        let width = 120u16;
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width,
+            height: 4,
+        };
+        let rows = linked_rows();
+        let forward: Vec<&MergeRequest> = rows.iter().collect();
+        let backward: Vec<&MergeRequest> = rows.iter().rev().collect();
+        let allocation = allocate(&Column::DEFAULT, width, &forward, all(PeopleDisplay::YesNo));
+
+        let sink = Sink::default();
+        let mut terminal = Terminal::with_options(
+            CrosstermBackend::new(sink.clone()),
+            TerminalOptions {
+                viewport: Viewport::Fixed(area),
+            },
+        )
+        .unwrap();
+
+        let t = tab();
+        for refs in [&forward, &backward] {
+            sink.0.lock().unwrap().clear();
+            terminal
+                .draw(|frame| {
+                    let table = build(
+                        refs,
+                        &t,
+                        &allocation,
+                        &theme(false),
+                        now(),
+                        PeopleDisplayModes::default(),
+                    );
+                    frame.render_widget(table, area);
+                    link_titles(
+                        frame.buffer_mut(),
+                        area,
+                        refs,
+                        &allocation,
+                        &theme(false),
+                        now(),
+                    );
+                })
+                .unwrap();
+
+            let written = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+            assert_eq!(
+                written.matches("\x1b]8;id=").count(),
+                written.matches(hyperlink::CLOSE).count(),
+                "a link was opened without a close:\n{written:?}"
             );
         }
     }
