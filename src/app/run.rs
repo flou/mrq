@@ -71,6 +71,8 @@ pub struct App {
     browser_helpers: crate::term::browser::Helpers,
     /// Whether the terminal advertises OSC 8.
     hyperlinks: bool,
+    /// The OSC 8 links currently on the terminal.
+    links: crate::ui::table::Links,
     /// Whether the last frame had a popup open, to force a full repaint when that changes.
     popup_open: bool,
     /// When the session began, as the spinner's phase reference.
@@ -718,7 +720,16 @@ impl Application for App {
             if repaint {
                 Self::blank_popup_region(&mut self.terminal)?;
             }
-            self.terminal.draw(|frame| ui::render(frame, &scene))
+            let mut spans = Vec::new();
+            let completed = self
+                .terminal
+                .draw(|frame| spans = ui::render(frame, &scene))?;
+            if self.hyperlinks {
+                let buffer = completed.buffer.clone();
+                self.links
+                    .write(self.terminal.backend_mut(), &buffer, spans)?;
+            }
+            std::io::Result::Ok(())
         });
     }
 }
@@ -952,6 +963,7 @@ pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> 
         clipboard_helpers,
         browser_helpers,
         hyperlinks: caps.hyperlinks,
+        links: crate::ui::table::Links::default(),
         popup_open: false,
         started: Instant::now(),
         quit: false,

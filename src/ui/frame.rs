@@ -207,7 +207,11 @@ fn render(world: &World, width: u16, height: u16, hyperlinks: bool) -> Vec<Strin
     };
 
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-    terminal.draw(|frame| super::render(frame, &scene)).unwrap();
+    terminal
+        .draw(|frame| {
+            super::render(frame, &scene);
+        })
+        .unwrap();
 
     let buffer = terminal.backend().buffer();
     (buffer.area.top()..buffer.area.bottom())
@@ -277,53 +281,51 @@ fn the_auth_pause_segment_renders_safely_in_every_mode() {
     );
 }
 
-/// The frame must carry no escape sequence unless the terminal said it understands one:
-/// an unsupported terminal prints them rather than ignoring them.
+/// The buffer never carries an escape: an unsupported terminal prints them rather than
+/// ignoring them, and a supported one gets its links printed over the frame instead.
 #[test]
-fn the_frame_carries_escapes_only_when_hyperlinks_are_supported() {
+fn links_are_returned_only_when_hyperlinks_are_supported() {
     let world = World::new("catppuccin-mocha", false);
+    assert!(!render(&world, 120, 24, false).join("").contains('\x1b'));
+    assert!(!render(&world, 120, 24, true).join("").contains('\x1b'));
 
-    let plain = render(&world, 120, 24, false).join("");
-    assert!(!plain.contains('\x1b'), "no terminal support, no escapes");
-
-    let linked = render(&world, 120, 24, true).join("");
-    assert!(
-        linked.contains("\x1b]8;id="),
-        "titles should be linked when the terminal advertises OSC 8"
-    );
+    let (rows, counts, selected) = scene_parts(&world);
+    let spans = |hyperlinks| {
+        let scene = super::Scene {
+            view: &world.view,
+            tab: world.view.tabs.active().unwrap(),
+            rows: &rows,
+            counts: &counts,
+            status: world.status(&rows, selected),
+            keymap: &world.keymap,
+            theme: &world.view.theme,
+            columns: &world.columns,
+            now: now(),
+            hyperlinks,
+            link_columns: &[Column::Title],
+            people_display: super::table::PeopleDisplayModes::default(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        let mut spans = Vec::new();
+        terminal
+            .draw(|frame| spans = super::render(frame, &scene))
+            .unwrap();
+        spans
+    };
+    assert!(spans(false).is_empty());
+    assert_eq!(spans(true).len(), rows.len());
 }
 
-/// A writer that keeps what was written, since `CrosstermBackend` owns its own.
-#[derive(Clone, Default)]
-struct Sink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-impl std::io::Write for Sink {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-/// A popup opening and then closing must never leave a hyperlink open on the real
-/// terminal.
-///
-/// The popup is drawn *after* the table, so it can cover only part of a linked title —
-/// say, the cell that opens the link, but not the one that closes it. `Terminal::draw`
-/// only sends cells whose content changed since the last frame; if the closing cell's
-/// content happens to be unchanged, it is never resent. A freshly reopened link with no
-/// resent close reads, to the real terminal, as still open — everything printed after it,
-/// on every following row and frame, becomes part of that one link. This drives an actual
-/// `CrosstermBackend` through open, popup-up, and popup-closed, and checks the opens and
-/// closes it wrote balance.
+/// A popup is drawn over the table, and links are printed after the frame: while one is
+/// up, no link may land on it, and once it closes every title is linked again.
 #[test]
-fn a_popup_opening_and_closing_never_leaves_a_hyperlink_open() {
+fn a_popup_hides_the_links_and_closing_it_restores_them() {
     use ratatui::Viewport;
     use ratatui::backend::CrosstermBackend;
     use ratatui::layout::Rect;
+
+    use crate::ui::screen::{Screen, Sink};
+    use crate::ui::table::Links;
 
     let area = Rect {
         x: 0,
@@ -339,19 +341,14 @@ fn a_popup_opening_and_closing_never_leaves_a_hyperlink_open() {
         },
     )
     .unwrap();
+    let mut links = Links::default();
+    let mut screen = Screen::default();
 
-    let draw = |terminal: &mut Terminal<CrosstermBackend<Sink>>, world: &World| {
-        let rows = world.view.visible_rows();
-        let tab = world.view.tabs.active().expect("a tab");
-        let counts: Vec<usize> = (0..world.view.tabs.len())
-            .map(|index| world.view.count_of(index))
-            .collect();
-        let selected = tab
-            .selected_id()
-            .and_then(|id| rows.iter().position(|mr| mr.id == id));
+    let mut draw = |world: &World| {
+        let (rows, counts, selected) = scene_parts(world);
         let scene = super::Scene {
             view: &world.view,
-            tab,
+            tab: world.view.tabs.active().expect("a tab"),
             rows: &rows,
             counts: &counts,
             status: world.status(&rows, selected),
@@ -363,33 +360,31 @@ fn a_popup_opening_and_closing_never_leaves_a_hyperlink_open() {
             link_columns: &[Column::Title],
             people_display: super::table::PeopleDisplayModes::default(),
         };
-        terminal.draw(|frame| super::render(frame, &scene)).unwrap();
+        let mut spans = Vec::new();
+        let completed = terminal
+            .draw(|frame| spans = super::render(frame, &scene))
+            .unwrap();
+        let buffer = completed.buffer.clone();
+        links.write(terminal.backend_mut(), &buffer, spans).unwrap();
+        screen.feed(&sink.take());
+        assert!(!screen.link_open(), "a link was left open");
+        (0..area.height)
+            .map(|y| screen.linked_in_row(y).len())
+            .sum::<usize>()
     };
 
     let mut world = World::new("catppuccin-mocha", false);
-    draw(&mut terminal, &world);
+    let linked = draw(&world);
+    assert!(linked > 0);
 
-    world.view.mode = Mode::Popup(PopupState {
-        kind: Popup::Help,
-        cursor: 0,
-        query: String::new(),
-        lines: Vec::new(),
-        styled: Vec::new(),
-        source: None,
-        previous_skin: None,
-    });
-    draw(&mut terminal, &world);
+    world = world.with_popup(Popup::Help);
+    assert_eq!(draw(&world), 0, "a link survived under the popup");
 
     world.view.mode = Mode::Normal;
-    draw(&mut terminal, &world);
-
-    let written = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
-    let opens = written.matches("\x1b]8;id=").count();
-    let closes = written.matches("\x1b]8;;\x1b\\").count();
     assert_eq!(
-        opens, closes,
-        "an opened hyperlink was never followed by a matching close: {opens} opens, \
-         {closes} closes:\n{written:?}"
+        draw(&world),
+        linked,
+        "closing the popup did not restore the links"
     );
 }
 
@@ -433,7 +428,11 @@ fn a_skin_change_repaints_every_cell_in_the_new_background() {
         link_columns: &[Column::Title],
         people_display: super::table::PeopleDisplayModes::default(),
     };
-    terminal.draw(|frame| super::render(frame, &scene)).unwrap();
+    terminal
+        .draw(|frame| {
+            super::render(frame, &scene);
+        })
+        .unwrap();
     let dark = empty_body(&terminal);
     assert!(
         dark.iter().all(|bg| *bg == base_of("catppuccin-mocha")),
@@ -456,7 +455,11 @@ fn a_skin_change_repaints_every_cell_in_the_new_background() {
         link_columns: &[Column::Title],
         people_display: super::table::PeopleDisplayModes::default(),
     };
-    terminal.draw(|frame| super::render(frame, &scene)).unwrap();
+    terminal
+        .draw(|frame| {
+            super::render(frame, &scene);
+        })
+        .unwrap();
     let other = empty_body(&terminal);
     assert!(
         other.iter().all(|bg| *bg == base_of("nord")),
@@ -500,7 +503,11 @@ fn previewing_a_skin_repaints_the_popup_background() {
             link_columns: &[Column::Title],
             people_display: super::table::PeopleDisplayModes::default(),
         };
-        terminal.draw(|frame| super::render(frame, &scene)).unwrap();
+        terminal
+            .draw(|frame| {
+                super::render(frame, &scene);
+            })
+            .unwrap();
         // The centre of an 80x24 frame sits well inside the popup's 70%-by-70% area.
         terminal.backend().buffer()[(40, 12)].bg
     };
