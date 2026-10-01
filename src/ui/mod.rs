@@ -36,6 +36,8 @@ pub mod theme;
 
 #[cfg(test)]
 mod frame;
+#[cfg(test)]
+mod screen;
 
 use ratatui::Frame;
 use ratatui::style::Style;
@@ -89,8 +91,8 @@ fn panel_title<'a>(scene: &Scene<'_>) -> Line<'a> {
     ])
 }
 
-/// Draw one frame.
-pub fn render(frame: &mut Frame, scene: &Scene<'_>) {
+/// Draw one frame, returning the links for [`table::Links`] to print over it.
+pub fn render(frame: &mut Frame, scene: &Scene<'_>) -> Vec<table::LinkSpan> {
     let regions = layout::compute(frame.area());
 
     // Fill the entire frame with the theme's background colour before drawing any widget,
@@ -138,18 +140,12 @@ pub fn render(frame: &mut Frame, scene: &Scene<'_>) {
     );
     frame.render_widget(widget, table_area);
 
-    // Skipped while a popup is up. A popup is drawn *after* this, on top of the table,
-    // and often covers only part of a linked title. If the terminal has already
-    // received that row's opening escape and the popup's redraw happens to leave the
-    // closing cell untouched (content-identical to the previous frame, so ratatui never
-    // resends it), the link never closes on the real terminal — everything printed after
-    // it, on every following row, reads as part of the same hyperlink until the next
-    // escape happens to appear. Turning links off for every row whenever a popup is on
-    // screen keeps the transition symmetric: opening or closing the popup rewrites (and
-    // resends) every linked cell together, so a link is never opened without its close.
+    // None while a popup is up: they are printed after the frame, over whatever the popup
+    // drew on top of the table.
+    let mut links = Vec::new();
     if scene.hyperlinks && scene.view.mode.popup_state().is_none() {
         for &column in scene.link_columns {
-            table::link_titles(
+            links.extend(table::link_spans(
                 frame.buffer_mut(),
                 table_area,
                 table::windowed(
@@ -161,7 +157,7 @@ pub fn render(frame: &mut Frame, scene: &Scene<'_>) {
                 column,
                 scene.theme,
                 scene.now,
-            );
+            ));
         }
     }
 
@@ -181,4 +177,6 @@ pub fn render(frame: &mut Frame, scene: &Scene<'_>) {
         frame.render_widget(clear, region);
         frame.render_widget(widget, region);
     }
+
+    links
 }

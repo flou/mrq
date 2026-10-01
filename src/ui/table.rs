@@ -12,9 +12,10 @@
 //! the title on that row, which corrupts the whole table.
 
 use std::borrow::Cow;
-use std::num::NonZeroU16;
+use std::io;
 
-use ratatui::buffer::{Buffer, CellDiffOption};
+use ratatui::backend::Backend;
+use ratatui::buffer::{Buffer, Cell as BufferCell};
 use ratatui::layout::{Constraint, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Row, Table};
@@ -640,31 +641,40 @@ fn linked_text(
     )
 }
 
-/// Make each row's `column` cell (`title` or `id`, per `[ui].link`) a clickable link to
-/// its merge request.
+/// One row's linked text: the cells to reprint inside a single OSC 8 pair.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkSpan {
+    open: String,
+    /// Wide graphemes' trailing halves are left out, as ratatui's own diff does.
+    cells: Vec<(u16, u16, BufferCell)>,
+}
+
+/// Capture each row's `column` cell (`title` or `id`, per `[ui].link`) as a link to its
+/// merge request, for [`Links`] to print once the frame is drawn.
 ///
-/// Applied to the rendered buffer rather than built into the cells, because ratatui
-/// splits a widget's text into graphemes and gives each one a cell — an escape sequence
-/// placed in the text would be cut across cells and printed as garbage.
+/// The escapes never enter the buffer: ratatui resends only the cells that changed, so a
+/// link split across cells can be resent without its close, or leave an unchanged cell
+/// pointing at the previous row's merge request.
 ///
-/// Call only when the terminal advertises OSC 8. An unsupported terminal does not ignore
-/// the escape, it prints it. Also skip it while a popup is on screen — see the caller.
-pub fn link_titles(
-    buffer: &mut Buffer,
+/// Call only when the terminal advertises OSC 8, and not while a popup is on screen —
+/// the spans are reprinted after the frame and would land on top of it.
+pub fn link_spans(
+    buffer: &Buffer,
     area: Rect,
     rows: &[&MergeRequest],
     allocation: &Allocation,
     column: Column,
     theme: &Theme,
     now: jiff::Timestamp,
-) {
+) -> Vec<LinkSpan> {
     let (Some(x), Some(width)) = (
         column_x(allocation, area, column),
         allocation.width_of(column),
     ) else {
-        return;
+        return Vec::new();
     };
 
+    let mut spans = Vec::new();
     for (index, mr) in rows.iter().copied().enumerate() {
         // The header takes the first row of the area.
         let Ok(offset) = u16::try_from(index + 1) else {
@@ -683,43 +693,98 @@ pub fn link_titles(
             continue;
         }
 
-        // Every cell carries its own open and close, with the row's shared `id` so the
-        // terminal still sees one link. Ratatui's diff resends only the cells that
-        // changed: with a single open/close pair, a scroll that leaves the closing cell
-        // identical (same last character) resends the new open but never the close, and
-        // the link swallows everything printed after it. Self-contained cells make the
-        // link independent of which neighbours get resent.
-        let open = hyperlink::open(&mr.id, &mr.web_url);
         let end = x + text_width;
+        let mut cells = Vec::new();
         let mut cell_x = x;
         while cell_x < end {
-            // A wide glyph's trailing cell is skipped by the terminal diff, so it is left
-            // alone; the step is the width the cell had before it was rewritten.
-            let step = buffer
-                .cell((cell_x, y))
-                .map_or(1, |cell| cell.symbol().width().max(1));
-            rewrite(buffer, cell_x, y, |symbol| {
-                format!("{open}{symbol}{}", hyperlink::CLOSE)
-            });
-            cell_x += u16::try_from(step).unwrap_or(1);
+            let Some(cell) = buffer.cell((cell_x, y)) else {
+                break;
+            };
+            cells.push((cell_x, y, cell.clone()));
+            cell_x += u16::try_from(cell.symbol().width().max(1)).unwrap_or(1);
         }
+        spans.push(LinkSpan {
+            open: hyperlink::open(&mr.id, &mr.web_url),
+            cells,
+        });
     }
+    spans
 }
 
-/// Rewrite one cell's symbol, pinning the width it had before.
-///
-/// The escapes are zero-width on the terminal but not to `unicode_width`, which is what
-/// ratatui's diff uses to decide how many cells a symbol covers. Without the pin it skips
-/// everything to the right of the link on the next redraw.
-fn rewrite(buffer: &mut Buffer, x: u16, y: u16, with: impl FnOnce(&str) -> String) {
-    let Some(cell) = buffer.cell_mut((x, y)) else {
-        return;
-    };
-    let width = NonZeroU16::new(cell.symbol().width() as u16).unwrap_or(NonZeroU16::MIN);
-    let symbol = with(cell.symbol());
+/// The links on the terminal, reprinted over ratatui's output only where they changed.
+#[derive(Debug, Default)]
+pub struct Links {
+    area: Rect,
+    drawn: Vec<LinkSpan>,
+}
 
-    cell.set_symbol(&symbol)
-        .set_diff_option(CellDiffOption::ForcedWidth(width));
+impl Links {
+    /// Write the `spans` of the frame just drawn into `buffer`, after `Terminal::draw`.
+    ///
+    /// A span identical to last frame's is skipped: ratatui did not resend its cells
+    /// either, so the terminal still holds them linked. Cells that were linked last frame
+    /// and are no longer are reprinted plain from `buffer`, or they would keep their old
+    /// link even where their glyph did not change.
+    pub fn write<B>(
+        &mut self,
+        backend: &mut B,
+        buffer: &Buffer,
+        spans: Vec<LinkSpan>,
+    ) -> io::Result<()>
+    where
+        B: Backend<Error = io::Error> + io::Write,
+    {
+        // A resize clears the screen, links included.
+        if buffer.area != self.area {
+            self.area = buffer.area;
+            self.drawn.clear();
+        }
+
+        let fresh: Vec<&LinkSpan> = spans
+            .iter()
+            .filter(|span| !self.drawn.contains(span))
+            .collect();
+        let covered = |x: u16, y: u16| {
+            fresh
+                .iter()
+                .any(|span| span.cells.iter().any(|&(cx, cy, _)| (cx, cy) == (x, y)))
+        };
+        let stale: Vec<(u16, u16)> = self
+            .drawn
+            .iter()
+            .filter(|span| !spans.contains(span))
+            .flat_map(|span| span.cells.iter().map(|&(x, y, _)| (x, y)))
+            .filter(|&(x, y)| !covered(x, y))
+            // A trailing half of a wide glyph now drawn there: printing it would blank
+            // the glyph's right half.
+            .filter(|&(x, y)| {
+                x == buffer.area.x
+                    || buffer
+                        .cell((x - 1, y))
+                        .is_none_or(|left| left.symbol().width() < 2)
+            })
+            .collect();
+
+        if fresh.is_empty() && stale.is_empty() {
+            self.drawn = spans;
+            return Ok(());
+        }
+
+        backend.draw(
+            stale
+                .iter()
+                .filter_map(|&(x, y)| buffer.cell((x, y)).map(|c| (x, y, c))),
+        )?;
+        for span in &fresh {
+            backend.write_all(span.open.as_bytes())?;
+            backend.draw(span.cells.iter().map(|(x, y, cell)| (*x, *y, cell)))?;
+            backend.write_all(hyperlink::CLOSE.as_bytes())?;
+        }
+        Backend::flush(backend)?;
+
+        self.drawn = spans;
+        Ok(())
+    }
 }
 
 /// Where a column's first cell lands inside the table area.
@@ -748,6 +813,7 @@ mod tests {
     use crate::config::schema::{Filter, Scope, Sort};
     use crate::gitlab::model::{Pipeline, PipelineStatus, User, fixtures::mr};
     use crate::term::caps::{Capabilities, ColorDepth, NotifyEscape};
+    use crate::ui::screen::{Screen, Sink};
     use ratatui::backend::{CrosstermBackend, TestBackend};
     use ratatui::{Terminal, TerminalOptions, Viewport};
 
@@ -1963,50 +2029,12 @@ mod tests {
         }
     }
 
-    /// Render the default columns into a buffer, optionally linked.
-    fn buffer_of(
-        rows: &[MergeRequest],
-        width: u16,
-        height: u16,
-        links: bool,
-    ) -> ratatui::buffer::Buffer {
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        let theme = theme(false);
-        let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, width, &refs, all(PeopleDisplay::YesNo));
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width,
-            height,
-        };
-
-        terminal
-            .draw(|frame| {
-                let table = build(
-                    &refs,
-                    &tab(),
-                    &allocation,
-                    &theme,
-                    now(),
-                    PeopleDisplayModes::default(),
-                );
-                frame.render_widget(table, area);
-                if links {
-                    link_titles(
-                        frame.buffer_mut(),
-                        area,
-                        &refs,
-                        &allocation,
-                        Column::Title,
-                        &theme,
-                        now(),
-                    );
-                }
-            })
-            .unwrap();
-        terminal.backend().buffer().clone()
-    }
+    const AREA: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 120,
+        height: 4,
+    };
 
     fn linked_rows() -> Vec<MergeRequest> {
         ["1", "2"]
@@ -2020,82 +2048,118 @@ mod tests {
             .collect()
     }
 
+    /// A real backend, the links printed over it, and what a terminal makes of the bytes.
+    struct Linked {
+        terminal: Terminal<CrosstermBackend<Sink>>,
+        sink: Sink,
+        links: Links,
+        screen: Screen,
+        allocation: Allocation,
+    }
+
+    impl Linked {
+        fn new(rows: &[MergeRequest]) -> Self {
+            let refs: Vec<&MergeRequest> = rows.iter().collect();
+            let sink = Sink::default();
+            Self {
+                terminal: Terminal::with_options(
+                    CrosstermBackend::new(sink.clone()),
+                    TerminalOptions {
+                        viewport: Viewport::Fixed(AREA),
+                    },
+                )
+                .unwrap(),
+                sink,
+                links: Links::default(),
+                screen: Screen::default(),
+                allocation: allocate(
+                    &Column::DEFAULT,
+                    AREA.width,
+                    &refs,
+                    all(PeopleDisplay::YesNo),
+                ),
+            }
+        }
+
+        /// Draw `rows` with `column` linked, as `App::draw` does, and return the bytes.
+        fn draw(&mut self, rows: &[&MergeRequest], column: Column) -> String {
+            let t = tab();
+            let mut spans = Vec::new();
+            let completed = self
+                .terminal
+                .draw(|frame| {
+                    let table = build(
+                        rows,
+                        &t,
+                        &self.allocation,
+                        &theme(false),
+                        now(),
+                        PeopleDisplayModes::default(),
+                    );
+                    frame.render_widget(table, AREA);
+                    spans = link_spans(
+                        frame.buffer_mut(),
+                        AREA,
+                        rows,
+                        &self.allocation,
+                        column,
+                        &theme(false),
+                        now(),
+                    );
+                })
+                .unwrap();
+            let buffer = completed.buffer.clone();
+            self.links
+                .write(self.terminal.backend_mut(), &buffer, spans)
+                .unwrap();
+
+            let written = self.sink.take();
+            self.screen.feed(&written);
+            written
+        }
+
+        fn x_of(&self, column: Column) -> u16 {
+            column_x(&self.allocation, AREA, column).unwrap()
+        }
+    }
+
+    /// Every cell of `title` on row `y`, and nothing else on it, links to `url`.
+    fn assert_row_linked(screen: &Screen, y: u16, x: u16, title: &str, url: &str) {
+        let expected: Vec<(u16, &str)> =
+            (x..x + title.width() as u16).map(|cx| (cx, url)).collect();
+        assert_eq!(screen.linked_in_row(y), expected, "row {y}");
+    }
+
     /// With `[ui].link = "id"` the ID cell carries the link and the title carries none.
     #[test]
     fn the_link_can_sit_on_the_id_column_instead_of_the_title() {
         let rows = linked_rows();
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, 120, &refs, all(PeopleDisplay::YesNo));
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 120,
-            height: 4,
-        };
-        let mut terminal = Terminal::new(TestBackend::new(120, 4)).unwrap();
-        let theme = theme(false);
-        terminal
-            .draw(|frame| {
-                let table = build(
-                    &refs,
-                    &tab(),
-                    &allocation,
-                    &theme,
-                    now(),
-                    PeopleDisplayModes::default(),
-                );
-                frame.render_widget(table, area);
-                link_titles(
-                    frame.buffer_mut(),
-                    area,
-                    &refs,
-                    &allocation,
-                    Column::Id,
-                    &theme,
-                    now(),
-                );
-            })
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
+        let mut linked = Linked::new(&rows);
+        linked.draw(&refs, Column::Id);
 
-        let id_x = column_x(&allocation, area, Column::Id).unwrap();
-        let title_x = column_x(&allocation, area, Column::Title).unwrap();
-        assert!(buffer[(id_x, 1)].symbol().contains("\x1b]8;"));
-        assert!(!buffer[(title_x, 1)].symbol().contains('\x1b'));
+        let id_x = linked.x_of(Column::Id);
+        let title_x = linked.x_of(Column::Title);
+        assert_eq!(
+            linked.screen.link_at(id_x, 1),
+            Some(rows[0].web_url.as_str())
+        );
+        assert_eq!(linked.screen.link_at(title_x, 1), None);
     }
 
-    /// A title becomes clickable, pointing at that row's merge request.
+    /// Every cell of a title, and only the title, links to that row's merge request.
     #[test]
     fn titles_are_emitted_as_hyperlinks_to_their_merge_request() {
         let rows = linked_rows();
-        let buffer = buffer_of(&rows, 120, 4, true);
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, 120, &refs, all(PeopleDisplay::YesNo));
-        let x = column_x(
-            &allocation,
-            Rect {
-                x: 0,
-                y: 0,
-                width: 120,
-                height: 4,
-            },
-            Column::Title,
-        )
-        .unwrap();
+        let mut linked = Linked::new(&rows);
+        linked.draw(&refs, Column::Title);
 
+        let x = linked.x_of(Column::Title);
         for (index, mr) in rows.iter().enumerate() {
-            let symbol = buffer[(x, 1 + index as u16)].symbol();
-            assert!(
-                symbol.starts_with(&hyperlink::open(&mr.id, &mr.web_url)),
-                "row {index} opened {symbol:?}"
-            );
+            assert_row_linked(&linked.screen, 1 + index as u16, x, &mr.title, &mr.web_url);
         }
-
-        let row: String = (0..120).map(|cx| buffer[(cx, 1)].symbol()).collect();
-        assert!(
-            row.contains(hyperlink::CLOSE),
-            "the link is closed: {row:?}"
-        );
+        assert!(!linked.screen.link_open());
     }
 
     /// Two rows drawn back to back need distinct `id`s, or a terminal is free to treat
@@ -2103,195 +2167,32 @@ mod tests {
     #[test]
     fn adjacent_rows_open_links_with_different_ids() {
         let rows = linked_rows();
-        let buffer = buffer_of(&rows, 120, 4, true);
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, 120, &refs, all(PeopleDisplay::YesNo));
-        let x = column_x(
-            &allocation,
-            Rect {
-                x: 0,
-                y: 0,
-                width: 120,
-                height: 4,
-            },
-            Column::Title,
-        )
-        .unwrap();
+        let written = Linked::new(&rows).draw(&refs, Column::Title);
 
-        let first = buffer[(x, 1)].symbol();
-        let second = buffer[(x, 2)].symbol();
-        assert_ne!(
-            first, second,
-            "adjacent rows opened identical hyperlinks: {first:?}"
-        );
-    }
-
-    /// The clickable region stops where the title text ends, not at the far edge of the
-    /// (usually much wider) title column: a short title must not drag the rest of its
-    /// column's padding into the link.
-    #[test]
-    fn the_link_covers_only_the_title_text_not_the_columns_padding() {
-        let mut rows = linked_rows();
-        rows[0].title = "x".to_owned();
-        let buffer = buffer_of(&rows, 120, 4, true);
-        let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, 120, &refs, all(PeopleDisplay::YesNo));
-        let x = column_x(
-            &allocation,
-            Rect {
-                x: 0,
-                y: 0,
-                width: 120,
-                height: 4,
-            },
-            Column::Title,
-        )
-        .unwrap();
-
-        let title_cell = buffer[(x, 1)].symbol();
-        assert!(
-            title_cell.contains(hyperlink::CLOSE),
-            "a one-character title should open and close on that same cell: {title_cell:?}"
-        );
-
-        let padding_cell = buffer[(x + 1, 1)].symbol();
-        assert_eq!(
-            padding_cell, " ",
-            "padding right after a short title must not carry the link: {padding_cell:?}"
-        );
-    }
-
-    /// The escape is additive: every visible cell has to stay exactly where it was.
-    #[test]
-    fn hyperlinks_shift_nothing_on_screen() {
-        let rows = linked_rows();
-        let plain = buffer_of(&rows, 120, 4, false);
-        let linked = buffer_of(&rows, 120, 4, true);
-
-        let visible = |buffer: &ratatui::buffer::Buffer| -> Vec<String> {
-            (0..4)
-                .map(|y| {
-                    (0..120)
-                        .map(|x| buffer[(x, y)].symbol().replace(['\x1b', '\\'], ""))
-                        .collect::<String>()
-                        .replace(
-                            "]8;id=1;https://gitlab.example.com/a/b/-/merge_requests/1",
-                            "",
-                        )
-                        .replace(
-                            "]8;id=2;https://gitlab.example.com/a/b/-/merge_requests/2",
-                            "",
-                        )
-                        .replace("]8;;", "")
-                })
-                .collect()
-        };
-
-        assert_eq!(visible(&plain), visible(&linked));
-    }
-
-    /// The escapes are zero-width on the terminal but not to `unicode_width`, which is
-    /// what ratatui's diff uses to decide how many cells a symbol covers. Unpinned, the
-    /// first cell of the link swallows every column to its right on the next redraw.
-    #[test]
-    fn hyperlink_escapes_do_not_consume_the_columns_after_them() {
-        let rows = linked_rows();
-        let width = 120u16;
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width,
-            height: 4,
-        };
-        let linked = buffer_of(&rows, width, 4, true);
-        let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, width, &refs, all(PeopleDisplay::YesNo));
-
-        let blank = ratatui::buffer::Buffer::empty(area);
-        let updates = blank.diff(&linked);
-
-        for column in [Column::Pipeline, Column::Updated, Column::Diff] {
-            let x = column_x(&allocation, area, column).unwrap();
-            assert!(
-                updates.iter().any(|(ux, uy, _)| *ux == x && *uy == 1),
-                "{column:?} at {x} was skipped by the diff after the link"
-            );
+        for mr in &rows {
+            assert!(written.contains(&hyperlink::open(&mr.id, &mr.web_url)));
         }
     }
 
-    /// A writer that keeps what was written, since `CrosstermBackend` owns its own.
-    #[derive(Clone, Default)]
-    struct Sink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl std::io::Write for Sink {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    /// What the terminal actually receives.
-    ///
-    /// `TestBackend` keeps a buffer; a real backend is handed only the cells `Terminal`
-    /// decided had changed, and that decision is made from the symbol widths the escapes
-    /// inflate. This is the path where an unpinned link eats the rest of the row, and the
-    /// closest thing to opening the table in a terminal that supports OSC 8.
+    /// One open and one close per title, not per cell: the URL is most of the bytes.
     #[test]
-    fn the_bytes_sent_to_a_real_terminal_carry_the_link_and_the_whole_row() {
-        let width = 120u16;
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width,
-            height: 4,
-        };
+    fn each_title_is_linked_once() {
         let rows = linked_rows();
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, width, &refs, all(PeopleDisplay::YesNo));
+        let written = Linked::new(&rows).draw(&refs, Column::Title);
 
-        let sink = Sink::default();
-        let mut terminal = Terminal::with_options(
-            CrosstermBackend::new(sink.clone()),
-            TerminalOptions {
-                viewport: Viewport::Fixed(area),
-            },
-        )
-        .unwrap();
+        assert_eq!(written.matches("\x1b]8;id=").count(), rows.len());
+        assert_eq!(written.matches(hyperlink::CLOSE).count(), rows.len());
+    }
 
-        terminal
-            .draw(|frame| {
-                let table = build(
-                    &refs,
-                    &tab(),
-                    &allocation,
-                    &theme(false),
-                    now(),
-                    PeopleDisplayModes::default(),
-                );
-                frame.render_widget(table, area);
-                link_titles(
-                    frame.buffer_mut(),
-                    area,
-                    &refs,
-                    &allocation,
-                    Column::Title,
-                    &theme(false),
-                    now(),
-                );
-            })
-            .unwrap();
+    /// Linking adds nothing to the buffer, so it cannot shift or swallow the columns after.
+    #[test]
+    fn the_rest_of_the_row_is_still_drawn() {
+        let rows = linked_rows();
+        let refs: Vec<&MergeRequest> = rows.iter().collect();
+        let written = Linked::new(&rows).draw(&refs, Column::Title);
 
-        let written = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
-
-        assert!(
-            written.contains(&hyperlink::open(&rows[0].id, &rows[0].web_url)),
-            "the link was never written"
-        );
-        assert!(written.contains(hyperlink::CLOSE), "the link was left open");
         // Checked piecewise because each is written with its own colour escape between.
         for after_the_title in ["+310", "-4", "No"] {
             assert!(
@@ -2301,151 +2202,46 @@ mod tests {
         }
     }
 
-    /// Scrolling swaps which merge request sits on a row. Whatever the diff decides to
-    /// resend, every link it writes must be closed again: a cell left out of the second
-    /// draw (same glyph as before) must not take the only close with it.
+    /// Scrolling swaps which merge request sits on a row. Cells whose glyph did not change
+    /// are not resent by ratatui, yet must follow the new row's link — and cells the
+    /// longer title covered must lose theirs.
     #[test]
-    fn a_scrolled_redraw_never_leaves_a_link_open() {
-        let width = 120u16;
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width,
-            height: 4,
-        };
-        let rows = linked_rows();
+    fn a_scrolled_redraw_relinks_every_cell_to_its_new_row() {
+        let mut rows = linked_rows();
+        rows[0].title = "Merge request".to_owned();
+        rows[1].title = "Merge request with a longer title".to_owned();
         let forward: Vec<&MergeRequest> = rows.iter().collect();
         let backward: Vec<&MergeRequest> = rows.iter().rev().collect();
-        let allocation = allocate(&Column::DEFAULT, width, &forward, all(PeopleDisplay::YesNo));
+        let mut linked = Linked::new(&rows);
+        let x = linked.x_of(Column::Title);
 
-        let sink = Sink::default();
-        let mut terminal = Terminal::with_options(
-            CrosstermBackend::new(sink.clone()),
-            TerminalOptions {
-                viewport: Viewport::Fixed(area),
-            },
-        )
-        .unwrap();
-
-        let t = tab();
-        for refs in [&forward, &backward] {
-            sink.0.lock().unwrap().clear();
-            terminal
-                .draw(|frame| {
-                    let table = build(
-                        refs,
-                        &t,
-                        &allocation,
-                        &theme(false),
-                        now(),
-                        PeopleDisplayModes::default(),
-                    );
-                    frame.render_widget(table, area);
-                    link_titles(
-                        frame.buffer_mut(),
-                        area,
-                        refs,
-                        &allocation,
-                        Column::Title,
-                        &theme(false),
-                        now(),
-                    );
-                })
-                .unwrap();
-
-            let written = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
-            assert_eq!(
-                written.matches("\x1b]8;id=").count(),
-                written.matches(hyperlink::CLOSE).count(),
-                "a link was opened without a close:\n{written:?}"
-            );
+        for refs in [&forward, &backward, &forward] {
+            linked.draw(refs, Column::Title);
+            for (index, mr) in refs.iter().enumerate() {
+                assert_row_linked(&linked.screen, 1 + index as u16, x, &mr.title, &mr.web_url);
+            }
+            assert!(!linked.screen.link_open());
         }
     }
 
-    /// A title/link stays identical between two draws, but a column after it (pipeline)
-    /// changes — the realistic "live refresh" case, where most of a row's text content is
-    /// unchanged and only a small part of it needs to be redrawn. No other test drives a
-    /// second, incremental draw against a real backend.
+    /// A live refresh that changes another column must not resend the title or its link.
     #[test]
     fn a_second_draw_leaves_an_unchanged_title_and_link_untouched() {
-        let width = 120u16;
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width,
-            height: 4,
-        };
         let mut rows = linked_rows();
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        let allocation = allocate(&Column::DEFAULT, width, &refs, all(PeopleDisplay::YesNo));
-
-        let sink = Sink::default();
-        let mut terminal = Terminal::with_options(
-            CrosstermBackend::new(sink.clone()),
-            TerminalOptions {
-                viewport: Viewport::Fixed(area),
-            },
-        )
-        .unwrap();
-
-        let t = tab();
-        terminal
-            .draw(|frame| {
-                let table = build(
-                    &refs,
-                    &t,
-                    &allocation,
-                    &theme(false),
-                    now(),
-                    PeopleDisplayModes::default(),
-                );
-                frame.render_widget(table, area);
-                link_titles(
-                    frame.buffer_mut(),
-                    area,
-                    &refs,
-                    &allocation,
-                    Column::Title,
-                    &theme(false),
-                    now(),
-                );
-            })
-            .unwrap();
-        sink.0.lock().unwrap().clear();
+        let mut linked = Linked::new(&rows);
+        linked.draw(&refs, Column::Title);
 
         rows[0].pipeline = Some(Pipeline {
             url: "https://example.com/p".into(),
             status: PipelineStatus::Failed,
             finished_at: None,
         });
-        let refs2: Vec<&MergeRequest> = rows.iter().collect();
-        terminal
-            .draw(|frame| {
-                let table = build(
-                    &refs2,
-                    &t,
-                    &allocation,
-                    &theme(false),
-                    now(),
-                    PeopleDisplayModes::default(),
-                );
-                frame.render_widget(table, area);
-                link_titles(
-                    frame.buffer_mut(),
-                    area,
-                    &refs2,
-                    &allocation,
-                    Column::Title,
-                    &theme(false),
-                    now(),
-                );
-            })
-            .unwrap();
-
-        let written = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+        let refs: Vec<&MergeRequest> = rows.iter().collect();
+        let written = linked.draw(&refs, Column::Title);
 
         assert!(
-            !written.contains("Merge request"),
+            !written.contains("Merge request") && !written.contains("\x1b]8;"),
             "title was redrawn even though it did not change: {written:?}"
         );
         assert!(
@@ -2454,47 +2250,65 @@ mod tests {
         );
     }
 
-    /// A title exactly filling its column ends on the trailing half of a wide grapheme,
-    /// which carries no symbol — the closing escape has to land somewhere printable.
+    /// A title of wide graphemes is linked whole and closed after its last glyph.
     #[test]
-    fn a_title_of_wide_characters_still_closes_its_link() {
+    fn a_title_of_wide_characters_is_linked_whole() {
         let mut m = mr("1", "jdoe");
         m.title = "デ".repeat(80);
         let rows = vec![m];
+        let refs: Vec<&MergeRequest> = rows.iter().collect();
+        let mut linked = Linked::new(&rows);
+        linked.draw(&refs, Column::Title);
 
-        let buffer = buffer_of(&rows, 120, 3, true);
-        let row: String = (0..120).map(|x| buffer[(x, 1)].symbol()).collect();
-
-        assert!(row.contains(hyperlink::CLOSE), "{row:?}");
+        let x = linked.x_of(Column::Title);
+        let row = linked.screen.linked_in_row(1);
+        assert!(!row.is_empty());
+        assert!(
+            row.iter()
+                .all(|&(cx, url)| cx >= x && url == rows[0].web_url)
+        );
+        assert!(!linked.screen.link_open());
     }
 
     #[test]
     fn linking_an_empty_table_or_a_columnless_one_does_nothing() {
-        let buffer = buffer_of(&[], 120, 3, true);
-        assert!(
-            (0..120).all(|x| !buffer[(x, 1)].symbol().contains('\x1b')),
-            "no rows, no escapes"
-        );
-
-        let narrow = Rect {
-            x: 0,
-            y: 0,
-            width: 10,
-            height: 3,
-        };
-        let mut empty = ratatui::buffer::Buffer::empty(narrow);
         let rows = linked_rows();
         let refs: Vec<&MergeRequest> = rows.iter().collect();
-        link_titles(
-            &mut empty,
-            narrow,
+        let buffer = Buffer::empty(AREA);
+
+        let allocation = allocate(
+            &Column::DEFAULT,
+            AREA.width,
             &refs,
-            &allocate(&[Column::Author], 10, &refs, all(PeopleDisplay::YesNo)),
+            all(PeopleDisplay::YesNo),
+        );
+        let none = link_spans(
+            &buffer,
+            AREA,
+            &[],
+            &allocation,
             Column::Title,
             &theme(false),
             now(),
         );
-        assert!((0..10).all(|x| !empty[(x, 1)].symbol().contains('\x1b')));
+        assert!(none.is_empty(), "no rows, no links");
+
+        let columnless = allocate(
+            &[Column::Author],
+            AREA.width,
+            &refs,
+            all(PeopleDisplay::YesNo),
+        );
+        let none = link_spans(
+            &buffer,
+            AREA,
+            &refs,
+            &columnless,
+            Column::Title,
+            &theme(false),
+            now(),
+        );
+        assert!(none.is_empty(), "no title column, no links");
     }
 
     #[test]
