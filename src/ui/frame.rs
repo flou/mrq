@@ -202,6 +202,7 @@ fn render(world: &World, width: u16, height: u16, hyperlinks: bool) -> Vec<Strin
         columns: &world.columns,
         now: now(),
         hyperlinks,
+        link_columns: &[Column::Title],
         people_display: super::table::PeopleDisplayModes::default(),
     };
 
@@ -359,6 +360,7 @@ fn a_popup_opening_and_closing_never_leaves_a_hyperlink_open() {
             columns: &world.columns,
             now: now(),
             hyperlinks: true,
+            link_columns: &[Column::Title],
             people_display: super::table::PeopleDisplayModes::default(),
         };
         terminal.draw(|frame| super::render(frame, &scene)).unwrap();
@@ -428,6 +430,7 @@ fn a_skin_change_repaints_every_cell_in_the_new_background() {
         columns: &world.columns,
         now: now(),
         hyperlinks: false,
+        link_columns: &[Column::Title],
         people_display: super::table::PeopleDisplayModes::default(),
     };
     terminal.draw(|frame| super::render(frame, &scene)).unwrap();
@@ -450,6 +453,7 @@ fn a_skin_change_repaints_every_cell_in_the_new_background() {
         columns: &world.columns,
         now: now(),
         hyperlinks: false,
+        link_columns: &[Column::Title],
         people_display: super::table::PeopleDisplayModes::default(),
     };
     terminal.draw(|frame| super::render(frame, &scene)).unwrap();
@@ -493,6 +497,7 @@ fn previewing_a_skin_repaints_the_popup_background() {
             columns: &world.columns,
             now: now(),
             hyperlinks: false,
+            link_columns: &[Column::Title],
             people_display: super::table::PeopleDisplayModes::default(),
         };
         terminal.draw(|frame| super::render(frame, &scene)).unwrap();

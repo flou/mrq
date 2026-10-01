@@ -143,6 +143,33 @@ pub struct Ui {
     /// How the REVIEWER column names people. The first reviewer's username, `+N` for the
     /// rest, `-` for none, by default.
     pub reviewer_display: PeopleDisplay,
+    /// Which column's text is the clickable link to the merge request, in a terminal
+    /// that supports hyperlinks. `id` only links while the `id` column is on screen; `both` links the two, `none` turns hyperlinks off.
+    pub link: LinkTarget,
+}
+
+/// The column(s) that carry the hyperlink to the merge request.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkTarget {
+    Title,
+    Id,
+    Both,
+    /// No hyperlinks at all.
+    None,
+}
+
+impl LinkTarget {
+    pub const fn columns(self) -> &'static [Column] {
+        match self {
+            Self::Title => &[Column::Title],
+            Self::Id => &[Column::Id],
+            Self::Both => &[Column::Id, Column::Title],
+            Self::None => &[],
+        }
+    }
 }
 
 impl Default for Ui {
@@ -159,6 +186,7 @@ impl Default for Ui {
             assigned_display: PeopleDisplay::YesNo,
             approver_display: PeopleDisplay::Username,
             reviewer_display: PeopleDisplay::Username,
+            link: LinkTarget::Title,
         }
     }
 }
@@ -634,6 +662,7 @@ mod tests {
         assert_eq!(c.ui.assigned_display, PeopleDisplay::YesNo);
         assert_eq!(c.ui.approver_display, PeopleDisplay::Username);
         assert_eq!(c.ui.reviewer_display, PeopleDisplay::Username);
+        assert_eq!(c.ui.link, LinkTarget::Title);
         assert_eq!(c.sort.column, Column::Updated);
         assert_eq!(c.sort.order, Order::Desc);
         assert!(c.sort.drafts_last);

@@ -697,6 +697,7 @@ impl Application for App {
             columns: &columns,
             now: jiff::Timestamp::now(),
             hyperlinks: self.hyperlinks,
+            link_columns: self.config.ui.link.columns(),
             people_display: self.people_display_modes(),
         };
 

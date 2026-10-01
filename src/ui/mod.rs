@@ -70,6 +70,8 @@ pub struct Scene<'a> {
     pub now: jiff::Timestamp,
     /// Whether the terminal advertises OSC 8, so titles can be made clickable.
     pub hyperlinks: bool,
+    /// `[ui].link`: the columns whose text carries the hyperlink.
+    pub link_columns: &'a [Column],
     /// `[ui].assigned_display` / `approver_display` / `reviewer_display`: how each
     /// people-naming column renders who is there.
     pub people_display: table::PeopleDisplayModes,
@@ -146,18 +148,21 @@ pub fn render(frame: &mut Frame, scene: &Scene<'_>) {
     // screen keeps the transition symmetric: opening or closing the popup rewrites (and
     // resends) every linked cell together, so a link is never opened without its close.
     if scene.hyperlinks && scene.view.mode.popup_state().is_none() {
-        table::link_titles(
-            frame.buffer_mut(),
-            table_area,
-            table::windowed(
-                scene.rows,
-                scene.tab.scroll,
-                table::visible_row_count(table_area),
-            ),
-            &allocation,
-            scene.theme,
-            scene.now,
-        );
+        for &column in scene.link_columns {
+            table::link_titles(
+                frame.buffer_mut(),
+                table_area,
+                table::windowed(
+                    scene.rows,
+                    scene.tab.scroll,
+                    table::visible_row_count(table_area),
+                ),
+                &allocation,
+                column,
+                scene.theme,
+                scene.now,
+            );
+        }
     }
 
     // Built here rather than by the caller because the dropped columns are only known

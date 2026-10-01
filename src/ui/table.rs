@@ -620,21 +620,28 @@ pub fn windowed<T>(rows: &[T], scroll: usize, viewport: usize) -> &[T] {
     &rows[start..end]
 }
 
-/// The exact text [`row`] draws in a title cell, before padding.
+/// The exact text [`row`] draws in a `column` cell, before padding.
 ///
 /// [`link_titles`] needs this again: the clickable region has to stop where the visible
-/// title does, not run on into the padding that fills out the rest of the column.
-fn title_text(mr: &MergeRequest, width: usize, theme: &Theme, now: jiff::Timestamp) -> String {
+/// text does, not run on into the padding that fills out the rest of the column.
+fn linked_text(
+    mr: &MergeRequest,
+    column: Column,
+    width: usize,
+    theme: &Theme,
+    now: jiff::Timestamp,
+) -> String {
     // The display modes only affect the people-naming columns, so their value here is
     // moot.
     truncate(
-        &cell_text(mr, Column::Title, theme, now, PeopleDisplayModes::default()),
+        &cell_text(mr, column, theme, now, PeopleDisplayModes::default()),
         width,
         theme.ellipsis(),
     )
 }
 
-/// Make each row's title a clickable link to its merge request.
+/// Make each row's `column` cell (`title` or `id`, per `[ui].link`) a clickable link to
+/// its merge request.
 ///
 /// Applied to the rendered buffer rather than built into the cells, because ratatui
 /// splits a widget's text into graphemes and gives each one a cell — an escape sequence
@@ -647,12 +654,13 @@ pub fn link_titles(
     area: Rect,
     rows: &[&MergeRequest],
     allocation: &Allocation,
+    column: Column,
     theme: &Theme,
     now: jiff::Timestamp,
 ) {
     let (Some(x), Some(width)) = (
-        column_x(allocation, area, Column::Title),
-        allocation.width_of(Column::Title),
+        column_x(allocation, area, column),
+        allocation.width_of(column),
     ) else {
         return;
     };
@@ -667,7 +675,7 @@ pub fn link_titles(
         }
         let y = area.y + offset;
 
-        let text = title_text(mr, width as usize, theme, now);
+        let text = linked_text(mr, column, width as usize, theme, now);
         let Ok(text_width) = u16::try_from(text.width()) else {
             continue;
         };
@@ -1985,7 +1993,15 @@ mod tests {
                 );
                 frame.render_widget(table, area);
                 if links {
-                    link_titles(frame.buffer_mut(), area, &refs, &allocation, &theme, now());
+                    link_titles(
+                        frame.buffer_mut(),
+                        area,
+                        &refs,
+                        &allocation,
+                        Column::Title,
+                        &theme,
+                        now(),
+                    );
                 }
             })
             .unwrap();
@@ -2002,6 +2018,50 @@ mod tests {
                 m
             })
             .collect()
+    }
+
+    /// With `[ui].link = "id"` the ID cell carries the link and the title carries none.
+    #[test]
+    fn the_link_can_sit_on_the_id_column_instead_of_the_title() {
+        let rows = linked_rows();
+        let refs: Vec<&MergeRequest> = rows.iter().collect();
+        let allocation = allocate(&Column::DEFAULT, 120, &refs, all(PeopleDisplay::YesNo));
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 120,
+            height: 4,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(120, 4)).unwrap();
+        let theme = theme(false);
+        terminal
+            .draw(|frame| {
+                let table = build(
+                    &refs,
+                    &tab(),
+                    &allocation,
+                    &theme,
+                    now(),
+                    PeopleDisplayModes::default(),
+                );
+                frame.render_widget(table, area);
+                link_titles(
+                    frame.buffer_mut(),
+                    area,
+                    &refs,
+                    &allocation,
+                    Column::Id,
+                    &theme,
+                    now(),
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let id_x = column_x(&allocation, area, Column::Id).unwrap();
+        let title_x = column_x(&allocation, area, Column::Title).unwrap();
+        assert!(buffer[(id_x, 1)].symbol().contains("\x1b]8;"));
+        assert!(!buffer[(title_x, 1)].symbol().contains('\x1b'));
     }
 
     /// A title becomes clickable, pointing at that row's merge request.
@@ -2218,6 +2278,7 @@ mod tests {
                     area,
                     &refs,
                     &allocation,
+                    Column::Title,
                     &theme(false),
                     now(),
                 );
@@ -2285,6 +2346,7 @@ mod tests {
                         area,
                         refs,
                         &allocation,
+                        Column::Title,
                         &theme(false),
                         now(),
                     );
@@ -2343,6 +2405,7 @@ mod tests {
                     area,
                     &refs,
                     &allocation,
+                    Column::Title,
                     &theme(false),
                     now(),
                 );
@@ -2372,6 +2435,7 @@ mod tests {
                     area,
                     &refs2,
                     &allocation,
+                    Column::Title,
                     &theme(false),
                     now(),
                 );
@@ -2426,6 +2490,7 @@ mod tests {
             narrow,
             &refs,
             &allocate(&[Column::Author], 10, &refs, all(PeopleDisplay::YesNo)),
+            Column::Title,
             &theme(false),
             now(),
         );

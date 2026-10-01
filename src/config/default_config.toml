@@ -55,6 +55,11 @@
 # approver_display = "username"
 # reviewer_display = "username"
 
+# Which column is the clickable link to the merge request, in terminals that support
+# hyperlinks: "title", "id", "both", or "none" to turn hyperlinks off. "id" only links
+# while the id column is on screen (it is wide-only by default; press w).
+# link = "title"
+
 # Mouse capture. Off by default so the terminal keeps its native selection and copy.
 # mouse = false
 
