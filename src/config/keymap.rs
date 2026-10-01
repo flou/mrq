@@ -30,6 +30,8 @@ pub enum Action {
     Up,
     PageDown,
     PageUp,
+    FullPageDown,
+    FullPageUp,
     Top,
     Bottom,
     OpenMr,
@@ -85,11 +87,13 @@ impl Category {
 
 impl Action {
     /// Every action, in help-popup order.
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 30] = [
         Self::Down,
         Self::Up,
         Self::PageDown,
         Self::PageUp,
+        Self::FullPageDown,
+        Self::FullPageUp,
         Self::Top,
         Self::Bottom,
         Self::OpenMr,
@@ -126,6 +130,8 @@ impl Action {
             Self::Up => "up",
             Self::PageDown => "page_down",
             Self::PageUp => "page_up",
+            Self::FullPageDown => "full_page_down",
+            Self::FullPageUp => "full_page_up",
             Self::Top => "top",
             Self::Bottom => "bottom",
             Self::OpenMr => "open_mr",
@@ -164,6 +170,8 @@ impl Action {
             Self::Up => "Move up",
             Self::PageDown => "Half page down",
             Self::PageUp => "Half page up",
+            Self::FullPageDown => "Full page down",
+            Self::FullPageUp => "Full page up",
             Self::Top => "Jump to first row",
             Self::Bottom => "Jump to last row",
             Self::OpenMr => "Open the merge request in the browser",
@@ -190,9 +198,14 @@ impl Action {
 
     pub const fn category(self) -> Category {
         match self {
-            Self::Down | Self::Up | Self::PageDown | Self::PageUp | Self::Top | Self::Bottom => {
-                Category::Navigation
-            }
+            Self::Down
+            | Self::Up
+            | Self::PageDown
+            | Self::PageUp
+            | Self::FullPageDown
+            | Self::FullPageUp
+            | Self::Top
+            | Self::Bottom => Category::Navigation,
             Self::OpenMr
             | Self::OpenPipeline
             | Self::OpenProject
@@ -468,6 +481,8 @@ pub const DEFAULT_BINDINGS: &[(Action, &[&str])] = &[
     (Action::Up, &["k", "up"]),
     (Action::PageDown, &["ctrl-d", "pagedown"]),
     (Action::PageUp, &["ctrl-u", "pageup"]),
+    (Action::FullPageDown, &["ctrl-f"]),
+    (Action::FullPageUp, &["ctrl-b"]),
     (Action::Top, &["g", "home"]),
     (Action::Bottom, &["shift-G", "end"]),
     (Action::OpenMr, &["o", "enter"]),
@@ -694,6 +709,8 @@ mod tests {
             ("pagedown", Action::PageDown),
             ("ctrl-u", Action::PageUp),
             ("pageup", Action::PageUp),
+            ("ctrl-f", Action::FullPageDown),
+            ("ctrl-b", Action::FullPageUp),
             ("g", Action::Top),
             ("home", Action::Top),
             ("shift-g", Action::Bottom),

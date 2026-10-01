@@ -924,6 +924,25 @@ mod tests {
         assert_eq!(state.mode.popup_state().unwrap().cursor, 10);
     }
 
+    /// ctrl-f / ctrl-b page a popup by a full page.
+    #[test]
+    fn ctrl_f_and_ctrl_b_page_the_log_popup() {
+        let lines: Vec<String> = (0..50).map(|i| format!("line {i}")).collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+
+        let mut state = state();
+        state.popup_height = 10;
+        state.log.seed(&refs);
+        open(&mut state, Action::LogMenu);
+        let end = state.mode.popup_state().unwrap().cursor;
+
+        press_ctrl(&mut state, KeyCode::Char('b'));
+        assert_eq!(state.mode.popup_state().unwrap().cursor, end - 20);
+
+        press_ctrl(&mut state, KeyCode::Char('f'));
+        assert_eq!(state.mode.popup_state().unwrap().cursor, end);
+    }
+
     /// `g` / `shift-G` jump to the top and bottom of a read-only text popup.
     #[test]
     fn g_and_shift_g_jump_to_the_ends_of_the_log_popup() {

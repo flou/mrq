@@ -496,6 +496,13 @@ impl ViewState {
         }
     }
 
+    /// How many rows `ctrl-f`/`ctrl-b` move: the whole table window.
+    fn full_page(&self) -> isize {
+        isize::try_from(self.viewport)
+            .unwrap_or(HALF_PAGE * 2)
+            .max(1)
+    }
+
     /// How many rows `ctrl-d`/`ctrl-u` move: half the real table window, so the jump
     /// scales with the terminal instead of always being [`HALF_PAGE`] rows.
     fn half_page(&self) -> isize {
@@ -607,6 +614,8 @@ pub fn dispatch(state: &mut ViewState, action: Action) -> (bool, Effect) {
         Action::Up => (state.move_selection(-1), Effect::None),
         Action::PageDown => (state.move_selection(state.half_page()), Effect::None),
         Action::PageUp => (state.move_selection(-state.half_page()), Effect::None),
+        Action::FullPageDown => (state.move_selection(state.full_page()), Effect::None),
+        Action::FullPageUp => (state.move_selection(-state.full_page()), Effect::None),
         Action::Top => (state.jump(false), Effect::None),
         Action::Bottom => (state.jump(true), Effect::None),
 
@@ -1015,6 +1024,9 @@ fn digit_position(key: KeyEvent) -> Option<usize> {
 /// this is what the key handler can assume without it.
 const POPUP_PAGE: usize = 10;
 
+/// How many rows `ctrl-f`/`ctrl-b` move in a popup.
+const POPUP_FULL_PAGE: usize = POPUP_PAGE * 2;
+
 /// Keys inside an open popup.
 ///
 /// Every key is consumed whether or not it did something. A popup that let unhandled
@@ -1036,6 +1048,8 @@ fn popup_key(
     match key.code {
         KeyCode::Char('d') if ctrl => popup.cursor = next(popup.cursor, POPUP_PAGE, rows),
         KeyCode::Char('u') if ctrl => popup.cursor = previous(popup.cursor, POPUP_PAGE),
+        KeyCode::Char('f') if ctrl => popup.cursor = next(popup.cursor, POPUP_FULL_PAGE, rows),
+        KeyCode::Char('b') if ctrl => popup.cursor = previous(popup.cursor, POPUP_FULL_PAGE),
         // Ctrl-N/Ctrl-P move by one line in every popup, Filter included — an escape
         // hatch for it, where bare `j`/`k` are query text rather than navigation.
         KeyCode::Char('n') if ctrl => popup.cursor = next(popup.cursor, 1, rows),
@@ -2470,6 +2484,11 @@ mod tests {
 
         dispatch(&mut state, Action::PageDown);
         assert_eq!(cursor_of(&state), 15, "half of a thirty-row window");
+
+        dispatch(&mut state, Action::FullPageDown);
+        assert_eq!(cursor_of(&state), 45, "a full thirty-row window");
+        dispatch(&mut state, Action::FullPageUp);
+        assert_eq!(cursor_of(&state), 15);
     }
 
     #[test]
