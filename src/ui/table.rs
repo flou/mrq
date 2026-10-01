@@ -58,6 +58,7 @@ pub fn allocate(
         assigned: assigned_fit(rows, modes.assigned),
         approver: approver_fit(rows, modes.approver),
         reviewer: reviewer_fit(rows, modes.reviewer),
+        id: id_fit(rows),
     };
     columns::allocate(columns, width.saturating_sub(GUTTER_WIDTH), fitted)
 }
@@ -75,6 +76,16 @@ fn author_fit(rows: &[&MergeRequest]) -> Option<u16> {
 /// header so `REPO` is never truncated and capped at [`columns::FIT_MAX`].
 fn repo_fit(rows: &[&MergeRequest]) -> Option<u16> {
     content_fit(rows.iter().map(|mr| mr.project_name.width()), Column::Repo)
+}
+
+/// The `id` column's content width: the widest `!iid` on `rows`, floored at
+/// [`columns::ID_MIN`] and capped at [`columns::FIT_MAX`].
+fn id_fit(rows: &[&MergeRequest]) -> Option<u16> {
+    let widest = rows.iter().map(|mr| mr.iid.width() + 1).max()?;
+    let clamped = widest
+        .max(columns::ID_MIN as usize)
+        .min(columns::FIT_MAX as usize);
+    u16::try_from(clamped).ok()
 }
 
 /// The ASSIGNED column's content width in `username` display mode: the widest rendered
@@ -347,6 +358,7 @@ fn cell_text<'a>(
         Column::Approved => Cow::Owned(approved_cell(mr, theme)),
         Column::Author => Cow::Borrowed(mr.author.username.as_str()),
         Column::Repo => Cow::Borrowed(mr.project_name.as_str()),
+        Column::Id => Cow::Owned(format!("!{}", mr.iid)),
         Column::Title => {
             if mr.draft {
                 Cow::Owned(format!("[Draft] {}", mr.title))
@@ -392,6 +404,7 @@ const fn marks_me(mr: &MergeRequest, column: Column, modes: PeopleDisplayModes) 
         Column::Approved
         | Column::Author
         | Column::Repo
+        | Column::Id
         | Column::Title
         | Column::Pipeline
         | Column::Age
@@ -1247,6 +1260,35 @@ mod tests {
         assert_eq!(
             people_cell(["jdoe", "bwayne", "asmith"].into_iter()),
             "jdoe +2"
+        );
+    }
+
+    #[test]
+    fn id_fit_follows_the_longest_id_with_a_floor_of_three() {
+        let mut short = mr("a", "jdoe");
+        short.iid = "7".to_owned();
+        let mut long = mr("b", "jdoe");
+        long.iid = "12345".to_owned();
+
+        assert_eq!(id_fit(&[&short]), Some(3));
+        assert_eq!(id_fit(&[&short, &long]), Some(6));
+        assert_eq!(id_fit(&[]), None);
+    }
+
+    #[test]
+    fn id_cell_shows_the_project_number() {
+        let mut m = mr("a", "jdoe");
+        m.iid = "3658".to_owned();
+
+        assert_eq!(
+            cell_text(
+                &m,
+                Column::Id,
+                &theme(false),
+                now(),
+                PeopleDisplayModes::default()
+            ),
+            "!3658"
         );
     }
 

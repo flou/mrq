@@ -59,6 +59,12 @@ fn compare(a: &MergeRequest, b: &MergeRequest, column: Column) -> Ordering {
 
         Column::Author => case_insensitive(&a.author.username, &b.author.username),
         Column::Repo => case_insensitive(&a.project_name, &b.project_name),
+        Column::Id => a
+            .iid
+            .parse::<u64>()
+            .ok()
+            .cmp(&b.iid.parse::<u64>().ok())
+            .then_with(|| a.iid.cmp(&b.iid)),
         Column::Title => case_insensitive(&a.title, &b.title),
 
         Column::Pipeline => pipeline_severity(a).cmp(&pipeline_severity(b)),

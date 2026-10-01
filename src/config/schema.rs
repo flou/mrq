@@ -129,7 +129,7 @@ pub struct Ui {
     pub columns: Vec<Column>,
     /// Columns hidden until wide mode (`w`) is on, beyond `diff`, which is always
     /// wide-only. `approved`, `author`, `repo`, `title` and `pipeline` can never appear
-    /// here — validated at config load. Defaults to `[approver, reviewer]`, but only
+    /// here — validated at config load. Defaults to `[approver, reviewer, id]`, but only
     /// while `columns` is also left at its default — see `load::load`.
     pub wide_columns: Vec<Column>,
     /// Starts with wide mode on, as if `w` had been pressed at launch.
@@ -154,7 +154,7 @@ impl Default for Ui {
             mouse: false,
             set_terminal_title: true,
             columns: Column::DEFAULT.to_vec(),
-            wide_columns: vec![Column::Approver, Column::Reviewer],
+            wide_columns: vec![Column::Approver, Column::Reviewer, Column::Id],
             wide: false,
             assigned_display: PeopleDisplay::YesNo,
             approver_display: PeopleDisplay::Username,
@@ -209,6 +209,7 @@ pub enum Column {
     Approved,
     Author,
     Repo,
+    Id,
     Title,
     Pipeline,
     Assigned,
@@ -221,10 +222,11 @@ pub enum Column {
 }
 
 impl Column {
-    pub const DEFAULT: [Self; 11] = [
+    pub const DEFAULT: [Self; 12] = [
         Self::Approved,
         Self::Author,
         Self::Repo,
+        Self::Id,
         Self::Title,
         Self::Pipeline,
         Self::Assigned,
@@ -241,6 +243,7 @@ impl Column {
             Self::Approved => "approved",
             Self::Author => "author",
             Self::Repo => "repo",
+            Self::Id => "id",
             Self::Title => "title",
             Self::Pipeline => "pipeline",
             Self::Assigned => "assigned",
@@ -262,6 +265,7 @@ impl Column {
             Self::Approved => "",
             Self::Author => "AUTHOR",
             Self::Repo => "REPO",
+            Self::Id => "ID",
             Self::Title => "TITLE",
             Self::Pipeline => "CI",
             Self::Assigned => "ASG",
@@ -622,7 +626,10 @@ mod tests {
         assert!(!c.ui.show_drafts, "drafts are hidden by default");
         assert!(!c.ui.mouse, "mouse off, so native selection keeps working");
         assert_eq!(c.ui.columns, Column::DEFAULT.to_vec());
-        assert_eq!(c.ui.wide_columns, vec![Column::Approver, Column::Reviewer]);
+        assert_eq!(
+            c.ui.wide_columns,
+            vec![Column::Approver, Column::Reviewer, Column::Id]
+        );
         assert!(!c.ui.wide, "wide mode starts off");
         assert_eq!(c.ui.assigned_display, PeopleDisplay::YesNo);
         assert_eq!(c.ui.approver_display, PeopleDisplay::Username);

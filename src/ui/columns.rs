@@ -57,9 +57,9 @@ const WIDE_GAP: u16 = 2;
 /// budgeted for, or a wide `repo` boundary would be sized here and drawn elsewhere as the
 /// default single cell.
 pub(crate) const fn gap_between(left: Column, right: Column) -> u16 {
-    use Column::{Author, Repo, Title};
+    use Column::{Author, Id, Repo, Title};
     match (left, right) {
-        (Repo, Author) | (Author, Repo) | (Repo, Title) | (Title, Repo) => WIDE_GAP,
+        (Repo, Author) | (Author, Repo) | (Repo, Title) | (Title, Repo) | (Repo, Id) => WIDE_GAP,
         _ => GAP,
     }
 }
@@ -72,11 +72,15 @@ fn total_gaps(columns: &[Column]) -> u16 {
         .sum()
 }
 
+/// The narrowest the `id` column gets, whatever the rows hold.
+pub const ID_MIN: u16 = 3;
+
 /// Upper bound on either content-fitted column (`author`, `repo`).
 pub const FIT_MAX: u16 = 30;
 
 /// The order columns are dropped in when the terminal is too narrow.
-const DROP_ORDER: [Column; 5] = [
+const DROP_ORDER: [Column; 6] = [
+    Column::Id,
     Column::Age,
     Column::Assigned,
     Column::Approver,
@@ -104,6 +108,8 @@ pub struct Fitted {
     pub approver: Option<u16>,
     /// Widest REVIEWER cell on the current rows, in any display mode.
     pub reviewer: Option<u16>,
+    /// Widest ID cell (`!iid`) on the current rows, at least [`ID_MIN`].
+    pub id: Option<u16>,
 }
 
 /// How much a column is worth keeping, for widths below what whole-column dropping covers.
@@ -115,6 +121,7 @@ const fn keep_priority(column: Column) -> u8 {
     match column {
         Column::Title => 9,
         Column::Repo => 8,
+        Column::Id => 2,
         Column::Author => 7,
         Column::Approved => 6,
         Column::Pipeline => 5,
@@ -209,6 +216,21 @@ const fn rules(column: Column, fitted: Fitted) -> Rules {
             Rules {
                 preferred,
                 minimum: if preferred < 8 { preferred } else { 8 },
+                flex: false,
+            }
+        }
+        Column::Id => {
+            let preferred = match fitted.id {
+                Some(width) => width,
+                None => 7,
+            };
+            Rules {
+                preferred,
+                minimum: if preferred < ID_MIN {
+                    preferred
+                } else {
+                    ID_MIN
+                },
                 flex: false,
             }
         }
@@ -388,8 +410,12 @@ fn distribute(columns: &[Column], available: u16, fitted: Fitted) -> Vec<(Column
 mod tests {
     use super::*;
 
+    /// The shipped columns without `id`, the layout most tests below were written against.
     fn default_columns() -> Vec<Column> {
-        Column::DEFAULT.to_vec()
+        Column::DEFAULT
+            .into_iter()
+            .filter(|c| *c != Column::Id)
+            .collect()
     }
 
     fn visible(allocation: &Allocation) -> Vec<Column> {
@@ -608,7 +634,7 @@ mod tests {
 
         assert!(allocation.is_empty());
         assert_eq!(allocation.total(), 0);
-        assert_eq!(allocation.dropped.len(), Column::DEFAULT.len());
+        assert_eq!(allocation.dropped.len(), default_columns().len());
     }
 
     #[test]
@@ -678,6 +704,37 @@ mod tests {
                 assert_eq!(t, r + 1, "repo and title are not adjacent at {width}");
             }
         }
+    }
+
+    #[test]
+    fn id_sits_between_repo_and_title_and_is_wide_only_by_default() {
+        let columns = Column::DEFAULT.to_vec();
+        let repo = columns.iter().position(|c| *c == Column::Repo).unwrap();
+        assert_eq!(columns[repo + 1], Column::Id);
+        assert_eq!(columns[repo + 2], Column::Title);
+
+        let wide_columns = [Column::Approver, Column::Reviewer, Column::Id];
+        assert!(!for_wide_mode(&columns, &wide_columns, false).contains(&Column::Id));
+        assert!(for_wide_mode(&columns, &wide_columns, true).contains(&Column::Id));
+    }
+
+    #[test]
+    fn id_gets_its_preferred_width_when_there_is_room() {
+        let allocation = allocate(&Column::DEFAULT, 200, Fitted::default());
+        assert_eq!(allocation.width_of(Column::Id), Some(7));
+    }
+
+    #[test]
+    fn id_fits_the_longest_id_and_shrinks_to_three() {
+        let fitted = Fitted {
+            id: Some(5),
+            ..Fitted::default()
+        };
+        let allocation = allocate(&Column::DEFAULT, 200, fitted);
+        assert_eq!(allocation.width_of(Column::Id), Some(5));
+
+        let narrow = allocate(&[Column::Id, Column::Title], 24, fitted);
+        assert_eq!(narrow.width_of(Column::Id), Some(ID_MIN.max(3)));
     }
 
     #[test]

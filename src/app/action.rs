@@ -201,7 +201,7 @@ pub struct ViewState {
 /// The columns the sort menu offers, in menu order.
 ///
 /// Every column is sortable, so this is the display order rather than a subset.
-pub const SORTABLE: [Column; 11] = Column::DEFAULT;
+pub const SORTABLE: [Column; 12] = Column::DEFAULT;
 
 /// How long a transient message stays up.
 ///
