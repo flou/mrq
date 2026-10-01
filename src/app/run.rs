@@ -71,6 +71,8 @@ pub struct App {
     browser_helpers: crate::term::browser::Helpers,
     /// Whether the terminal advertises OSC 8.
     hyperlinks: bool,
+    /// Whether the last frame had a popup open, to force a full repaint when that changes.
+    popup_open: bool,
     /// When the session began, as the spinner's phase reference.
     started: Instant,
     quit: bool,
@@ -367,6 +369,27 @@ impl App {
     /// cursor that has not reached the edge of the real one.
     fn sync_viewport(&mut self) {
         self.view.viewport = self.table_viewport();
+    }
+
+    /// Overwrite the popup's area with spaces, bypassing ratatui's buffers. The next diff
+    /// then repaints whatever differs from the popup's cells, and everything else is
+    /// already blank.
+    fn blank_popup_region(terminal: &mut Terminal<Backend>) -> std::io::Result<()> {
+        use crossterm::{
+            cursor::MoveTo,
+            queue,
+            style::{Attribute, Print, ResetColor, SetAttribute},
+        };
+
+        let size = terminal.size()?;
+        let region = ui::popup::area(ui::layout::compute(size.into()).body());
+        let blank = " ".repeat(usize::from(region.width));
+        let out = terminal.backend_mut();
+        queue!(out, ResetColor, SetAttribute(Attribute::Reset))?;
+        for y in region.top()..region.bottom() {
+            queue!(out, MoveTo(region.x, y), Print(&blank))?;
+        }
+        Ok(())
     }
 
     /// The popup's live text width and height on the current terminal size. The fallback
@@ -683,7 +706,19 @@ impl Application for App {
         //
         // A draw failure is not recoverable here and not worth tearing the session down
         // for either: the next tick tries again, and the guard still restores on exit.
-        let _ = crate::term::sync::frame(|| self.terminal.draw(|frame| ui::render(frame, &scene)));
+        // Closing a popup blanks its region on the terminal: a glyph whose width the
+        // terminal and ratatui disagree on leaves stale cells the diff renderer never
+        // touches again. Opening needs none (nothing is stale yet), and a whole-screen
+        // repaint, hyperlinked titles included, is visibly slow either way.
+        let popup_open = self.view.mode.popup_state().is_some();
+        let repaint = self.popup_open && !popup_open;
+        self.popup_open = popup_open;
+        let _ = crate::term::sync::frame(|| {
+            if repaint {
+                Self::blank_popup_region(&mut self.terminal)?;
+            }
+            self.terminal.draw(|frame| ui::render(frame, &scene))
+        });
     }
 }
 
@@ -916,6 +951,7 @@ pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> 
         clipboard_helpers,
         browser_helpers,
         hyperlinks: caps.hyperlinks,
+        popup_open: false,
         started: Instant::now(),
         quit: false,
         fatal: None,

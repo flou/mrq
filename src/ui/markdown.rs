@@ -123,13 +123,22 @@ pub fn render(text: &str, width: usize) -> Vec<StyledLine> {
 
 /// CRLF/CR to LF, tabs expanded to four columns (not stripped as control characters, or
 /// `foo\tbar` glues into `foobar`), remaining control characters dropped so a stray escape
-/// sequence in the description cannot corrupt the terminal.
+/// sequence in the description cannot corrupt the terminal. Variation selectors and
+/// zero-width characters are dropped too: `⚠️` measures 2 cells as a string and 1 per char,
+/// and terminals disagree with both, which leaves stale cells behind when scrolling.
 fn sanitize(text: &str) -> String {
     text.replace("\r\n", "\n")
         .replace('\r', "\n")
         .replace('\t', "    ")
         .chars()
-        .filter(|c| *c == '\n' || !c.is_control())
+        .filter(|c| {
+            *c == '\n'
+                || !(c.is_control()
+                    || matches!(
+                        c,
+                        '\u{FE0E}' | '\u{FE0F}' | '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}'
+                    ))
+        })
         .collect()
 }
 
@@ -530,6 +539,14 @@ fn tokenize(segments: &[Segment]) -> Vec<(Role, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitize_drops_variation_selectors_and_zero_width_chars() {
+        assert_eq!(
+            sanitize("\u{26A0}\u{FE0F} a\u{200B}b\u{200D}c"),
+            "\u{26A0} abc"
+        );
+    }
 
     fn text(line: &StyledLine) -> String {
         line.iter().map(|s| s.text.as_str()).collect()
