@@ -115,7 +115,7 @@ fn check_refresh(config: &mut Config, errors: &mut Vec<String>, clamps: &mut Vec
 }
 
 /// The columns that identify a row are never allowed to hide behind wide mode.
-const NEVER_WIDE: [Column; 5] = [
+pub(crate) const NEVER_WIDE: [Column; 5] = [
     Column::Approved,
     Column::Author,
     Column::Repo,

@@ -15,6 +15,8 @@
 use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
+
+use crate::config::validate::NEVER_WIDE;
 use serde::{Deserialize, Serialize};
 
 /// A parsed configuration file, before semantic validation.
@@ -46,7 +48,151 @@ pub struct Config {
 /// `Default` impl becomes the schema's per-field default. `mrq schema` prints this for
 /// editors to validate and autocomplete `config.toml` against.
 pub fn json_schema() -> schemars::Schema {
-    schemars::schema_for!(Config)
+    // TOML has no `null`: an absent key is how an `Option` is "unset", so the schema must
+    // not offer `null` as a value.
+    let mut value = serde_json::to_value(schemars::schema_for!(Config)).unwrap_or_default();
+    strip_null(&mut value);
+    constrain(&mut value);
+    schemars::Schema::try_from(value).unwrap_or_default()
+}
+
+/// Removes `null` from every `type` list and from every default, recursively.
+fn strip_null(value: &mut serde_json::Value) {
+    use serde_json::Value;
+
+    match value {
+        Value::Object(map) => {
+            if let Some(Value::Array(types)) = map.get_mut("type") {
+                types.retain(|t| t != "null");
+                if types.len() == 1 {
+                    let only = types.remove(0);
+                    map.insert("type".into(), only);
+                }
+            }
+            if map.get("default").is_some_and(Value::is_null) {
+                map.remove("default");
+            }
+            if let Some(Value::Object(default)) = map.get_mut("default") {
+                default.retain(|_, v| !v.is_null());
+            }
+            // `default` values are data, not schemas: only recurse into the rest.
+            for (key, child) in map.iter_mut() {
+                if key != "default" && key != "const" && key != "enum" {
+                    strip_null(child);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(strip_null),
+        _ => {}
+    }
+}
+
+/// Arguments only the group, project and instance query roots accept; mirrors
+/// [`Filter::root_only_args`].
+const ROOT_ONLY_ARGS: [&str; 9] = [
+    "labels",
+    "not_labels",
+    "author",
+    "assignee",
+    "reviewer",
+    "has_reviewer",
+    "milestone",
+    "target_branch",
+    "updated_after_days",
+];
+
+/// Adds the rules `validate` enforces as hard errors that the derive cannot see, so an
+/// editor flags a file `mrq` would refuse to start with. Clamped values and cross-list
+/// rules (`sort.column` in `ui.columns`, unique names) are deliberately left to `validate`.
+fn constrain(root: &mut serde_json::Value) {
+    use serde_json::{Value, json};
+
+    use crate::config::keymap::Action;
+    use crate::config::validate::MIN_INTERVAL_SECS;
+
+    fn def<'a>(root: &'a mut Value, name: &str) -> &'a mut serde_json::Map<String, Value> {
+        root.pointer_mut(&format!("/$defs/{name}"))
+            .and_then(Value::as_object_mut)
+            .unwrap_or_else(|| panic!("schema has no `{name}` definition"))
+    }
+    fn prop<'a>(
+        root: &'a mut Value,
+        name: &str,
+        key: &str,
+    ) -> &'a mut serde_json::Map<String, Value> {
+        root.pointer_mut(&format!("/$defs/{name}/properties/{key}"))
+            .and_then(Value::as_object_mut)
+            .unwrap_or_else(|| panic!("schema has no `{name}.{key}` property"))
+    }
+
+    prop(root, "Refresh", "interval_secs").insert("minimum".into(), json!(MIN_INTERVAL_SECS));
+    prop(root, "Gitlab", "timeout_secs").insert("minimum".into(), json!(1));
+    prop(root, "Gitlab", "max_concurrent_requests").insert("minimum".into(), json!(1));
+    prop(root, "Gitlab", "url").insert("pattern".into(), json!("^https?://"));
+
+    prop(root, "Ui", "columns").insert("minItems".into(), json!(1));
+    prop(root, "Filter", "columns").insert("minItems".into(), json!(1));
+    prop(root, "Filter", "name").insert("pattern".into(), json!(r"\S"));
+    if let Some(filter) = root
+        .pointer_mut("/properties/filter")
+        .and_then(Value::as_object_mut)
+    {
+        filter.insert("minItems".into(), json!(1));
+    }
+
+    let swatches: Vec<_> = crate::ui::palette::SWATCHES.to_vec();
+    let colors = prop(root, "Skin", "colors");
+    colors.insert("propertyNames".into(), json!({ "enum": swatches }));
+    colors.insert(
+        "additionalProperties".into(),
+        json!({ "type": "string", "pattern": "^#?[0-9a-fA-F]{6}$" }),
+    );
+
+    let actions: Vec<_> = Action::ALL.iter().map(|a| a.key()).collect();
+    if let Some(keys) = root
+        .pointer_mut("/properties/keys")
+        .and_then(Value::as_object_mut)
+    {
+        keys.insert("propertyNames".into(), json!({ "enum": actions }));
+    }
+
+    // `scope` defaults to `assigned`, so an absent `scope` behaves like a current-user one.
+    let no_root_args: serde_json::Map<String, Value> = ROOT_ONLY_ARGS
+        .iter()
+        .map(|k| ((*k).to_owned(), Value::Bool(false)))
+        .collect();
+    def(root, "Filter").insert(
+        "allOf".into(),
+        json!([
+            {
+                "if": { "required": ["scope"], "properties": { "scope": { "enum": ["group", "project"] } } },
+                "then": {
+                    "required": ["path"],
+                    "properties": { "path": { "pattern": r"^[^/\s]$|^[^/\s].*[^/]$" } }
+                },
+                "else": { "not": { "required": ["path"] } }
+            },
+            {
+                "if": { "required": ["scope"], "properties": { "scope": { "const": "group" } } },
+                "else": { "not": { "required": ["include_subgroups"] } }
+            },
+            { "not": { "required": ["reviewer", "has_reviewer"] } },
+            {
+                "if": { "anyOf": [
+                    { "not": { "required": ["scope"] } },
+                    { "properties": { "scope": { "enum": ["assigned", "review_requested", "authored"] } } }
+                ] },
+                "then": { "properties": no_root_args }
+            }
+        ]),
+    );
+    def(root, "Notifications").insert(
+        "allOf".into(),
+        json!([{
+            "if": { "required": ["backend"], "properties": { "backend": { "const": "command" } } },
+            "then": { "required": ["command"], "properties": { "command": { "pattern": r"\S" } } }
+        }]),
+    );
 }
 
 impl Default for Config {
@@ -74,7 +220,9 @@ pub struct Gitlab {
     pub url: String,
     /// Discouraged; the environment or `token_command` are preferred. Kept as a
     /// plain `String` here and wrapped in the redacting type at resolution time.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub token_command: Option<String>,
     pub timeout_secs: u64,
     pub max_concurrent_requests: usize,
@@ -413,10 +561,17 @@ impl JsonSchema for ColumnSpec {
     }
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        let keys = Column::ALL.map(Column::key).join("|");
+        let keys = |wide: bool| {
+            Column::ALL
+                .into_iter()
+                .filter(|c| NEVER_WIDE.contains(c) != wide)
+                .map(Column::key)
+                .collect::<Vec<_>>()
+                .join("|")
+        };
         schemars::json_schema!({
             "type": "string",
-            "pattern": format!("^({keys})(:wide)?$"),
+            "pattern": format!("^(({})|({})(:wide)?)$", keys(false), keys(true)),
             "description": "A column key, optionally suffixed `:wide` to show it only in wide mode.",
         })
     }
@@ -525,16 +680,21 @@ pub struct Filter {
     pub scope: Scope,
     pub state: StateFilter,
     /// Per-filter override of `[ui].show_drafts`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub show_drafts: Option<bool>,
     /// Per-filter override of `[ui].columns`, with the same `:wide` wide-only suffix.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub columns: Option<Vec<ColumnSpec>>,
     /// Per-filter override of `[notifications].enabled`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub notify: Option<bool>,
 
     /// Required for `group` and `project` scopes.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     /// `group` scope only. `None` means "not set", which is what lets `validate` reject
     /// it on a scope where it has no meaning instead of silently ignoring it.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub include_subgroups: Option<bool>,
 
     // The arguments below are only accepted by the group, project and instance query
@@ -542,14 +702,21 @@ pub struct Filter {
     // combination rather than silently dropping the filter.
     pub labels: Vec<String>,
     pub not_labels: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reviewer: Option<String>,
     /// `true` for any reviewer, `false` for none; mutually exclusive with `reviewer`,
     /// since GitLab's `reviewerWildcardId` and `reviewerUsername` cannot both be set.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub has_reviewer: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub milestone: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub target_branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_after_days: Option<u32>,
 
     pub max_results: usize,
@@ -747,6 +914,97 @@ mod tests {
 
         let doc = serde_json::json!({"ui": {"show_draft": true}});
         assert!(!validator.is_valid(&doc));
+    }
+
+    fn schema_validator() -> jsonschema::Validator {
+        jsonschema::validator_for(&serde_json::to_value(json_schema()).unwrap()).unwrap()
+    }
+
+    fn schema_accepts(doc: &str) -> bool {
+        let toml: toml::Value = toml::from_str(doc).unwrap();
+        schema_validator().is_valid(&serde_json::to_value(toml).unwrap())
+    }
+
+    /// TOML has no `null`, so the schema must never offer it as a type or a default.
+    #[test]
+    fn the_schema_never_mentions_null() {
+        fn walk(v: &serde_json::Value, path: &str) {
+            match v {
+                serde_json::Value::Null => panic!("null at {path}"),
+                serde_json::Value::String(s) if path.ends_with("/type") => {
+                    assert_ne!(s, "null", "{path}");
+                }
+                serde_json::Value::Object(m) => {
+                    m.iter().for_each(|(k, c)| walk(c, &format!("{path}/{k}")));
+                }
+                serde_json::Value::Array(a) => {
+                    a.iter()
+                        .enumerate()
+                        .for_each(|(i, c)| walk(c, &format!("{path}/{i}")));
+                }
+                _ => {}
+            }
+        }
+        walk(&serde_json::to_value(json_schema()).unwrap(), "");
+    }
+
+    /// The schema and `validate` must agree on every rule the schema expresses: each
+    /// document `validate` rejects is rejected by the schema, each valid one accepted.
+    #[test]
+    fn the_schema_agrees_with_validate() {
+        let rejected = [
+            "[refresh]\ninterval_secs = 5\n",
+            "[gitlab]\ntimeout_secs = 0\n",
+            "[gitlab]\nmax_concurrent_requests = 0\n",
+            "[gitlab]\nurl = \"gitlab.example.com\"\n",
+            "[ui]\ncolumns = []\n",
+            "[ui]\ncolumns = [\"title:wide\"]\n",
+            "[[filter]]\nname = \"\"\n",
+            "[[filter]]\nname = \"a\"\nscope = \"group\"\n",
+            "[[filter]]\nname = \"a\"\nscope = \"group\"\npath = \"/x\"\n",
+            "[[filter]]\nname = \"a\"\npath = \"x\"\n",
+            "[[filter]]\nname = \"a\"\nscope = \"project\"\npath = \"x\"\ninclude_subgroups = true\n",
+            "[[filter]]\nname = \"a\"\nscope = \"group\"\npath = \"x\"\nreviewer = \"u\"\nhas_reviewer = true\n",
+            "[[filter]]\nname = \"a\"\nlabels = [\"x\"]\n",
+            "[[filter]]\nname = \"a\"\nscope = \"authored\"\nmilestone = \"m\"\n",
+            "[notifications]\nbackend = \"command\"\n",
+            "[notifications]\nbackend = \"command\"\ncommand = \"  \"\n",
+        ];
+        for doc in rejected {
+            assert!(!schema_accepts(doc), "schema should reject:\n{doc}");
+            let mut config: Config = toml::from_str(doc).unwrap();
+            assert!(
+                crate::config::validate::validate(&mut config).is_err(),
+                "validate should reject:\n{doc}"
+            );
+        }
+
+        // Checked by the theme and keymap loaders rather than `validate`.
+        for doc in [
+            "[skin.colors]\nnope = \"#ffffff\"\n",
+            "[skin.colors]\nred = \"red\"\n",
+            "[keys]\nnope = [\"x\"]\n",
+        ] {
+            assert!(!schema_accepts(doc), "schema should reject:\n{doc}");
+        }
+
+        let accepted = [
+            "",
+            "[refresh]\ninterval_secs = 30\n",
+            "[ui]\ncolumns = [\"title\", \"id:wide\", \"updated\"]\n",
+            "[[filter]]\nname = \"a\"\nscope = \"group\"\npath = \"acme/x\"\ninclude_subgroups = true\nlabels = [\"l\"]\n",
+            "[[filter]]\nname = \"a\"\nscope = \"instance\"\nlabels = [\"l\"]\nhas_reviewer = false\n",
+            "[[filter]]\nname = \"a\"\nscope = \"project\"\npath = \"acme/x\"\nauthor = \"u\"\n",
+            "[notifications]\nbackend = \"command\"\ncommand = \"notify {title}\"\n",
+            "[skin]\nname = \"Nord\"\n[skin.colors]\nred = \"#ff0000\"\n",
+            "[keys]\nquit = [\"q\"]\n",
+        ];
+        for doc in accepted {
+            assert!(schema_accepts(doc), "schema should accept:\n{doc}");
+            let mut config: Config = toml::from_str(doc).unwrap();
+            crate::config::validate::validate(&mut config)
+                .unwrap_or_else(|e| panic!("validate should accept:\n{doc}\n{e}"));
+        }
     }
 
     #[test]
