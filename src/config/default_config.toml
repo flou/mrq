@@ -65,16 +65,11 @@
 
 # set_terminal_title = true
 
-# Display order, left to right. Any subset of these keys, each at most once; `sort.column`
-# below has to be one of them.
-# columns = ["approved", "author", "repo", "id", "title", "pipeline", "assigned", "approver", "reviewer", "age", "updated", "diff"]
-
-# Columns hidden until wide mode (w) is toggled on, in addition to diff, which is always
-# wide-only. Must be a subset of columns above; approved, author, repo, title and pipeline
-# identify a row and can never be listed here. Defaults to ["approver", "reviewer", "id"], but
-# only while columns above is also left at its default -- set your own columns and this
-# reverts to hiding nothing extra unless you list it here too.
-# wide_columns = []
+# Display order, left to right. Any subset of these keys (plus branch), each at most once;
+# `sort.column` below has to be one of them. A ":wide" suffix hides that column until wide mode
+# (w) is toggled on; approved, author, repo, title and pipeline identify a row and can never
+# be wide-only. A [[filter]] can override the whole list with its own `columns`.
+# columns = ["approved", "author", "repo", "id:wide", "title", "pipeline", "assigned", "approver:wide", "reviewer:wide", "age", "updated", "diff:wide"]
 
 # Start with wide mode on; w still toggles it.
 # wide = false
@@ -158,6 +153,7 @@ name = "Assigned"
 scope = "assigned"
 # state = "opened"                  # opened | merged | closed | all
 # show_drafts = false               # per-filter override of [ui].show_drafts
+# columns = ["approved", "author", "title", "age", "branch:wide"]   # per-filter override of [ui].columns
 # notify = true                     # per-filter override of [notifications].enabled
 # max_results = 100                 # 1..=500
 

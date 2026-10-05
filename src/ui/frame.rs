@@ -130,7 +130,7 @@ impl World {
         Self {
             view,
             keymap: keymap::resolve(&config.keys).expect("the defaults resolve"),
-            columns: config.ui.columns,
+            columns: config.ui.columns.iter().map(|s| s.column).collect(),
             auth_paused: false,
         }
     }

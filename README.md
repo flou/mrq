@@ -73,6 +73,7 @@ filter that silently ignores it.
 | `scope`              | all                               | see table above                                                        |
 | `state`              | all                               | `opened` (default) \| `merged` \| `closed` \| `all`                    |
 | `show_drafts`        | all                               | per-filter override of `[ui].show_drafts`                              |
+| `columns`            | all                               | per-filter override of `[ui].columns`; a `:wide` suffix (`"id:wide"`) shows a column only in wide mode (`w`) |
 | `notify`             | all                               | per-filter override of `[notifications].enabled`                       |
 | `max_results`        | all                               | clamped to `1..=500`, default `100`                                    |
 | `path`               | `group`, `project`                | required; a GitLab full path like `acme/platform`, no leading/trailing slash |

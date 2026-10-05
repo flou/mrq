@@ -17,7 +17,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use crate::config::schema::{Column, Config, Filter, Scope};
+use crate::config::schema::{Column, ColumnSpec, Config, Filter, Scope};
 use crate::error::ConfigError;
 
 /// Below this, refreshing is abusive to a shared instance.
@@ -114,25 +114,58 @@ fn check_refresh(config: &mut Config, errors: &mut Vec<String>, clamps: &mut Vec
     }
 }
 
-fn check_ui_and_sort(config: &Config, errors: &mut Vec<String>) {
-    if config.ui.columns.is_empty() {
-        errors.push("ui.columns: must list at least one column".into());
+/// The columns that identify a row are never allowed to hide behind wide mode.
+const NEVER_WIDE: [Column; 5] = [
+    Column::Approved,
+    Column::Author,
+    Column::Repo,
+    Column::Title,
+    Column::Pipeline,
+];
+
+/// Checks one `columns` list, at `key` (`ui.columns` or `filter[i].columns`).
+fn check_columns(key: &str, columns: &[ColumnSpec], errors: &mut Vec<String>) {
+    if columns.is_empty() {
+        errors.push(format!("{key}: must list at least one column"));
     }
 
     let mut seen = BTreeSet::new();
-    for column in &config.ui.columns {
-        if !seen.insert(*column) {
+    for spec in columns {
+        if !seen.insert(spec.column) {
             errors.push(format!(
-                "ui.columns: `{}` is listed more than once",
-                column.key()
+                "{key}: `{}` is listed more than once",
+                spec.column.key()
+            ));
+        }
+        if spec.wide && NEVER_WIDE.contains(&spec.column) {
+            errors.push(format!(
+                "{key}: `{}` identifies a row and can never be wide-only (`:wide`)",
+                spec.column.key()
             ));
         }
     }
+}
+
+fn check_ui_and_sort(config: &Config, errors: &mut Vec<String>) {
+    if config.ui.wide_columns.is_some() {
+        errors.push(
+            "ui.wide_columns was removed: mark wide-only columns with a `:wide` suffix in \
+             ui.columns, e.g. \"id:wide\""
+                .into(),
+        );
+    }
+    check_columns("ui.columns", &config.ui.columns, errors);
 
     // The sort column has to be one the user can actually see: sorting by a column that
     // is not displayed leaves the status bar naming one the user cannot see, with no way
     // to tell why the order looks arbitrary.
-    if !config.ui.columns.contains(&config.sort.column) {
+    // A `[[filter]].columns` override is not held to this: it may omit the sort column.
+    if !config
+        .ui
+        .columns
+        .iter()
+        .any(|s| s.column == config.sort.column)
+    {
         errors.push(format!(
             "sort.column: `{}` is not in ui.columns ({})",
             config.sort.column.key(),
@@ -140,41 +173,10 @@ fn check_ui_and_sort(config: &Config, errors: &mut Vec<String>) {
                 .ui
                 .columns
                 .iter()
-                .map(|c| c.key())
+                .map(|s| s.column.key())
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
-    }
-
-    // The columns that identify a row are never allowed to hide behind wide mode.
-    const NEVER_WIDE: [Column; 5] = [
-        Column::Approved,
-        Column::Author,
-        Column::Repo,
-        Column::Title,
-        Column::Pipeline,
-    ];
-
-    let mut seen_wide = BTreeSet::new();
-    for column in &config.ui.wide_columns {
-        if !seen_wide.insert(*column) {
-            errors.push(format!(
-                "ui.wide_columns: `{}` is listed more than once",
-                column.key()
-            ));
-        }
-        if !config.ui.columns.contains(column) {
-            errors.push(format!(
-                "ui.wide_columns: `{}` is not in ui.columns",
-                column.key()
-            ));
-        }
-        if NEVER_WIDE.contains(column) {
-            errors.push(format!(
-                "ui.wide_columns: `{}` identifies a row and can never be wide-only",
-                column.key()
-            ));
-        }
     }
 }
 
@@ -236,6 +238,10 @@ fn check_filters(config: &mut Config, errors: &mut Vec<String>, clamps: &mut Vec
         }
 
         check_filter_scope(filter, &at, errors);
+
+        if let Some(columns) = &filter.columns {
+            check_columns(&format!("{at}.columns"), columns, errors);
+        }
 
         let clamped = filter.max_results.clamp(MIN_MAX_RESULTS, MAX_MAX_RESULTS);
         if clamped != filter.max_results {
@@ -533,7 +539,7 @@ mod tests {
     #[test]
     fn sort_column_must_be_displayed() {
         let mut c = config();
-        c.ui.columns = vec![Column::Title, Column::Author];
+        c.ui.columns = vec![Column::Title.into(), Column::Author.into()];
         c.sort.column = Column::Diff;
 
         let err = validate(&mut c).unwrap_err().to_string();
@@ -548,7 +554,7 @@ mod tests {
     #[test]
     fn duplicate_and_empty_column_lists_are_rejected() {
         let mut c = config();
-        c.ui.columns = vec![Column::Title, Column::Title];
+        c.ui.columns = vec![Column::Title.into(), Column::Title.into()];
         assert!(err_of(c).contains("more than once"));
 
         let mut c = config();
@@ -557,21 +563,64 @@ mod tests {
     }
 
     #[test]
-    fn wide_columns_must_be_displayed_columns() {
+    fn the_removed_wide_columns_key_points_at_the_wide_suffix() {
         let mut c = config();
-        c.ui.columns = vec![Column::Title, Column::Author];
-        c.ui.wide_columns = vec![Column::Diff];
+        c.ui.wide_columns = Some(vec![Column::Diff]);
 
         let err = validate(&mut c).unwrap_err().to_string();
-        assert!(err.contains("wide_columns"), "{err}");
-        assert!(err.contains("diff"), "{err}");
+        assert!(err.contains("wide_columns was removed"), "{err}");
+        assert!(err.contains(":wide"), "{err}");
     }
 
     #[test]
-    fn duplicate_wide_columns_are_rejected() {
+    fn a_column_listed_plain_and_wide_is_a_duplicate() {
         let mut c = config();
-        c.ui.wide_columns = vec![Column::Diff, Column::Diff];
+        c.ui.columns = vec![
+            Column::Title.into(),
+            Column::Id.into(),
+            ColumnSpec {
+                column: Column::Id,
+                wide: true,
+            },
+        ];
         assert!(err_of(c).contains("more than once"));
+    }
+
+    #[test]
+    fn filter_columns_are_checked_under_the_filter_key() {
+        let wide = |column| ColumnSpec { column, wide: true };
+
+        let mut c = config();
+        c.filters[0].columns = Some(vec![]);
+        let err = err_of(c);
+        assert!(
+            err.contains("filter[0].columns") && err.contains("at least one"),
+            "{err}"
+        );
+
+        let mut c = config();
+        c.filters[0].columns = Some(vec![Column::Age.into(), wide(Column::Age)]);
+        let err = err_of(c);
+        assert!(
+            err.contains("filter[0].columns") && err.contains("more than once"),
+            "{err}"
+        );
+
+        let mut c = config();
+        c.filters[0].columns = Some(vec![wide(Column::Title)]);
+        let err = err_of(c);
+        assert!(
+            err.contains("filter[0].columns") && err.contains("never be wide-only"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_filter_may_omit_the_sort_column() {
+        let mut c = config();
+        c.filters[0].columns = Some(vec![Column::Title.into()]);
+        assert_ne!(c.sort.column, Column::Title);
+        validate(&mut c).expect("only [ui].columns must contain the sort column");
     }
 
     #[test]
@@ -584,10 +633,10 @@ mod tests {
             Column::Pipeline,
         ] {
             let mut c = config();
-            c.ui.wide_columns = vec![column];
+            c.ui.columns = vec![ColumnSpec { column, wide: true }, Column::Updated.into()];
 
             let err = validate(&mut c).unwrap_err().to_string();
-            assert!(err.contains("wide_columns"), "{column:?}: {err}");
+            assert!(err.contains("never be wide-only"), "{column:?}: {err}");
             assert!(err.contains(column.key()), "{column:?}: {err}");
         }
     }

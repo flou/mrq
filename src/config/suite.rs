@@ -413,6 +413,27 @@ columns = [\"title\", \"reviewers\"]
     assert!(hidden.contains("sort.column"), "{hidden}");
 }
 
+/// A filter's own `columns` (with `:wide`) resolve end to end, and the removed
+/// `wide_columns` key fails with a pointer to its replacement.
+#[test]
+fn per_filter_columns_resolve_and_the_old_wide_columns_key_is_explained() {
+    let ok = World::new()
+        .with_home_config(
+            "[[filter]]\nname = \"X\"\ncolumns = [\"title\", \"age\", \"branch:wide\"]\n",
+        )
+        .resolve()
+        .unwrap();
+    let cols = ok.config.filters[0].columns.as_ref().unwrap();
+    assert_eq!(cols.len(), 3);
+    assert!(cols[2].wide && !cols[1].wide);
+
+    let old = World::new()
+        .with_home_config("[ui]\nwide_columns = [\"age\"]\n")
+        .error();
+    assert!(old.contains("wide_columns was removed"), "{old}");
+    assert!(old.contains(":wide"), "{old}");
+}
+
 /// Names address both a tab and a cache file, so a duplicate is ambiguous twice over.
 #[test]
 fn a_duplicate_filter_name_is_rejected() {

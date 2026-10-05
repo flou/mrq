@@ -14,7 +14,7 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use crate::config::schema::{Column, Filter, Order, Sort};
+use crate::config::schema::{Column, ColumnSpec, Filter, Order, Sort};
 use crate::error::Error;
 use crate::gitlab::fetch::Snapshot;
 use crate::gitlab::model::MergeRequest;
@@ -82,6 +82,9 @@ pub struct Tab {
 
     pub sort_column: Column,
     pub sort_order: Order,
+    /// The filter's own `columns` override; `None` means `[ui].columns`. See
+    /// [`Self::columns_or`].
+    columns: Option<Vec<ColumnSpec>>,
     /// Session-only: not written back to the config file.
     show_drafts: bool,
 
@@ -129,6 +132,7 @@ impl Tab {
             fragment: Fragment::full(),
             sort_column: sort.column,
             sort_order: sort.order,
+            columns: filter.columns.clone(),
             // The per-filter override wins over the global default, which is what makes
             // a "Drafts" filter possible alongside a default that hides them.
             show_drafts: filter.show_drafts.unwrap_or(show_drafts),
@@ -139,6 +143,11 @@ impl Tab {
             unseen_arrivals: false,
             cached_age: None,
         }
+    }
+
+    /// This tab's columns: its filter's override, else the global `[ui].columns`.
+    pub fn columns_or<'a>(&'a self, ui_columns: &'a [ColumnSpec]) -> &'a [ColumnSpec] {
+        self.columns.as_deref().unwrap_or(ui_columns)
     }
 
     /// Every tab for a configuration, in config order.
@@ -444,6 +453,33 @@ mod tests {
     use super::*;
     use crate::config::schema::{Scope, StateFilter};
     use crate::gitlab::model::fixtures::mr;
+
+    #[test]
+    fn a_tab_uses_its_filters_columns_and_falls_back_to_the_ui_list() {
+        let ui = ColumnSpec::DEFAULT;
+        let own = vec![
+            ColumnSpec::from(Column::Title),
+            ColumnSpec {
+                column: Column::Branch,
+                wide: true,
+            },
+        ];
+
+        let plain = Tab::new(
+            0,
+            &Filter::named("A", Scope::Assigned),
+            Sort::default(),
+            false,
+        );
+        assert_eq!(plain.columns_or(&ui), ui);
+
+        let filter = Filter {
+            columns: Some(own.clone()),
+            ..Filter::named("B", Scope::Assigned)
+        };
+        let tab = Tab::new(1, &filter, Sort::default(), false);
+        assert_eq!(tab.columns_or(&ui), own);
+    }
 
     fn filters(names: &[&str]) -> Vec<Filter> {
         names

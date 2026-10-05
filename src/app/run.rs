@@ -491,14 +491,16 @@ impl App {
         Some(self.view.tabs.active()?.scroll + offset)
     }
 
-    /// The columns to draw this frame: `[ui].columns`, minus whichever are wide-only
-    /// while wide mode is off.
+    /// The columns to draw this frame: the active tab's (its filter's `columns`, else
+    /// `[ui].columns`), minus whichever are wide-only while wide mode is off.
     fn visible_columns(&self) -> Vec<Column> {
-        ui::columns::for_wide_mode(
-            &self.config.ui.columns,
-            &self.config.ui.wide_columns,
-            self.view.wide,
-        )
+        let ui_columns = &self.config.ui.columns;
+        let columns = self
+            .view
+            .tabs
+            .active()
+            .map_or(ui_columns.as_slice(), |tab| tab.columns_or(ui_columns));
+        ui::columns::for_wide_mode(columns, self.view.wide)
     }
 
     const fn people_display_modes(&self) -> ui::table::PeopleDisplayModes {

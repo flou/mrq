@@ -28,7 +28,7 @@
 //! dropped column from one that never existed, which is why [`Allocation`] reports what
 //! it removed so the status bar can say so.
 
-use crate::config::schema::Column;
+use crate::config::schema::{Column, ColumnSpec};
 
 /// One column's width rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -300,16 +300,13 @@ impl Allocation {
     }
 }
 
-/// Columns held back until wide mode is on: `diff`, plus whatever `wide_columns` names.
+/// Columns held back until wide mode is on: those marked `:wide`.
 /// Order and the rest of the set are untouched — only wide-only columns are removed.
-pub fn for_wide_mode(columns: &[Column], wide_columns: &[Column], wide: bool) -> Vec<Column> {
-    if wide {
-        return columns.to_vec();
-    }
+pub fn for_wide_mode(columns: &[ColumnSpec], wide: bool) -> Vec<Column> {
     columns
         .iter()
-        .copied()
-        .filter(|c| *c != Column::Diff && !wide_columns.contains(c))
+        .filter(|spec| wide || !spec.wide)
+        .map(|spec| spec.column)
         .collect()
 }
 
@@ -713,9 +710,9 @@ mod tests {
         assert_eq!(columns[repo + 1], Column::Id);
         assert_eq!(columns[repo + 2], Column::Title);
 
-        let wide_columns = [Column::Approver, Column::Reviewer, Column::Id];
-        assert!(!for_wide_mode(&columns, &wide_columns, false).contains(&Column::Id));
-        assert!(for_wide_mode(&columns, &wide_columns, true).contains(&Column::Id));
+        let specs = ColumnSpec::DEFAULT;
+        assert!(!for_wide_mode(&specs, false).contains(&Column::Id));
+        assert!(for_wide_mode(&specs, true).contains(&Column::Id));
     }
 
     #[test]
@@ -738,36 +735,51 @@ mod tests {
     }
 
     #[test]
-    fn diff_is_hidden_outside_wide_mode_even_with_no_configured_wide_columns() {
-        let columns = default_columns();
-        assert!(!for_wide_mode(&columns, &[], false).contains(&Column::Diff));
-        assert!(for_wide_mode(&columns, &[], true).contains(&Column::Diff));
+    fn diff_is_visible_when_not_marked_wide_and_hidden_when_it_is() {
+        let plain: Vec<ColumnSpec> = default_columns().into_iter().map(Into::into).collect();
+        assert!(for_wide_mode(&plain, false).contains(&Column::Diff));
+
+        assert!(!for_wide_mode(&ColumnSpec::DEFAULT, false).contains(&Column::Diff));
+        assert!(for_wide_mode(&ColumnSpec::DEFAULT, true).contains(&Column::Diff));
     }
 
     #[test]
     fn configured_wide_columns_are_hidden_only_outside_wide_mode() {
         let columns = default_columns();
-        let wide_columns = [Column::Age, Column::Assigned];
+        let specs: Vec<ColumnSpec> = columns
+            .iter()
+            .map(|&column| ColumnSpec {
+                column,
+                wide: matches!(column, Column::Age | Column::Assigned),
+            })
+            .collect();
 
-        let narrow = for_wide_mode(&columns, &wide_columns, false);
+        let narrow = for_wide_mode(&specs, false);
         assert!(!narrow.contains(&Column::Age));
         assert!(!narrow.contains(&Column::Assigned));
         assert!(narrow.contains(&Column::Title), "other columns stay");
 
-        let wide = for_wide_mode(&columns, &wide_columns, true);
+        let wide = for_wide_mode(&specs, true);
         assert_eq!(wide, columns, "wide mode restores every configured column");
     }
 
     #[test]
     fn wide_mode_filtering_preserves_order() {
         let columns = default_columns();
-        let narrow = for_wide_mode(&columns, &[Column::Age], false);
+        let specs: Vec<ColumnSpec> = columns
+            .iter()
+            .map(|&column| ColumnSpec {
+                column,
+                wide: column == Column::Age,
+            })
+            .collect();
+        let narrow = for_wide_mode(&specs, false);
 
         assert_eq!(
             narrow,
             columns
                 .into_iter()
-                .filter(|c| *c != Column::Age && *c != Column::Diff)
+                .filter(|c| *c != Column::Age)
                 .collect::<Vec<_>>()
         );
     }

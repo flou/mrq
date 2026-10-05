@@ -126,12 +126,16 @@ pub struct Ui {
     pub relative_times: bool,
     pub mouse: bool,
     pub set_terminal_title: bool,
-    pub columns: Vec<Column>,
-    /// Columns hidden until wide mode (`w`) is on, beyond `diff`, which is always
-    /// wide-only. `approved`, `author`, `repo`, `title` and `pipeline` can never appear
-    /// here — validated at config load. Defaults to `[approver, reviewer, id]`, but only
-    /// while `columns` is also left at its default — see `load::load`.
-    pub wide_columns: Vec<Column>,
+    /// The columns, in display order. A `:wide` suffix (`"id:wide"`) hides that column until
+    /// wide mode (`w`) is on. `approved`, `author`, `repo`, `title` and `pipeline` can
+    /// never be wide-only — validated at config load. A `[[filter]]` can override the
+    /// whole list with its own `columns`.
+    pub columns: Vec<ColumnSpec>,
+    /// Removed: kept only so `validate` can say what replaced it, instead of serde's
+    /// bare "unknown field".
+    #[serde(skip_serializing)]
+    #[schemars(skip)]
+    pub wide_columns: Option<Vec<Column>>,
     /// Starts with wide mode on, as if `w` had been pressed at launch.
     pub wide: bool,
     /// How the ASSIGNED column names people. `Yes`/`No` against whether you are an
@@ -180,8 +184,8 @@ impl Default for Ui {
             relative_times: true,
             mouse: false,
             set_terminal_title: true,
-            columns: Column::DEFAULT.to_vec(),
-            wide_columns: vec![Column::Approver, Column::Reviewer, Column::Id],
+            columns: ColumnSpec::DEFAULT.to_vec(),
+            wide_columns: None,
             wide: false,
             assigned_display: PeopleDisplay::YesNo,
             approver_display: PeopleDisplay::Username,
@@ -250,6 +254,23 @@ pub enum Column {
 }
 
 impl Column {
+    /// Every column, including those not in the default list.
+    pub const ALL: [Self; 13] = [
+        Self::Approved,
+        Self::Author,
+        Self::Repo,
+        Self::Id,
+        Self::Title,
+        Self::Pipeline,
+        Self::Assigned,
+        Self::Approver,
+        Self::Reviewer,
+        Self::Age,
+        Self::Updated,
+        Self::Diff,
+        Self::Branch,
+    ];
+
     pub const DEFAULT: [Self; 12] = [
         Self::Approved,
         Self::Author,
@@ -304,6 +325,100 @@ impl Column {
             Self::Diff => "DIFF",
             Self::Branch => "BRANCH",
         }
+    }
+}
+
+/// A column in a `columns` list: the column, plus whether it is wide-only (`"id:wide"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColumnSpec {
+    pub column: Column,
+    /// Hidden until wide mode (`w`) is on.
+    pub wide: bool,
+}
+
+impl ColumnSpec {
+    const fn shown(column: Column) -> Self {
+        Self {
+            column,
+            wide: false,
+        }
+    }
+
+    const fn wide(column: Column) -> Self {
+        Self { column, wide: true }
+    }
+
+    /// The shipped default list: `Column::DEFAULT`, with `id`, `approver`, `reviewer`
+    /// and `diff` wide-only.
+    pub const DEFAULT: [Self; 12] = [
+        Self::shown(Column::Approved),
+        Self::shown(Column::Author),
+        Self::shown(Column::Repo),
+        Self::wide(Column::Id),
+        Self::shown(Column::Title),
+        Self::shown(Column::Pipeline),
+        Self::shown(Column::Assigned),
+        Self::wide(Column::Approver),
+        Self::wide(Column::Reviewer),
+        Self::shown(Column::Age),
+        Self::shown(Column::Updated),
+        Self::wide(Column::Diff),
+    ];
+
+    /// The `columns` entry for this spec: `key`, or `key:wide`.
+    pub fn spec(self) -> String {
+        if self.wide {
+            format!("{}:wide", self.column.key())
+        } else {
+            self.column.key().to_owned()
+        }
+    }
+}
+
+impl From<Column> for ColumnSpec {
+    fn from(column: Column) -> Self {
+        Self::shown(column)
+    }
+}
+
+impl Serialize for ColumnSpec {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.spec())
+    }
+}
+
+impl<'de> Deserialize<'de> for ColumnSpec {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{Error, IntoDeserializer};
+
+        let raw = String::deserialize(deserializer)?;
+        let (key, wide) = match raw.split_once(':') {
+            None => (raw.as_str(), false),
+            Some((key, "wide")) => (key, true),
+            Some((_, suffix)) => {
+                return Err(D::Error::custom(format!(
+                    "invalid column suffix \":{suffix}\" in \"{raw}\": only \":wide\" (wide-only) is allowed"
+                )));
+            }
+        };
+        // Through `Column`'s own impl, so an unknown key lists the valid ones.
+        let column = Column::deserialize(IntoDeserializer::<D::Error>::into_deserializer(key))?;
+        Ok(Self { column, wide })
+    }
+}
+
+impl JsonSchema for ColumnSpec {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "ColumnSpec".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let keys = Column::ALL.map(Column::key).join("|");
+        schemars::json_schema!({
+            "type": "string",
+            "pattern": format!("^({keys})(:wide)?$"),
+            "description": "A column key, optionally suffixed `:wide` to show it only in wide mode.",
+        })
     }
 }
 
@@ -411,6 +526,8 @@ pub struct Filter {
     pub state: StateFilter,
     /// Per-filter override of `[ui].show_drafts`.
     pub show_drafts: Option<bool>,
+    /// Per-filter override of `[ui].columns`, with the same `:wide` wide-only suffix.
+    pub columns: Option<Vec<ColumnSpec>>,
     /// Per-filter override of `[notifications].enabled`.
     pub notify: Option<bool>,
 
@@ -445,6 +562,7 @@ impl Default for Filter {
             scope: Scope::Assigned,
             state: StateFilter::Opened,
             show_drafts: None,
+            columns: None,
             notify: None,
             path: None,
             include_subgroups: None,
@@ -653,10 +771,16 @@ mod tests {
         assert!(c.skin.colors.is_empty());
         assert!(!c.ui.show_drafts, "drafts are hidden by default");
         assert!(!c.ui.mouse, "mouse off, so native selection keeps working");
-        assert_eq!(c.ui.columns, Column::DEFAULT.to_vec());
+        assert_eq!(c.ui.columns, ColumnSpec::DEFAULT.to_vec());
+        let wide: Vec<_> =
+            c.ui.columns
+                .iter()
+                .filter(|s| s.wide)
+                .map(|s| s.column)
+                .collect();
         assert_eq!(
-            c.ui.wide_columns,
-            vec![Column::Approver, Column::Reviewer, Column::Id]
+            wide,
+            [Column::Id, Column::Approver, Column::Reviewer, Column::Diff]
         );
         assert!(!c.ui.wide, "wide mode starts off");
         assert_eq!(c.ui.assigned_display, PeopleDisplay::YesNo);
@@ -866,7 +990,53 @@ notify = false
         for col in Column::DEFAULT {
             let toml_doc = format!("[ui]\ncolumns = [\"{}\"]\n", col.key());
             let c: Config = toml::from_str(&toml_doc).unwrap();
-            assert_eq!(c.ui.columns, vec![col], "{} did not round-trip", col.key());
+            assert_eq!(
+                c.ui.columns,
+                vec![ColumnSpec::from(col)],
+                "{} did not round-trip",
+                col.key()
+            );
         }
+    }
+
+    #[test]
+    fn the_wide_suffix_parses_and_round_trips() {
+        let c: Config = toml::from_str("[ui]\ncolumns = [\"title\", \"id:wide\"]\n").unwrap();
+        assert_eq!(
+            c.ui.columns,
+            [
+                ColumnSpec::from(Column::Title),
+                ColumnSpec {
+                    column: Column::Id,
+                    wide: true
+                }
+            ]
+        );
+        let out = toml::to_string(&c).unwrap();
+        assert!(out.contains("\"id:wide\""), "{out}");
+        assert_eq!(toml::from_str::<Config>(&out).unwrap(), c);
+    }
+
+    #[test]
+    fn a_bad_suffix_or_key_is_rejected_with_guidance() {
+        let err = toml::from_str::<Config>("[ui]\ncolumns = [\"id:x\"]\n").unwrap_err();
+        assert!(err.to_string().contains("only \":wide\""), "{err}");
+
+        let err = toml::from_str::<Config>("[ui]\ncolumns = [\"nope:wide\"]\n").unwrap_err();
+        assert!(
+            err.to_string().contains("approved"),
+            "lists valid keys: {err}"
+        );
+    }
+
+    #[test]
+    fn a_filter_can_override_the_columns() {
+        let c: Config =
+            toml::from_str("[[filter]]\nname = \"a\"\ncolumns = [\"title\", \"branch:wide\"]\n")
+                .unwrap();
+        let cols = c.filters[0].columns.as_ref().unwrap();
+        assert_eq!(cols.len(), 2);
+        assert!(cols[1].wide);
+        assert_eq!(Config::default().filters[0].columns, None);
     }
 }
