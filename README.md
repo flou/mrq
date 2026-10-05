@@ -65,6 +65,19 @@ narrowing arguments below — `labels`, `not_labels`, `author`, `assignee`, `rev
 those on `assigned`, `review_requested` or `authored` is a startup error rather than a
 filter that silently ignores it.
 
+`scope` may also be a list, which shows the union of the scopes with each merge request
+listed once:
+
+```toml
+[[filter]]
+name = "Needs my attention"
+scope = ["assigned", "review_requested"]
+```
+
+A list may only combine `assigned`, `review_requested` and `authored`; use a separate
+filter for `group`, `project` or `instance`. Each scope is a separate query, and
+`max_results` caps the merged list, keeping the most recently updated.
+
 #### Fields
 
 | key                  | scopes                          | notes                                                                 |

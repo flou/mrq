@@ -170,7 +170,10 @@ fn constrain(root: &mut serde_json::Value) {
         keys.insert("propertyNames".into(), json!({ "enum": actions }));
     }
 
-    // `scope` defaults to `assigned`, so an absent `scope` behaves like a current-user one.
+    // `scope` is a string or a list of strings, and defaults to `assigned`, so an absent `scope`
+    // behaves like a current-user one.
+    let path_scopes = json!({ "enum": ["group", "project"] });
+    let current_user = json!(["assigned", "review_requested", "authored"]);
     let no_root_args: serde_json::Map<String, Value> = ROOT_ONLY_ARGS
         .iter()
         .map(|k| ((*k).to_owned(), Value::Bool(false)))
@@ -179,7 +182,10 @@ fn constrain(root: &mut serde_json::Value) {
         "allOf".into(),
         json!([
             {
-                "if": { "required": ["scope"], "properties": { "scope": { "enum": ["group", "project"] } } },
+                "if": { "required": ["scope"], "anyOf": [
+                    { "properties": { "scope": path_scopes } },
+                    { "properties": { "scope": { "type": "array", "contains": path_scopes } } }
+                ] },
                 "then": {
                     "required": ["path"],
                     "properties": { "path": { "pattern": r"^[^/\s]$|^[^/\s].*[^/]$" } }
@@ -187,14 +193,22 @@ fn constrain(root: &mut serde_json::Value) {
                 "else": { "not": { "required": ["path"] } }
             },
             {
-                "if": { "required": ["scope"], "properties": { "scope": { "const": "group" } } },
+                "if": { "required": ["scope"], "anyOf": [
+                    { "properties": { "scope": { "const": "group" } } },
+                    { "properties": { "scope": { "type": "array", "contains": { "const": "group" } } } }
+                ] },
                 "else": { "not": { "required": ["include_subgroups"] } }
+            },
+            {
+                "if": { "required": ["scope"], "properties": { "scope": { "type": "array", "minItems": 2 } } },
+                "then": { "properties": { "scope": { "items": { "enum": current_user } } } }
             },
             { "not": { "required": ["reviewer", "has_reviewer"] } },
             {
                 "if": { "anyOf": [
                     { "not": { "required": ["scope"] } },
-                    { "properties": { "scope": { "enum": ["assigned", "review_requested", "authored"] } } }
+                    { "properties": { "scope": { "enum": current_user } } },
+                    { "properties": { "scope": { "type": "array", "items": { "enum": current_user } } } }
                 ] },
                 "then": { "properties": no_root_args }
             }
@@ -776,7 +790,9 @@ pub struct Filter {
     /// Which merge requests to list: `assigned` to you, `review_requested` from you, `authored`
     /// by you, everything under a `group` or in one `project` (both need `path`), or the whole
     /// `instance`. Only `group`, `project` and `instance` accept the narrowing arguments below.
-    pub scope: Scope,
+    /// A list such as `["assigned", "review_requested"]` shows the union of those scopes, each
+    /// merge request once; a list may only combine `assigned`, `review_requested` and `authored`.
+    pub scope: Scopes,
     /// Which merge request state to list: `opened`, `merged`, `closed` or `all`.
     pub state: StateFilter,
     /// Per-filter override of `[ui].show_drafts`.
@@ -845,7 +861,7 @@ impl Default for Filter {
     fn default() -> Self {
         Self {
             name: String::new(),
-            scope: Scope::Assigned,
+            scope: Scope::Assigned.into(),
             state: StateFilter::Opened,
             show_drafts: None,
             columns: None,
@@ -867,12 +883,24 @@ impl Default for Filter {
 }
 
 impl Filter {
-    pub fn named(name: &str, scope: Scope) -> Self {
+    pub fn named(name: &str, scope: impl Into<Scopes>) -> Self {
         Self {
             name: name.into(),
-            scope,
+            scope: scope.into(),
             ..Self::default()
         }
+    }
+
+    /// One single-scope copy of this filter per listed scope, in order. Each is queried on
+    /// its own, since a GraphQL document names exactly one root.
+    pub fn split_by_scope(&self) -> Vec<Self> {
+        self.scope
+            .iter()
+            .map(|scope| Self {
+                scope: scope.into(),
+                ..self.clone()
+            })
+            .collect()
     }
 
     /// Whether subgroups are included, defaulting to true for a group scope.
@@ -981,6 +1009,128 @@ impl Scope {
             Self::Project => "project",
             Self::Instance => "instance",
         }
+    }
+}
+
+/// A filter's scope: one [`Scope`], or a non-empty list of them whose results are merged.
+///
+/// Written in TOML as a string (`scope = "assigned"`) or a list
+/// (`scope = ["assigned", "review_requested"]`); a one-element list is the same as the string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scopes(Vec<Scope>);
+
+impl Scopes {
+    /// Builds a list scope, or `None` when `scopes` is empty.
+    pub fn many(scopes: impl IntoIterator<Item = Scope>) -> Option<Self> {
+        let scopes: Vec<Scope> = scopes.into_iter().collect();
+        (!scopes.is_empty()).then_some(Self(scopes))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = Scope> + '_ {
+        self.0.iter().copied()
+    }
+
+    /// The first scope, which is the only one of a single-scope filter.
+    pub fn first(&self) -> Scope {
+        self.0[0]
+    }
+
+    pub fn contains(&self, scope: Scope) -> bool {
+        self.0.contains(&scope)
+    }
+
+    /// Whether every scope is rooted at `currentUser`; see [`Scope::is_current_user`].
+    pub fn is_current_user(&self) -> bool {
+        self.0.iter().all(|s| s.is_current_user())
+    }
+
+    /// Whether any scope requires `path`.
+    pub fn requires_path(&self) -> bool {
+        self.0.iter().any(|s| s.requires_path())
+    }
+
+    /// Whether a scope is listed more than once.
+    pub fn has_duplicates(&self) -> bool {
+        self.0
+            .iter()
+            .enumerate()
+            .any(|(i, s)| self.0[..i].contains(s))
+    }
+
+    /// The scope names joined with `+`, for messages and query labels.
+    pub fn key(&self) -> String {
+        self.0.iter().map(|s| s.key()).collect::<Vec<_>>().join("+")
+    }
+}
+
+impl From<Scope> for Scopes {
+    fn from(scope: Scope) -> Self {
+        Self(vec![scope])
+    }
+}
+
+impl PartialEq<Scope> for Scopes {
+    fn eq(&self, other: &Scope) -> bool {
+        self.0 == [*other]
+    }
+}
+
+impl Serialize for Scopes {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0.as_slice() {
+            [one] => one.serialize(serializer),
+            many => many.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Scopes {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{Error, IntoDeserializer, SeqAccess, Visitor};
+
+        struct ScopesVisitor;
+
+        impl<'de> Visitor<'de> for ScopesVisitor {
+            type Value = Scopes;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a scope name or a non-empty list of scope names")
+            }
+
+            // Through `Scope`'s own impl, so an unknown name lists the valid ones.
+            fn visit_str<E: Error>(self, value: &str) -> Result<Scopes, E> {
+                Scope::deserialize(IntoDeserializer::<E>::into_deserializer(value))
+                    .map(Scopes::from)
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Scopes, A::Error> {
+                let mut scopes = Vec::new();
+                while let Some(scope) = seq.next_element::<Scope>()? {
+                    scopes.push(scope);
+                }
+                Scopes::many(scopes)
+                    .ok_or_else(|| A::Error::custom("scope must not be an empty list"))
+            }
+        }
+
+        deserializer.deserialize_any(ScopesVisitor)
+    }
+}
+
+impl JsonSchema for Scopes {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Scopes".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let scope = generator.subschema_for::<Scope>();
+        schemars::json_schema!({
+            "oneOf": [
+                scope,
+                { "type": "array", "items": scope, "minItems": 1, "uniqueItems": true }
+            ],
+            "description": "One scope, or a list of current-user scopes whose results are merged.",
+        })
     }
 }
 
@@ -1108,6 +1258,9 @@ mod tests {
             "[[filter]]\nname = \"a\"\nscope = \"group\"\npath = \"x\"\nreviewer = \"u\"\nhas_reviewer = true\n",
             "[[filter]]\nname = \"a\"\nlabels = [\"x\"]\n",
             "[[filter]]\nname = \"a\"\nscope = \"authored\"\nmilestone = \"m\"\n",
+            "[[filter]]\nname = \"a\"\nscope = [\"assigned\", \"group\"]\npath = \"x\"\n",
+            "[[filter]]\nname = \"a\"\nscope = [\"assigned\", \"authored\"]\nlabels = [\"x\"]\n",
+            "[[filter]]\nname = \"a\"\nscope = [\"assigned\", \"assigned\"]\n",
             "[notifications]\nbackend = \"command\"\n",
             "[notifications]\nbackend = \"command\"\ncommand = \"  \"\n",
         ];
@@ -1136,6 +1289,8 @@ mod tests {
             "[[filter]]\nname = \"a\"\nscope = \"group\"\npath = \"acme/x\"\ninclude_subgroups = true\nlabels = [\"l\"]\n",
             "[[filter]]\nname = \"a\"\nscope = \"instance\"\nlabels = [\"l\"]\nhas_reviewer = false\n",
             "[[filter]]\nname = \"a\"\nscope = \"project\"\npath = \"acme/x\"\nauthor = \"u\"\n",
+            "[[filter]]\nname = \"a\"\nscope = [\"assigned\", \"review_requested\"]\n",
+            "[[filter]]\nname = \"a\"\nscope = [\"group\"]\npath = \"acme/x\"\nlabels = [\"l\"]\n",
             "[notifications]\nbackend = \"command\"\ncommand = \"notify {title}\"\n",
             "[skin]\nname = \"Nord\"\n[skin.colors]\nred = \"#ff0000\"\n",
             "[keys]\nquit = [\"q\"]\n",
@@ -1146,6 +1301,36 @@ mod tests {
             crate::config::validate::validate(&mut config)
                 .unwrap_or_else(|e| panic!("validate should accept:\n{doc}\n{e}"));
         }
+    }
+
+    #[test]
+    fn a_scope_is_a_string_or_a_non_empty_list() {
+        let scope = |doc: &str| toml::from_str::<Config>(doc).map(|c| c.filters[0].scope.clone());
+
+        let one = scope("[[filter]]\nname = \"a\"\nscope = \"review_requested\"\n").unwrap();
+        assert_eq!(one, Scope::ReviewRequested);
+
+        let list =
+            scope("[[filter]]\nname = \"a\"\nscope = [\"assigned\", \"authored\"]\n").unwrap();
+        assert_eq!(
+            list.iter().collect::<Vec<_>>(),
+            [Scope::Assigned, Scope::Authored]
+        );
+
+        // A one-element list means the same as the bare string.
+        let wrapped = scope("[[filter]]\nname = \"a\"\nscope = [\"review_requested\"]\n").unwrap();
+        assert_eq!(wrapped, one);
+
+        let empty = scope("[[filter]]\nname = \"a\"\nscope = []\n").unwrap_err();
+        assert!(empty.to_string().contains("empty list"), "{empty}");
+
+        // An unknown name still lists the valid ones.
+        let unknown =
+            scope("[[filter]]\nname = \"a\"\nscope = [\"assigned\", \"nope\"]\n").unwrap_err();
+        assert!(
+            unknown.to_string().contains("review_requested"),
+            "{unknown}"
+        );
     }
 
     #[test]

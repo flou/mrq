@@ -322,8 +322,8 @@
           "type": "string"
         },
         "scope": {
-          "description": "Which merge requests to list: `assigned` to you, `review_requested` from you, `authored`\nby you, everything under a `group` or in one `project` (both need `path`), or the whole\n`instance`. Only `group`, `project` and `instance` accept the narrowing arguments below.",
-          "$ref": "#/$defs/Scope",
+          "description": "Which merge requests to list: `assigned` to you, `review_requested` from you, `authored`\nby you, everything under a `group` or in one `project` (both need `path`), or the whole\n`instance`. Only `group`, `project` and `instance` accept the narrowing arguments below.\nA list such as `[\"assigned\", \"review_requested\"]` shows the union of those scopes, each\nmerge request once; a list may only combine `assigned`, `review_requested` and `authored`.",
+          "$ref": "#/$defs/Scopes",
           "default": "assigned"
         },
         "show_drafts": {
@@ -357,14 +357,31 @@
             }
           },
           "if": {
-            "properties": {
-              "scope": {
-                "enum": [
-                  "group",
-                  "project"
-                ]
+            "anyOf": [
+              {
+                "properties": {
+                  "scope": {
+                    "enum": [
+                      "group",
+                      "project"
+                    ]
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "scope": {
+                    "type": "array",
+                    "contains": {
+                      "enum": [
+                        "group",
+                        "project"
+                      ]
+                    }
+                  }
+                }
               }
-            },
+            ],
             "required": [
               "scope"
             ]
@@ -389,14 +406,54 @@
             }
           },
           "if": {
+            "anyOf": [
+              {
+                "properties": {
+                  "scope": {
+                    "const": "group"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "scope": {
+                    "type": "array",
+                    "contains": {
+                      "const": "group"
+                    }
+                  }
+                }
+              }
+            ],
+            "required": [
+              "scope"
+            ]
+          }
+        },
+        {
+          "if": {
             "properties": {
               "scope": {
-                "const": "group"
+                "type": "array",
+                "minItems": 2
               }
             },
             "required": [
               "scope"
             ]
+          },
+          "then": {
+            "properties": {
+              "scope": {
+                "items": {
+                  "enum": [
+                    "assigned",
+                    "review_requested",
+                    "authored"
+                  ]
+                }
+              }
+            }
           }
         },
         {
@@ -425,6 +482,20 @@
                       "review_requested",
                       "authored"
                     ]
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "scope": {
+                    "type": "array",
+                    "items": {
+                      "enum": [
+                        "assigned",
+                        "review_requested",
+                        "authored"
+                      ]
+                    }
                   }
                 }
               }
@@ -713,6 +784,22 @@
           "description": "The unscoped `Query.mergeRequests` root: every merge request the token can see,\ninstance-wide. Takes the same root-only arguments as `group`/`project`, since\nGitLab gives it the same argument set, but no `path`.",
           "type": "string",
           "const": "instance"
+        }
+      ]
+    },
+    "Scopes": {
+      "description": "One scope, or a list of current-user scopes whose results are merged.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Scope"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Scope"
+          },
+          "minItems": 1,
+          "uniqueItems": true
         }
       ]
     },

@@ -95,7 +95,72 @@ impl Default for Degradation {
 ///
 /// `degradation` is both where the attempt starts and where it ends up: a filter that
 /// needed a smaller page or a reduced fragment last time asks for that shape first.
+///
+/// A list scope is fetched one scope at a time, sharing `degradation`, and the results are
+/// merged: each merge request once, newest first, capped at `max_results`.
 pub async fn fetch(
+    client: &Client,
+    filter: &Filter,
+    degradation: &mut Degradation,
+    current_user: &str,
+    instance_url: &str,
+    now: Timestamp,
+) -> Result<Snapshot> {
+    let singles = filter.split_by_scope();
+    let mut merged: Option<Snapshot> = None;
+    for single in &singles {
+        let next =
+            fetch_single(client, single, degradation, current_user, instance_url, now).await?;
+        merged = Some(match merged {
+            None => next,
+            Some(previous) => previous.union(next),
+        });
+    }
+    let Some(mut snapshot) = merged else {
+        return Err(Error::Other(format!(
+            "filter `{}` has no scope",
+            filter.name
+        )));
+    };
+
+    if singles.len() > 1 {
+        // Each scope arrives newest first, but the concatenation does not; sort before
+        // the cap so it keeps the most recently updated rows of the union.
+        snapshot
+            .merge_requests
+            .sort_by_key(|mr| std::cmp::Reverse(mr.updated_at));
+        if snapshot.merge_requests.len() > filter.max_results {
+            snapshot.merge_requests.truncate(filter.max_results);
+            snapshot.truncated = true;
+        }
+    }
+    Ok(snapshot)
+}
+
+impl Snapshot {
+    /// Combines two scopes' results: `other`'s rows follow `self`'s, minus any merge
+    /// request `self` already holds.
+    fn union(mut self, other: Self) -> Self {
+        let seen: std::collections::HashSet<String> =
+            self.merge_requests.iter().map(|mr| mr.id.clone()).collect();
+        self.merge_requests.extend(
+            other
+                .merge_requests
+                .into_iter()
+                .filter(|mr| !seen.contains(&mr.id)),
+        );
+        self.truncated |= other.truncated;
+        self.partial |= other.partial;
+        // The ladder only moves down and is shared, so the later fragment is the more degraded.
+        self.fragment = other.fragment;
+        #[cfg(test)]
+        merge(&mut self.anomalies, other.anomalies);
+        self
+    }
+}
+
+/// [`fetch`] for a filter with a single scope.
+async fn fetch_single(
     client: &Client,
     filter: &Filter,
     degradation: &mut Degradation,
@@ -306,7 +371,7 @@ fn merge(into: &mut Anomalies, from: Anomalies) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::{Gitlab, Scope};
+    use crate::config::schema::{Gitlab, Scope, Scopes};
     use crate::config::token::{TokenEnv, resolve};
     use serde_json::{Value, json};
     use std::sync::Arc;
@@ -431,6 +496,112 @@ mod tests {
             .await;
 
         (server, calls, bodies)
+    }
+
+    /// A page on `connection` whose nodes are `(id, updatedAt)` pairs.
+    fn page_on(connection: &str, nodes: &[(&str, &str)], has_next: bool) -> Value {
+        let nodes: Vec<Value> = nodes
+            .iter()
+            .map(|(id, updated)| {
+                let mut n = node(id);
+                n["updatedAt"] = json!(updated);
+                n
+            })
+            .collect();
+        json!({"data": {"currentUser": {connection: {
+            "pageInfo": {"hasNextPage": has_next, "endCursor": null},
+            "nodes": nodes
+        }}}})
+    }
+
+    fn two_scopes(max_results: usize) -> Filter {
+        Filter {
+            max_results,
+            scope: Scopes::many([Scope::Assigned, Scope::ReviewRequested]).unwrap(),
+            ..Filter::named("Mine", Scope::Assigned)
+        }
+    }
+
+    /// One request per scope, each naming its own root; a merge request in both appears once.
+    #[tokio::test]
+    async fn a_list_scope_queries_each_root_and_merges_without_duplicates() {
+        let (server, calls, bodies) = serving(vec![
+            page_on(
+                "assignedMergeRequests",
+                &[("1", "2026-09-01T00:00:00Z"), ("2", "2026-09-03T00:00:00Z")],
+                false,
+            ),
+            page_on(
+                "reviewRequestedMergeRequests",
+                &[("2", "2026-09-03T00:00:00Z"), ("3", "2026-09-02T00:00:00Z")],
+                false,
+            ),
+        ])
+        .await;
+
+        let snapshot = fresh(&client_for(&server), &two_scopes(100)).await.unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let bodies = bodies.lock().unwrap();
+        assert!(
+            bodies[0]["query"]
+                .as_str()
+                .unwrap()
+                .contains("assignedMergeRequests")
+        );
+        assert!(
+            bodies[1]["query"]
+                .as_str()
+                .unwrap()
+                .contains("reviewRequestedMergeRequests")
+        );
+
+        let ids: Vec<&str> = snapshot
+            .merge_requests
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "gid://gitlab/MergeRequest/2",
+                "gid://gitlab/MergeRequest/3",
+                "gid://gitlab/MergeRequest/1",
+            ],
+            "newest first, each merge request once"
+        );
+        assert!(!snapshot.truncated);
+    }
+
+    /// The cap keeps the most recently updated rows of the union, and says it cut.
+    #[tokio::test]
+    async fn a_list_scope_caps_the_union_at_the_newest_rows() {
+        let (server, _, _) = serving(vec![
+            page_on(
+                "assignedMergeRequests",
+                &[("1", "2026-09-01T00:00:00Z"), ("2", "2026-09-04T00:00:00Z")],
+                false,
+            ),
+            page_on(
+                "reviewRequestedMergeRequests",
+                &[("3", "2026-09-05T00:00:00Z"), ("4", "2026-09-02T00:00:00Z")],
+                false,
+            ),
+        ])
+        .await;
+
+        let snapshot = fresh(&client_for(&server), &two_scopes(2)).await.unwrap();
+
+        let ids: Vec<&str> = snapshot
+            .merge_requests
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            ["gid://gitlab/MergeRequest/3", "gid://gitlab/MergeRequest/2"]
+        );
+        assert!(snapshot.truncated);
     }
 
     #[tokio::test]

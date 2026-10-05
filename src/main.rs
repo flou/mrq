@@ -319,21 +319,24 @@ fn print_resolved_filters(filters: &[Filter], out: &mut impl std::io::Write) -> 
     writeln!(out, "filters:").map_err(io_err)?;
     let now = jiff::Timestamp::now();
     for filter in filters {
-        let document = query::build(
-            filter,
-            &query::Fragment::full(),
-            query::FALLBACK_PAGE_SIZES[0],
-            None,
-            now,
-        );
         writeln!(
             out,
-            "  {} -> {}\n    {}",
+            "  {} -> {}",
             filter.name,
-            query::root_description(filter),
-            document.variables
+            query::root_description(filter)
         )
         .map_err(io_err)?;
+        // One document per scope of a list scope, each with its own variables.
+        for single in filter.split_by_scope() {
+            let document = query::build(
+                &single,
+                &query::Fragment::full(),
+                query::FALLBACK_PAGE_SIZES[0],
+                None,
+                now,
+            );
+            writeln!(out, "    {}", document.variables).map_err(io_err)?;
+        }
     }
     Ok(())
 }

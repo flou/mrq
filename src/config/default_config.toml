@@ -161,6 +161,12 @@ scope = "assigned"
 # name = "Reviewing"
 # scope = "review_requested"
 
+# A list shows the union of its scopes, each merge request once. It may only combine
+# assigned, review_requested and authored.
+# [[filter]]
+# name = "Needs my attention"
+# scope = ["assigned", "review_requested"]
+
 # [[filter]]
 # name = "Platform"
 # scope = "group"

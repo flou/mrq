@@ -256,6 +256,22 @@ fn check_filters(config: &mut Config, errors: &mut Vec<String>, clamps: &mut Vec
 }
 
 fn check_filter_scope(filter: &Filter, at: &str, errors: &mut Vec<String>) {
+    // Several scopes are queried separately and merged, so `path`, `include_subgroups` and
+    // the root-only arguments would apply to only some of them unless all are `currentUser`.
+    if filter.scope.has_duplicates() {
+        errors.push(format!(
+            "{at}.scope: lists a scope more than once ({})",
+            filter.scope.key()
+        ));
+    }
+    if filter.scope.iter().count() > 1 && !filter.scope.is_current_user() {
+        errors.push(format!(
+            "{at}.scope: a list may only combine assigned, review_requested and authored \
+             (got {}); use a separate filter for group, project or instance",
+            filter.scope.key()
+        ));
+    }
+
     if filter.scope.requires_path() {
         match filter.path.as_deref().map(str::trim) {
             None | Some("") => errors.push(format!(
@@ -276,7 +292,7 @@ fn check_filter_scope(filter: &Filter, at: &str, errors: &mut Vec<String>) {
         ));
     }
 
-    if filter.scope != Scope::Group && filter.include_subgroups.is_some() {
+    if !filter.scope.contains(Scope::Group) && filter.include_subgroups.is_some() {
         errors.push(format!(
             "{at}.include_subgroups: applies to scope = \"group\" only"
         ));
@@ -315,7 +331,7 @@ fn check_filter_scope(filter: &Filter, at: &str, errors: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::{Column, NotifyBackend, Scope, StateFilter};
+    use crate::config::schema::{Column, NotifyBackend, Scope, Scopes, StateFilter};
 
     fn config() -> Config {
         Config::default()
@@ -393,7 +409,7 @@ mod tests {
     fn root_only_arguments_on_a_current_user_scope_are_rejected_with_the_alternative() {
         for scope in [Scope::Assigned, Scope::ReviewRequested, Scope::Authored] {
             let mut c = config();
-            c.filters[0].scope = scope;
+            c.filters[0].scope = scope.into();
             c.filters[0].labels = vec!["team::platform".into()];
 
             let err = validate(&mut c).unwrap_err().to_string();
@@ -422,7 +438,7 @@ mod tests {
     #[test]
     fn the_same_arguments_are_fine_on_a_group_scope() {
         let mut c = config();
-        c.filters[0].scope = Scope::Group;
+        c.filters[0].scope = Scope::Group.into();
         c.filters[0].path = Some("acme/platform".into());
         c.filters[0].labels = vec!["team::platform".into()];
         c.filters[0].milestone = Some("24.Q3".into());
@@ -442,7 +458,7 @@ mod tests {
     #[test]
     fn reviewer_and_has_reviewer_together_are_rejected() {
         let mut c = config();
-        c.filters[0].scope = Scope::Group;
+        c.filters[0].scope = Scope::Group.into();
         c.filters[0].path = Some("acme/platform".into());
         c.filters[0].reviewer = Some("someuser".into());
         c.filters[0].has_reviewer = Some(false);
@@ -455,7 +471,7 @@ mod tests {
     #[test]
     fn has_reviewer_alone_is_fine_on_a_group_scope() {
         let mut c = config();
-        c.filters[0].scope = Scope::Group;
+        c.filters[0].scope = Scope::Group.into();
         c.filters[0].path = Some("acme/platform".into());
         c.filters[0].has_reviewer = Some(false);
 
@@ -465,7 +481,7 @@ mod tests {
     #[test]
     fn labels_and_has_reviewer_are_fine_on_the_instance_scope_without_a_path() {
         let mut c = config();
-        c.filters[0].scope = Scope::Instance;
+        c.filters[0].scope = Scope::Instance.into();
         c.filters[0].labels = vec!["sre-review::ask".into()];
         c.filters[0].has_reviewer = Some(false);
 
@@ -475,7 +491,7 @@ mod tests {
     #[test]
     fn a_path_on_the_instance_scope_is_rejected() {
         let mut c = config();
-        c.filters[0].scope = Scope::Instance;
+        c.filters[0].scope = Scope::Instance.into();
         c.filters[0].path = Some("acme/platform".into());
 
         let err = validate(&mut c).unwrap_err().to_string();
@@ -483,10 +499,40 @@ mod tests {
     }
 
     #[test]
+    fn a_list_scope_may_only_combine_current_user_scopes() {
+        let mut c = config();
+        c.filters[0].scope = Scopes::many([Scope::Assigned, Scope::Instance]).unwrap();
+        let err = validate(&mut c).unwrap_err().to_string();
+        assert!(err.contains("may only combine"), "{err}");
+
+        let mut c = config();
+        c.filters[0].scope = Scopes::many([Scope::Assigned, Scope::ReviewRequested]).unwrap();
+        validate(&mut c).unwrap();
+    }
+
+    #[test]
+    fn a_repeated_scope_in_a_list_is_rejected() {
+        let mut c = config();
+        c.filters[0].scope = Scopes::many([Scope::Assigned, Scope::Assigned]).unwrap();
+        let err = validate(&mut c).unwrap_err().to_string();
+        assert!(err.contains("more than once"), "{err}");
+    }
+
+    #[test]
+    fn root_only_arguments_on_a_list_scope_are_rejected() {
+        let mut c = config();
+        c.filters[0].scope = Scopes::many([Scope::Assigned, Scope::Authored]).unwrap();
+        c.filters[0].labels = vec!["x".into()];
+        let err = validate(&mut c).unwrap_err().to_string();
+        assert!(err.contains("labels"), "{err}");
+        assert!(err.contains("assigned+authored"), "{err}");
+    }
+
+    #[test]
     fn group_and_project_scopes_require_a_path() {
         for scope in [Scope::Group, Scope::Project] {
             let mut c = config();
-            c.filters[0].scope = scope;
+            c.filters[0].scope = scope.into();
             c.filters[0].path = None;
 
             let err = validate(&mut c).unwrap_err().to_string();
@@ -498,7 +544,7 @@ mod tests {
     #[test]
     fn a_path_on_a_current_user_scope_is_rejected() {
         let mut c = config();
-        c.filters[0].scope = Scope::Assigned;
+        c.filters[0].scope = Scope::Assigned.into();
         c.filters[0].path = Some("acme/platform".into());
 
         let err = validate(&mut c).unwrap_err().to_string();
@@ -508,7 +554,7 @@ mod tests {
     #[test]
     fn a_malformed_path_is_rejected() {
         let mut c = config();
-        c.filters[0].scope = Scope::Group;
+        c.filters[0].scope = Scope::Group.into();
         c.filters[0].path = Some("/acme/platform/".into());
 
         let err = validate(&mut c).unwrap_err().to_string();

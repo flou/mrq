@@ -277,6 +277,9 @@ impl Args {
 
 /// Build the document for one filter page.
 ///
+/// A document names one root, so `filter` must have a single scope: a list scope is split
+/// with [`Filter::split_by_scope`] first.
+///
 /// `now` is injected rather than read from the clock so the analyzer test produces the
 /// same documents on every run.
 pub fn build(
@@ -297,13 +300,14 @@ pub fn build(
     let state = json!(state_enum(filter.state));
     a.add("state", "MergeRequestState", "state", state);
 
-    let (open_root, close_root, connection) = match filter.scope {
+    let scope = filter.scope.first();
+    let (open_root, close_root, connection) = match scope {
         Scope::Assigned => (String::new(), String::new(), "assignedMergeRequests"),
         Scope::ReviewRequested => (String::new(), String::new(), "reviewRequestedMergeRequests"),
         Scope::Authored => (String::new(), String::new(), "authoredMergeRequests"),
         Scope::Instance => (String::new(), String::new(), "mergeRequests"),
         Scope::Group | Scope::Project => {
-            let root = if filter.scope == Scope::Group {
+            let root = if scope == Scope::Group {
                 "group"
             } else {
                 "project"
@@ -365,7 +369,7 @@ pub fn build(
 /// `validate` has already rejected these on a `currentUser` scope, so reaching here with
 /// them set is impossible by construction.
 fn add_scoped_arguments(a: &mut Args, filter: &Filter, now: Timestamp) {
-    if filter.scope == Scope::Group {
+    if filter.scope.contains(Scope::Group) {
         a.add(
             "includeSubgroups",
             "Boolean",
@@ -543,17 +547,22 @@ pub fn over_budget_probe() -> Document {
 
 /// The GraphQL root a filter queries, formatted for a human rather than for the wire —
 /// `mrq check`'s filter report, so a user can see what would be sent without reading a
-/// GraphQL document.
+/// GraphQL document. A list scope names each of its roots, joined with ` + `.
 pub fn root_description(filter: &Filter) -> String {
     let path = || filter.path.as_deref().unwrap_or("");
-    match filter.scope {
-        Scope::Assigned => "currentUser.assignedMergeRequests".to_owned(),
-        Scope::ReviewRequested => "currentUser.reviewRequestedMergeRequests".to_owned(),
-        Scope::Authored => "currentUser.authoredMergeRequests".to_owned(),
-        Scope::Instance => "mergeRequests".to_owned(),
-        Scope::Group => format!("group({:?}).mergeRequests", path()),
-        Scope::Project => format!("project({:?}).mergeRequests", path()),
-    }
+    filter
+        .scope
+        .iter()
+        .map(|scope| match scope {
+            Scope::Assigned => "currentUser.assignedMergeRequests".to_owned(),
+            Scope::ReviewRequested => "currentUser.reviewRequestedMergeRequests".to_owned(),
+            Scope::Authored => "currentUser.authoredMergeRequests".to_owned(),
+            Scope::Instance => "mergeRequests".to_owned(),
+            Scope::Group => format!("group({:?}).mergeRequests", path()),
+            Scope::Project => format!("project({:?}).mergeRequests", path()),
+        })
+        .collect::<Vec<_>>()
+        .join(" + ")
 }
 
 #[cfg(test)]
@@ -597,7 +606,7 @@ mod tests {
         assert!(q.contains("mergeRequests("), "{q}");
 
         let mut project = group_filter();
-        project.scope = Scope::Project;
+        project.scope = Scope::Project.into();
         let q = doc(&project).query;
         assert!(q.contains("project(fullPath: $fullPath)"), "{q}");
 
@@ -962,7 +971,7 @@ mod tests {
     fn full_path_is_passed_to_the_root_only() {
         for scope in [Scope::Group, Scope::Project] {
             let mut f = group_filter();
-            f.scope = scope;
+            f.scope = scope.into();
             let q = doc(&f).query;
 
             let root = if scope == Scope::Group {
@@ -990,7 +999,7 @@ mod tests {
         );
 
         let mut project = group_filter();
-        project.scope = Scope::Project;
+        project.scope = Scope::Project.into();
         let d = doc(&project);
         assert!(!d.query.contains("includeSubgroups"), "{}", d.query);
     }
