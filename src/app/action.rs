@@ -153,6 +153,8 @@ pub enum Effect {
     None,
     RefreshAll,
     RefreshActive,
+    /// Re-read the config file and apply it.
+    ReloadConfig,
     /// Open a URL in the browser.
     Open(String),
     /// Put text on the clipboard.
@@ -656,6 +658,7 @@ pub fn dispatch(state: &mut ViewState, action: Action) -> (bool, Effect) {
             }
             (true, Effect::RefreshAll)
         }
+        Action::ReloadConfig => (true, Effect::ReloadConfig),
         Action::RefreshVisible => {
             if let Some(tab) = state.tabs.active_mut() {
                 tab.clear_new();

@@ -34,6 +34,7 @@ pub mod sort;
 
 pub mod scheduler;
 
+pub mod reload;
 pub mod run;
 
 pub mod action;

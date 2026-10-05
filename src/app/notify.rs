@@ -225,6 +225,11 @@ impl Notifier {
         Self { gate, seen }
     }
 
+    /// Replace the gate after a config reload, keeping what has been announced.
+    pub const fn set_gate(&mut self, gate: Gate) {
+        self.gate = gate;
+    }
+
     /// Whether the terminal reports focus, for the startup log line.
     pub const fn ignores_focus_setting(&self) -> bool {
         self.gate.only_when_unfocused && !self.gate.focus_events

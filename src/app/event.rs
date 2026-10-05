@@ -35,6 +35,28 @@ pub const CLOCK_INTERVAL: Duration = Duration::from_secs(1);
 /// Which configured filter an event belongs to, by index into the filter list.
 pub type FilterId = usize;
 
+/// Room for filter indices under a generation tag; far more than any config has.
+pub const GENERATION_STRIDE: FilterId = 1 << 16;
+
+/// The id a worker of `generation` stamps on its events for the filter at `index`.
+///
+/// A config reload restarts the workers, and events they sent before it may still be
+/// queued. Without the tag a stale `Snapshot` for old filter 2 would land on whatever
+/// is tab 2 now. Generation 0 is the plain index, so a session that never reloads sees
+/// exactly the ids it always did.
+pub const fn tag(generation: usize, index: usize) -> FilterId {
+    generation * GENERATION_STRIDE + index
+}
+
+/// The tab index for an event id, or `None` when it came from a replaced generation.
+pub const fn untag(generation: usize, id: FilterId) -> Option<usize> {
+    if id / GENERATION_STRIDE == generation {
+        Some(id % GENERATION_STRIDE)
+    } else {
+        None
+    }
+}
+
 /// Everything that can change what is on screen.
 #[derive(Debug)]
 pub enum AppEvent {
@@ -160,6 +182,21 @@ impl Tasks {
     /// A child token, for a task that should stop when the application does.
     pub fn token(&self) -> CancellationToken {
         self.cancel.child_token()
+    }
+
+    /// A separate set of tasks that also stops when `parent` does.
+    ///
+    /// For the refresh workers, which a config reload replaces without stopping the rest.
+    pub fn under(parent: &CancellationToken) -> Self {
+        Self {
+            cancel: parent.child_token(),
+            handles: Vec::new(),
+        }
+    }
+
+    /// Ask every task to stop, without waiting for them.
+    pub fn cancel(&self) {
+        self.cancel.cancel();
     }
 
     pub fn track(&mut self, handle: tokio::task::JoinHandle<()>) {
@@ -480,6 +517,15 @@ mod tests {
 
         tasks.cancel.cancel();
         assert!(child.is_cancelled());
+    }
+
+    #[test]
+    fn generation_zero_ids_are_plain_indices_and_old_generations_are_rejected() {
+        assert_eq!(tag(0, 3), 3);
+        assert_eq!(untag(0, 3), Some(3));
+        assert_eq!(untag(1, tag(1, 3)), Some(3));
+        assert_eq!(untag(1, tag(0, 3)), None, "an event from before the reload");
+        assert_eq!(untag(0, tag(1, 3)), None);
     }
 
     #[test]

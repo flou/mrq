@@ -196,6 +196,7 @@ scope = "assigned"
 # quit            = ["q", "ctrl-c"]
 # refresh         = ["ctrl-r"]
 # refresh_visible = ["r"]
+# reload_config   = ["shift-R"]
 # down            = ["j", "down"]
 # up              = ["k", "up"]
 # page_down       = ["ctrl-d", "pagedown"]

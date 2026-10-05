@@ -134,7 +134,14 @@ fn run(cli: &Cli, log: &logging::LogHandle) -> Result<ExitCode, Error> {
         Some(Command::Completion { shell }) => {
             completion((*shell).into(), &mut std::io::stdout().lock()).map(|()| ExitCode::SUCCESS)
         }
-        None => tui(loaded, log.buffer()),
+        None => tui(
+            loaded,
+            log.buffer(),
+            app::reload::ReloadSource {
+                flag: cli.config.clone(),
+                overrides: cli.overrides(),
+            },
+        ),
     }
 }
 
@@ -355,13 +362,17 @@ fn completion(shell: Shell, out: &mut impl std::io::Write) -> Result<(), Error> 
 ///
 /// The runtime is built here rather than with `#[tokio::main]` so that the
 /// non-interactive subcommands, which need no runtime at all, do not pay for one.
-fn tui(loaded: load::Loaded, log: logging::LogBuffer) -> Result<ExitCode, Error> {
+fn tui(
+    loaded: load::Loaded,
+    log: logging::LogBuffer,
+    reload_source: app::reload::ReloadSource,
+) -> Result<ExitCode, Error> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| Error::Other(format!("could not start the async runtime: {e}")))?;
 
-    let reason = runtime.block_on(app::run::run(loaded, log))?;
+    let reason = runtime.block_on(app::run::run(loaded, log, reload_source))?;
     tracing::info!(?reason, "exited");
     Ok(match reason {
         QuitReason::User => ExitCode::SUCCESS,

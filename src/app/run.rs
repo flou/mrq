@@ -54,6 +54,18 @@ pub struct App {
     config: Config,
     keymap: Keymap,
     refresh: RefreshHandle,
+    /// The refresh workers, apart from the rest so a config reload can replace them.
+    refresh_tasks: Tasks,
+    /// Parent of every `refresh_tasks`, so quitting still stops whichever set is current.
+    refresh_root: tokio_util::sync::CancellationToken,
+    /// Bumped each time the workers are replaced; see [`app_event::tag`].
+    generation: usize,
+    /// The identity the workers wait on, handed to a replacement set.
+    identity_rx: crate::app::identity::Receiver,
+    cache_dir: Option<std::path::PathBuf>,
+    /// What a reload needs to find and layer the config file the way startup did.
+    reload_source: crate::app::reload::ReloadSource,
+    caps: Capabilities,
     terminal: Terminal<Backend>,
     /// Whether the terminal currently has focus, for the notification gating.
     focused: bool,
@@ -264,6 +276,7 @@ impl App {
                 self.refresh
                     .request(RefreshRequest::One(self.view.tabs.active_index()));
             }
+            Effect::ReloadConfig => self.reload_config(),
             // The open half lands in `open`; the copy half is implemented in `copy`.
             Effect::Open(url) => self.open(&url),
             Effect::Copy(text) => self.copy(&text),
@@ -281,6 +294,123 @@ impl App {
                 iid,
             ),
         }
+    }
+
+    /// Re-read the config file. An invalid one is reported and the running configuration
+    /// stays exactly as it was.
+    fn reload_config(&mut self) {
+        let prepared = crate::app::reload::prepare(
+            &crate::config::paths::Env::from_process(),
+            &crate::config::token::TokenEnv::from_process(),
+            &self.reload_source,
+            &self.config,
+        );
+        match prepared {
+            Ok(prepared) => self.apply_reload(prepared),
+            Err(error) => {
+                tracing::warn!(%error, "config reload failed; keeping the current configuration");
+                self.view.flash(crate::app::reload::summarize(&error));
+            }
+        }
+    }
+
+    /// Swap in a configuration that already passed every check.
+    ///
+    /// Settings the user changed at runtime (the skin picked from the menu, the wide
+    /// toggle) are only overwritten when the file's own value changed, so an unrelated
+    /// edit does not undo them.
+    fn apply_reload(&mut self, prepared: crate::app::reload::Prepared) {
+        let crate::app::reload::Prepared {
+            config,
+            keymap,
+            client,
+            ..
+        } = prepared;
+        let old = std::mem::replace(&mut self.config, config);
+        let new = &self.config;
+
+        self.keymap = keymap;
+        if old.skin != new.skin || old.ui.ascii != new.ui.ascii {
+            self.view.theme = Theme::resolve(&new.skin, new.ui.ascii, &self.caps);
+        }
+        if old.ui.wide != new.ui.wide {
+            self.view.wide = new.ui.wide;
+        }
+        if old.sort.drafts_last != new.sort.drafts_last {
+            self.view.drafts_last = new.sort.drafts_last;
+        }
+
+        self.notify_backend = crate::term::notify::resolve(
+            &new.notifications,
+            &self.caps,
+            crate::term::notify::Helpers::detect(),
+        );
+        self.notifier.set_gate(crate::app::notify::Gate {
+            only_when_unfocused: new.notifications.only_when_unfocused,
+            focus_events: self.caps.focus_events,
+        });
+
+        let filters_changed = old.filters != new.filters;
+        let sort_changed = old.sort != new.sort || old.ui.show_drafts != new.ui.show_drafts;
+        let workers_changed =
+            filters_changed || old.refresh != new.refresh || client.is_some();
+
+        if filters_changed || sort_changed {
+            let fresh = self.view.tabs.reload(
+                &old.filters,
+                &new.filters,
+                new.sort,
+                new.ui.show_drafts,
+                !sort_changed,
+            );
+            if let Some(dir) = &self.cache_dir {
+                let mut cached = Tabs::new(&new.filters, new.sort, new.ui.show_drafts, None);
+                let identity = self.identity_rx.borrow().clone();
+                crate::app::cache::warm(
+                    &mut cached,
+                    &new.filters,
+                    dir,
+                    identity.as_deref(),
+                    jiff::Timestamp::now(),
+                );
+                self.view.tabs.adopt(&cached, &fresh);
+            }
+            self.view.select_initial_rows();
+        }
+
+        if let Some(client) = client {
+            self.client = client;
+        }
+
+        if workers_changed {
+            // Cancelled, not awaited: a worker mid-fetch finishes into a channel whose
+            // events carry the old generation and are dropped on arrival.
+            self.refresh_tasks.cancel();
+            self.refresh_tasks = Tasks::under(&self.refresh_root);
+            self.generation += 1;
+            self.refresh = scheduler::spawn_generation(
+                self.generation,
+                &mut self.refresh_tasks,
+                self.events.clone(),
+                self.client.clone(),
+                &self.config,
+                self.identity_rx.clone(),
+                self.cache_dir.clone(),
+                scheduler::Flags {
+                    focused: std::sync::Arc::clone(&self.focus_flag),
+                    auth_paused: std::sync::Arc::clone(&self.pause_flag),
+                },
+            );
+        }
+
+        let mut message = String::from("config reloaded");
+        if old.ui.mouse != self.config.ui.mouse
+            || old.ui.set_terminal_title != self.config.ui.set_terminal_title
+        {
+            message.push_str(" (ui.mouse and ui.set_terminal_title need a restart)");
+        }
+        self.view.flash(message);
+        tracing::info!(workers_restarted = workers_changed, "config reloaded");
     }
 
     /// Open `url` in the browser, reporting failure in the status bar.
@@ -529,8 +659,40 @@ impl App {
     }
 }
 
+impl App {
+    /// Rewrite a worker's tagged filter id to a tab index, or drop the event when it came
+    /// from workers a config reload has since replaced.
+    fn current_generation(&self, event: AppEvent) -> Option<AppEvent> {
+        let local = |id| app_event::untag(self.generation, id);
+        Some(match event {
+            AppEvent::FetchStarted { filter } => AppEvent::FetchStarted {
+                filter: local(filter)?,
+            },
+            AppEvent::Snapshot { filter, snapshot } => AppEvent::Snapshot {
+                filter: local(filter)?,
+                snapshot,
+            },
+            AppEvent::RefreshScheduled { filter, due } => AppEvent::RefreshScheduled {
+                filter: local(filter)?,
+                due,
+            },
+            AppEvent::FetchFailed { filter, error } => AppEvent::FetchFailed {
+                filter: local(filter)?,
+                error,
+            },
+            AppEvent::RefreshesPaused { filter } => AppEvent::RefreshesPaused {
+                filter: local(filter)?,
+            },
+            other => other,
+        })
+    }
+}
+
 impl Application for App {
     fn handle(&mut self, event: AppEvent) -> (Flow, bool) {
+        let Some(event) = self.current_generation(event) else {
+            return (Flow::Continue, false);
+        };
         let changed = match event {
             AppEvent::Input(TermEvent::Key(key)) => {
                 let filter_before = self.view.tabs.active_index();
@@ -759,7 +921,11 @@ impl Application for App {
 }
 
 /// Start the TUI and run until the user or a signal stops it.
-pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> {
+pub async fn run(
+    loaded: Loaded,
+    log: logging::LogBuffer,
+    reload_source: crate::app::reload::ReloadSource,
+) -> Result<QuitReason> {
     let config = loaded.config;
 
     let keymap = crate::config::keymap::resolve(&config.keys)?;
@@ -945,13 +1111,15 @@ pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> 
         "notification dedup store"
     );
 
+    let refresh_root = tasks.token();
+    let mut refresh_tasks = Tasks::under(&refresh_root);
     let refresh = scheduler::spawn(
-        &mut tasks,
+        &mut refresh_tasks,
         events.clone(),
         client.clone(),
         &config,
-        identity_rx,
-        cache_dir,
+        identity_rx.clone(),
+        cache_dir.clone(),
         scheduler::Flags {
             focused: std::sync::Arc::clone(&focus_flag),
             auth_paused: std::sync::Arc::clone(&pause_flag),
@@ -980,6 +1148,14 @@ pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> 
         config,
         keymap,
         refresh,
+        refresh_tasks,
+        refresh_root,
+        generation: 0,
+        identity_rx,
+        cache_dir,
+        reload_source,
+        hyperlinks: caps.hyperlinks,
+        caps,
         terminal,
         focused: true,
         focus_flag,
@@ -989,7 +1165,6 @@ pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> 
         notifier,
         clipboard_helpers,
         browser_helpers,
-        hyperlinks: caps.hyperlinks,
         links: crate::ui::table::Links::default(),
         popup_open: false,
         started: Instant::now(),
@@ -1007,6 +1182,8 @@ pub async fn run(loaded: Loaded, log: logging::LogBuffer) -> Result<QuitReason> 
     // anything about why we exited, and the fatal error travels here rather than in
     // `reason` so that `QuitReason` can stay `Copy`.
     let fatal = app.fatal.take();
+    // Already cancelled through the root token; this only waits for the workers to land.
+    std::mem::take(&mut app.refresh_tasks).shutdown().await;
     drop(app);
     drop(guard);
 

@@ -154,6 +154,22 @@ pub fn spawn(
     cache_dir: Option<std::path::PathBuf>,
     flags: Flags,
 ) -> RefreshHandle {
+    spawn_generation(0, tasks, events, client, config, identity, cache_dir, flags)
+}
+
+/// [`spawn`] for the workers of a config reload: `generation` tags every event they
+/// send (see [`crate::app::event::tag`]) so the loop can drop the replaced ones.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_generation(
+    generation: usize,
+    tasks: &mut Tasks,
+    events: EventSender,
+    client: Client,
+    config: &Config,
+    identity: identity::Receiver,
+    cache_dir: Option<std::path::PathBuf>,
+    flags: Flags,
+) -> RefreshHandle {
     // Shared across every filter, so N tabs cannot open N simultaneous connections to an
     // instance that is also serving everyone else.
     let permits = Arc::new(Semaphore::new(config.gitlab.max_concurrent_requests.max(1)));
@@ -165,7 +181,7 @@ pub fn spawn(
         senders.push(tx);
 
         let worker = Worker {
-            id: index,
+            id: crate::app::event::tag(generation, index),
             filter: filter.clone(),
             refresh: config.refresh.clone(),
             instance_url: config.gitlab.url.clone(),

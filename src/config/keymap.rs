@@ -26,6 +26,7 @@ pub enum Action {
     Quit,
     Refresh,
     RefreshVisible,
+    ReloadConfig,
     Down,
     Up,
     PageDown,
@@ -88,7 +89,7 @@ impl Category {
 
 impl Action {
     /// Every action, in help-popup order.
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 32] = [
         Self::Down,
         Self::Up,
         Self::PageDown,
@@ -117,6 +118,7 @@ impl Action {
         Self::ClearSearch,
         Self::Refresh,
         Self::RefreshVisible,
+        Self::ReloadConfig,
         Self::Help,
         Self::LogMenu,
         Self::Quit,
@@ -128,6 +130,7 @@ impl Action {
             Self::Quit => "quit",
             Self::Refresh => "refresh",
             Self::RefreshVisible => "refresh_visible",
+            Self::ReloadConfig => "reload_config",
             Self::Down => "down",
             Self::Up => "up",
             Self::PageDown => "page_down",
@@ -169,6 +172,7 @@ impl Action {
             Self::Quit => "Quit",
             Self::Refresh => "Refresh every filter now",
             Self::RefreshVisible => "Refresh only the current filter",
+            Self::ReloadConfig => "Reload the config file",
             Self::Down => "Move down",
             Self::Up => "Move up",
             Self::PageDown => "Half page down",
@@ -228,9 +232,12 @@ impl Action {
             | Self::FilterMenu
             | Self::Search
             | Self::ClearSearch => Category::Filters,
-            Self::Quit | Self::Refresh | Self::RefreshVisible | Self::Help | Self::LogMenu => {
-                Category::Application
-            }
+            Self::Quit
+            | Self::Refresh
+            | Self::RefreshVisible
+            | Self::ReloadConfig
+            | Self::Help
+            | Self::LogMenu => Category::Application,
         }
     }
 }
@@ -482,6 +489,7 @@ pub const DEFAULT_BINDINGS: &[(Action, &[&str])] = &[
     (Action::Quit, &["q", "ctrl-c"]),
     (Action::Refresh, &["ctrl-r"]),
     (Action::RefreshVisible, &["r"]),
+    (Action::ReloadConfig, &["shift-R"]),
     (Action::Down, &["j", "down"]),
     (Action::Up, &["k", "up"]),
     (Action::PageDown, &["ctrl-d", "pagedown"]),
@@ -707,6 +715,7 @@ mod tests {
             ("q", Action::Quit),
             ("ctrl-c", Action::Quit),
             ("ctrl-r", Action::Refresh),
+            ("shift-R", Action::ReloadConfig),
             ("j", Action::Down),
             ("down", Action::Down),
             ("k", Action::Up),

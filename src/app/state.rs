@@ -357,6 +357,56 @@ impl Tabs {
         Self { tabs, active }
     }
 
+    /// Rebuild after a config reload, keeping the active tab by name.
+    ///
+    /// With `keep_state`, a tab whose filter is unchanged keeps its rows, sort, search,
+    /// scroll and selection, so editing one filter does not blank the others. Returns the
+    /// indices of the tabs that start empty, for the caller to warm from the cache.
+    pub fn reload(
+        &mut self,
+        old: &[Filter],
+        new: &[Filter],
+        sort: Sort,
+        show_drafts: bool,
+        keep_state: bool,
+    ) -> Vec<usize> {
+        let active_name = self.active().map(|t| t.name.clone());
+        let mut old_tabs: Vec<Option<Tab>> =
+            std::mem::take(&mut self.tabs).into_iter().map(Some).collect();
+        let mut tabs = Tab::from_config(new, sort, show_drafts);
+        let mut fresh: Vec<usize> = (0..tabs.len()).collect();
+
+        if keep_state {
+            for (index, filter) in new.iter().enumerate() {
+                let Some(position) = old.iter().position(|f| f == filter) else {
+                    continue;
+                };
+                if let Some(mut tab) = old_tabs.get_mut(position).and_then(Option::take) {
+                    tab.index = index;
+                    // The old worker is gone; the new one publishes its own deadline.
+                    tab.next_refresh = None;
+                    tabs[index] = tab;
+                    fresh.retain(|&i| i != index);
+                }
+            }
+        }
+
+        self.active = active_name
+            .and_then(|name| tabs.iter().position(|t| t.name == name))
+            .unwrap_or(0);
+        self.tabs = tabs;
+        fresh
+    }
+
+    /// Take the listed tabs from `other`, which was built from the same filters.
+    pub fn adopt(&mut self, other: &Self, indices: &[usize]) {
+        for &index in indices {
+            if let (Some(slot), Some(tab)) = (self.tabs.get_mut(index), other.tabs.get(index)) {
+                *slot = tab.clone();
+            }
+        }
+    }
+
     pub const fn len(&self) -> usize {
         self.tabs.len()
     }
@@ -581,6 +631,49 @@ mod tests {
             false,
             Some("Nope"),
         );
+        assert_eq!(tabs.active_index(), 0);
+    }
+
+    #[test]
+    fn a_reload_keeps_unchanged_tabs_and_the_active_one_by_name() {
+        let old = filters(&["One", "Two", "Three"]);
+        let mut tabs = Tabs::new(&old, Sort::default(), false, None);
+        tabs.get_mut(2).unwrap().search = Some("redis".into());
+        tabs.activate(2);
+
+        // "Two" is dropped and "Four" added, so "Three" moves from index 2 to 1.
+        let new = filters(&["One", "Three", "Four"]);
+        let fresh = tabs.reload(&old, &new, Sort::default(), false, true);
+
+        assert_eq!(fresh, vec![2], "only the new filter starts empty");
+        assert_eq!(tabs.active_index(), 1, "the active tab is followed by name");
+        let moved = tabs.get(1).unwrap();
+        assert_eq!(moved.name, "Three");
+        assert_eq!(moved.index, 1);
+        assert_eq!(moved.search.as_deref(), Some("redis"));
+        assert_eq!(tabs.get(2).unwrap().search, None);
+    }
+
+    #[test]
+    fn a_reload_without_keep_state_starts_every_tab_fresh() {
+        let old = filters(&["One"]);
+        let mut tabs = Tabs::new(&old, Sort::default(), false, None);
+        tabs.get_mut(0).unwrap().search = Some("redis".into());
+
+        let fresh = tabs.reload(&old, &old, Sort::default(), false, false);
+
+        assert_eq!(fresh, vec![0]);
+        assert_eq!(tabs.get(0).unwrap().search, None);
+    }
+
+    #[test]
+    fn a_reload_falls_back_to_the_first_tab_when_the_active_one_is_gone() {
+        let old = filters(&["One", "Two"]);
+        let mut tabs = Tabs::new(&old, Sort::default(), false, None);
+        tabs.activate(1);
+
+        tabs.reload(&old, &filters(&["One"]), Sort::default(), false, true);
+
         assert_eq!(tabs.active_index(), 0);
     }
 
