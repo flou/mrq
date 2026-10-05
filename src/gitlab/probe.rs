@@ -74,12 +74,20 @@ pub async fn identify_and_log(client: &Client) -> Result<Identity> {
     Ok(identity)
 }
 
-/// Whether a probe failure should stop the program.
+/// Whether a probe failure is worth retrying: the instance did not answer, or answered
+/// with something that may pass (a 5xx, a rate limit).
 ///
-/// Always true in practice — the probe runs at startup — but expressed through the
-/// shared recovery policy so it cannot drift from what the retry policy says about a 401.
+/// Expressed through the shared recovery policy, at its runtime phase: the probe runs
+/// with the cached rows already on screen, so a transport failure is just a refresh that
+/// did not land.
+pub const fn is_transient(error: &Error) -> bool {
+    matches!(error.recovery(Phase::Runtime), Recovery::Backoff { .. })
+}
+
+/// Whether a probe failure should stop the program: a rejected token or a broken
+/// configuration, where retrying would only repeat what the instance already refused.
 pub const fn is_fatal(error: &Error) -> bool {
-    matches!(error.recovery(Phase::Startup), Recovery::Fatal)
+    !is_transient(error)
 }
 
 #[cfg(test)]
@@ -198,10 +206,10 @@ mod tests {
         assert!(matches!(err, Error::GraphQl { .. }), "{err:?}");
     }
 
-    /// A transport failure at startup is fatal too: there is no cached identity to fall
-    /// back on, and the username is required before any row can render.
+    /// A transport failure is retried, not fatal: the cached rows are already on screen
+    /// and the instance may simply be slow or briefly down.
     #[tokio::test]
-    async fn an_unreachable_instance_is_fatal_at_startup() {
+    async fn an_unreachable_instance_is_transient() {
         let gitlab = Gitlab {
             url: "http://127.0.0.1:1".into(),
             token: Some("glpat-test".into()),
@@ -212,7 +220,8 @@ mod tests {
         let client = Client::new(&gitlab, token).unwrap();
 
         let err = identify(&client).await.unwrap_err();
-        assert!(is_fatal(&err), "{err:?}");
+        assert!(is_transient(&err), "{err:?}");
+        assert!(!is_fatal(&err), "{err:?}");
         assert_eq!(
             err.exit_code(),
             crate::error::EXIT_FAILURE,

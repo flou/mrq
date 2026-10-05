@@ -8,10 +8,12 @@
 //! for the loop, which repaints the rows the cache already put on screen.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::watch;
 
 use crate::app::event::{AppEvent, EventSender, Tasks};
+use crate::error::{Error, Phase, Recovery};
 use crate::gitlab::client::Client;
 
 /// `None` until the probe lands. Every sender dropped while still `None` means the
@@ -32,9 +34,30 @@ pub fn channel() -> (Sender, Receiver) {
 pub fn spawn(tasks: &mut Tasks, events: EventSender, client: Client, identity: Sender) {
     let cancel = tasks.token();
     tasks.track(tokio::spawn(async move {
-        let result = tokio::select! {
-            () = cancel.cancelled() => return,
-            result = crate::gitlab::probe::identify_and_log(&client) => result,
+        let mut attempt = 0u32;
+        let result = loop {
+            let result = tokio::select! {
+                () = cancel.cancelled() => return,
+                result = crate::gitlab::probe::identify_and_log(&client) => result,
+            };
+
+            match result {
+                Err(error) if crate::gitlab::probe::is_transient(&error) => {
+                    let retry_in = retry_delay(&error, attempt);
+                    attempt = attempt.saturating_add(1);
+                    // The workers stay blocked on the identity meanwhile: nothing can be
+                    // fetched correctly without it, and the cached rows are on screen.
+                    let _ = events.send(AppEvent::IdentityRetrying {
+                        error: Box::new(error),
+                        retry_in,
+                    });
+                    tokio::select! {
+                        () = cancel.cancelled() => return,
+                        () = tokio::time::sleep(retry_in) => {}
+                    }
+                }
+                other => break other,
+            }
         };
 
         match result {
@@ -56,6 +79,18 @@ pub fn spawn(tasks: &mut Tasks, events: EventSender, client: Client, identity: S
             }
         }
     }));
+}
+
+/// The wait before retrying: the server's `Retry-After` when it sent one, otherwise
+/// 5s doubling up to a minute.
+fn retry_delay(error: &Error, attempt: u32) -> Duration {
+    if let Recovery::Backoff {
+        retry_after: Some(after),
+    } = error.recovery(Phase::Runtime)
+    {
+        return after;
+    }
+    Duration::from_secs(5u64 << attempt.min(4)).min(Duration::from_secs(60))
 }
 
 /// Wait until the identity lands.
@@ -164,6 +199,53 @@ mod tests {
         assert!(resolved.is_none());
 
         tasks.shutdown().await;
+    }
+
+    /// A transient failure announces a retry and keeps the workers waiting.
+    #[tokio::test]
+    async fn a_transient_failure_is_reported_as_retrying_not_fatal() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": {
+                "currentUser": {"username": "asmith"}
+            }})))
+            .mount(&server)
+            .await;
+
+        let (events, mut rx) = crate::app::event::channel();
+        let mut tasks = Tasks::new();
+        let (identity_tx, identity_rx) = channel();
+
+        spawn(&mut tasks, events, client_for(&server), identity_tx);
+
+        match rx.recv().await.expect("the channel should not close") {
+            AppEvent::IdentityRetrying { retry_in, .. } => {
+                assert_eq!(retry_in, Duration::from_secs(5));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        // Still waiting, not failed: the sender is alive across the backoff.
+        assert!(identity_rx.borrow().is_none());
+        assert!(!identity_rx.has_changed().is_err());
+
+        tasks.shutdown().await;
+    }
+
+    #[test]
+    fn the_retry_delay_doubles_and_is_capped_and_honours_retry_after() {
+        let net = Error::Network("down".into());
+        assert_eq!(retry_delay(&net, 0), Duration::from_secs(5));
+        assert_eq!(retry_delay(&net, 1), Duration::from_secs(10));
+        assert_eq!(retry_delay(&net, 20), Duration::from_secs(60));
+        let limited = Error::RateLimited {
+            retry_after: Some(Duration::from_secs(42)),
+        };
+        assert_eq!(retry_delay(&limited, 3), Duration::from_secs(42));
     }
 
     /// A quit during a slow probe must not hold the terminal in the alternate screen for

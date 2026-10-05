@@ -202,10 +202,10 @@ fn ensure_private_dir(path: &Path) -> Result<(), ConfigError> {
     if path.is_dir() {
         // Conditional so the common case is a stat and nothing else, and so a directory
         // that is already correct does not fail on a filesystem that refuses chmod.
-        let mode = std::fs::metadata(path).map_err(&io)?.permissions().mode() & 0o777;
+        let mode = std::fs::metadata(path).map_err(io)?.permissions().mode() & 0o777;
         if mode != PRIVATE_MODE {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(PRIVATE_MODE))
-                .map_err(&io)?;
+                .map_err(io)?;
         }
         return Ok(());
     }
@@ -214,7 +214,7 @@ fn ensure_private_dir(path: &Path) -> Result<(), ConfigError> {
         .recursive(true)
         .mode(PRIVATE_MODE)
         .create(path)
-        .map_err(&io)
+        .map_err(io)
 }
 
 #[cfg(test)]

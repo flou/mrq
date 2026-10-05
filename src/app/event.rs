@@ -100,10 +100,17 @@ pub enum AppEvent {
     /// re-derived against the account this session actually authenticated as.
     Identified { username: String },
 
-    /// The identity probe failed. Fatal, by the same recovery table that made it fatal
-    /// when it ran before the guard — the only difference now is that the guard is up,
-    /// so the message has to travel out of `run` and `main` prints it to the restored
-    /// terminal instead of an `eprintln` reaching the alternate screen.
+    /// The identity probe failed in a way worth retrying (a timeout, a 5xx, a rate
+    /// limit). The rows from the cache stay on screen; the probe tries again after
+    /// `retry_in`.
+    IdentityRetrying {
+        error: Box<Error>,
+        retry_in: Duration,
+    },
+
+    /// The identity probe failed for good: a rejected token or a broken configuration.
+    /// Fatal — the message has to travel out of `run` and `main` prints it to the
+    /// restored terminal instead of an `eprintln` reaching the alternate screen.
     ///
     /// Boxed for the same reason `FetchFailed` is: `AppEvent` pays the size of its
     /// biggest variant on every event (see `the_event_enum_stays_small`).

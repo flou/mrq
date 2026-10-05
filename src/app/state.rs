@@ -371,8 +371,10 @@ impl Tabs {
         keep_state: bool,
     ) -> Vec<usize> {
         let active_name = self.active().map(|t| t.name.clone());
-        let mut old_tabs: Vec<Option<Tab>> =
-            std::mem::take(&mut self.tabs).into_iter().map(Some).collect();
+        let mut old_tabs: Vec<Option<Tab>> = std::mem::take(&mut self.tabs)
+            .into_iter()
+            .map(Some)
+            .collect();
         let mut tabs = Tab::from_config(new, sort, show_drafts);
         let mut fresh: Vec<usize> = (0..tabs.len()).collect();
 

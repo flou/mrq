@@ -14,7 +14,14 @@ use crate::config::token::TokenSource;
 /// on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
-    /// Before the alternate screen is entered.
+    /// Before the alternate screen is entered, or with no snapshot to fall back on.
+    ///
+    /// The identity probe used to run here; it now retries at [`Self::Runtime`], so only
+    /// the recovery table's tests construct this.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no caller runs before the TUI owns the terminal")
+    )]
     Startup,
     /// While the TUI owns the terminal.
     Runtime,

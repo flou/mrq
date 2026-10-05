@@ -122,8 +122,16 @@ mod tests {
     #[test]
     fn a_valid_file_is_prepared_with_its_keymap() {
         let ok = prepared("[keys]\nquit = [\"x\"]\n").ok().unwrap();
-        assert_eq!(ok.keymap.keys_for(crate::config::keymap::Action::Quit).len(), 1);
-        assert!(ok.client.is_none(), "gitlab is unchanged, so the client stays");
+        assert_eq!(
+            ok.keymap
+                .keys_for(crate::config::keymap::Action::Quit)
+                .len(),
+            1
+        );
+        assert!(
+            ok.client.is_none(),
+            "gitlab is unchanged, so the client stays"
+        );
     }
 
     #[test]
@@ -164,7 +172,10 @@ mod tests {
     #[test]
     fn a_changed_gitlab_section_builds_a_client() {
         let dir = tempfile::tempdir().unwrap();
-        let source = write(dir.path(), "[gitlab]\nurl = \"https://gitlab.example.com\"\n");
+        let source = write(
+            dir.path(),
+            "[gitlab]\nurl = \"https://gitlab.example.com\"\n",
+        );
         let ok = prepare(&env(dir.path()), &token_env(), &source, &Config::default())
             .ok()
             .unwrap();

@@ -352,8 +352,7 @@ impl App {
 
         let filters_changed = old.filters != new.filters;
         let sort_changed = old.sort != new.sort || old.ui.show_drafts != new.ui.show_drafts;
-        let workers_changed =
-            filters_changed || old.refresh != new.refresh || client.is_some();
+        let workers_changed = filters_changed || old.refresh != new.refresh || client.is_some();
 
         if filters_changed || sort_changed {
             let fresh = self.view.tabs.reload(
@@ -807,10 +806,17 @@ impl Application for App {
                 result,
             } => self.view.discussions_loaded(&id, updated_at, *result),
 
+            AppEvent::IdentityRetrying { error, retry_in } => {
+                tracing::warn!(%error, retry_in_secs = retry_in.as_secs(), "identity probe failed, retrying");
+                self.view.flash(format!(
+                    "{error} — retrying in {}s",
+                    retry_in.as_secs().max(1)
+                ));
+                true
+            }
+
             AppEvent::IdentityFailed { error } => {
-                // The same invariant that made plain propagation correct before the
-                // guard existed: the recovery taxonomy agrees every failure this probe
-                // can produce is fatal.
+                // Only failures the recovery policy calls non-transient reach here.
                 debug_assert!(crate::gitlab::probe::is_fatal(&error));
                 tracing::error!(%error, "identity probe failed");
                 self.fatal = Some(error);

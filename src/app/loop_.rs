@@ -107,6 +107,7 @@ mod tests {
             AppEvent::RefreshScheduled { .. } => "scheduled",
             AppEvent::RefreshesPaused { .. } => "paused",
             AppEvent::Identified { .. } => "identified",
+            AppEvent::IdentityRetrying { .. } => "identity_retrying",
             AppEvent::IdentityFailed { .. } => "identity_failed",
             AppEvent::DiscussionsLoaded { .. } => "discussions",
             AppEvent::Quit(_) => "quit",

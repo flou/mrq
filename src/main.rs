@@ -60,14 +60,30 @@ fn main() -> ExitCode {
             // and a log that omits the failure is the one thing it must not do.
             tracing::error!(%err, "fatal");
             eprintln!("mrq: {err}");
-            let mut source = std::error::Error::source(&err);
-            while let Some(cause) = source {
+            for cause in distinct_causes(&err) {
                 eprintln!("  caused by: {cause}");
-                source = cause.source();
             }
             err.exit_status()
         }
     }
+}
+
+/// The causes of `err` that add something: one whose text is already contained in the
+/// message above it is dropped, because `Error::Network` both embeds and chains its
+/// source and would otherwise print it twice.
+fn distinct_causes(err: &(dyn std::error::Error + 'static)) -> Vec<String> {
+    let mut shown = err.to_string();
+    let mut causes = Vec::new();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if !shown.contains(&text) {
+            causes.push(text.clone());
+        }
+        shown = text;
+        source = cause.source();
+    }
+    causes
 }
 
 /// Resolve paths and install the subscriber.
@@ -409,6 +425,12 @@ token = "glpat-from-the-file"
 name = "Assigned"
 scope = "assigned"
 "#;
+
+    #[test]
+    fn a_cause_already_in_the_message_is_not_printed_again() {
+        let err = Error::Network("request timed out".into());
+        assert!(distinct_causes(&err).is_empty());
+    }
 
     struct Report {
         _tmp: tempfile::TempDir,

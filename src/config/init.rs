@@ -84,10 +84,10 @@ pub fn write_default(path: &Path, force: bool) -> Result<bool, ConfigError> {
     if force {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(CONFIG_MODE))
-            .map_err(&io)?;
+            .map_err(io)?;
     }
 
-    file.write_all(DEFAULT_CONFIG.as_bytes()).map_err(&io)?;
+    file.write_all(DEFAULT_CONFIG.as_bytes()).map_err(io)?;
     Ok(replaced)
 }
 
