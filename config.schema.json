@@ -1,0 +1,732 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Config",
+  "description": "A parsed configuration file, before semantic validation.",
+  "type": "object",
+  "properties": {
+    "browser": {
+      "$ref": "#/$defs/Browser",
+      "default": {
+        "command": ""
+      }
+    },
+    "filter": {
+      "description": "`[[filter]]` array-of-tables. Order defines tab order and the 1..9 shortcuts.",
+      "type": "array",
+      "default": [
+        {
+          "labels": [],
+          "max_results": 100,
+          "name": "Assigned",
+          "not_labels": [],
+          "scope": "assigned",
+          "state": "opened"
+        }
+      ],
+      "items": {
+        "$ref": "#/$defs/Filter"
+      },
+      "minItems": 1
+    },
+    "gitlab": {
+      "$ref": "#/$defs/Gitlab",
+      "default": {
+        "max_concurrent_requests": 4,
+        "timeout_secs": 20,
+        "url": "https://gitlab.com"
+      }
+    },
+    "keys": {
+      "description": "Raw `[keys]` table: action name to key specs. Left unparsed here because the\ngrammar, the merge over defaults and duplicate detection are all one concern,\nhandled in `keymap`.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "default": {},
+      "propertyNames": {
+        "enum": [
+          "down",
+          "up",
+          "page_down",
+          "page_up",
+          "full_page_down",
+          "full_page_up",
+          "top",
+          "bottom",
+          "open_mr",
+          "open_pipeline",
+          "open_project",
+          "open_diffs",
+          "copy_url",
+          "copy_branch",
+          "show_details",
+          "show_discussions",
+          "toggle_drafts",
+          "toggle_wide",
+          "sort_menu",
+          "invert_sort",
+          "skin_menu",
+          "next_filter",
+          "prev_filter",
+          "filter_menu",
+          "search",
+          "clear_search",
+          "refresh",
+          "refresh_visible",
+          "reload_config",
+          "help",
+          "log_menu",
+          "quit"
+        ]
+      }
+    },
+    "notifications": {
+      "$ref": "#/$defs/Notifications",
+      "default": {
+        "backend": "auto",
+        "bell": true,
+        "command": "",
+        "enabled": true,
+        "on_approval": true,
+        "on_merged_or_closed": false,
+        "on_new_discussion": true,
+        "on_new_mr": true,
+        "on_pipeline_change": false,
+        "only_when_unfocused": true
+      }
+    },
+    "refresh": {
+      "$ref": "#/$defs/Refresh",
+      "default": {
+        "interval_secs": 300,
+        "jitter_secs": 15,
+        "pause_when_unfocused": false,
+        "refresh_on_focus": true
+      }
+    },
+    "skin": {
+      "$ref": "#/$defs/Skin",
+      "default": {
+        "colors": {},
+        "name": "catppuccin-mocha"
+      }
+    },
+    "sort": {
+      "$ref": "#/$defs/Sort",
+      "default": {
+        "column": "updated",
+        "drafts_last": true,
+        "order": "desc"
+      }
+    },
+    "ui": {
+      "$ref": "#/$defs/Ui",
+      "default": {
+        "approver_display": "username",
+        "ascii": false,
+        "assigned_display": "yes_no",
+        "columns": [
+          "approved",
+          "author",
+          "repo",
+          "id:wide",
+          "title",
+          "pipeline",
+          "assigned",
+          "approver:wide",
+          "reviewer:wide",
+          "age",
+          "updated",
+          "diff:wide"
+        ],
+        "link": "title",
+        "mouse": false,
+        "relative_times": true,
+        "reviewer_display": "username",
+        "set_terminal_title": true,
+        "show_drafts": false,
+        "wide": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "Browser": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "description": "Empty means `open` on macOS and `xdg-open` on Linux.",
+          "type": "string",
+          "default": ""
+        }
+      },
+      "additionalProperties": false
+    },
+    "Column": {
+      "description": "A table column. The variant order is not the display order — that comes from\n`[ui].columns` — but it is the order used for the shipped default.",
+      "type": "string",
+      "enum": [
+        "approved",
+        "author",
+        "repo",
+        "id",
+        "title",
+        "pipeline",
+        "assigned",
+        "approver",
+        "reviewer",
+        "age",
+        "updated",
+        "diff",
+        "branch"
+      ]
+    },
+    "ColumnSpec": {
+      "description": "A column key, optionally suffixed `:wide` to show it only in wide mode.",
+      "type": "string",
+      "pattern": "^((approved|author|repo|title|pipeline)|(id|assigned|approver|reviewer|age|updated|diff|branch)(:wide)?)$"
+    },
+    "Filter": {
+      "type": "object",
+      "properties": {
+        "assignee": {
+          "type": "string"
+        },
+        "author": {
+          "type": "string"
+        },
+        "columns": {
+          "description": "Per-filter override of `[ui].columns`, with the same `:wide` wide-only suffix.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ColumnSpec"
+          },
+          "minItems": 1
+        },
+        "has_reviewer": {
+          "description": "`true` for any reviewer, `false` for none; mutually exclusive with `reviewer`,\nsince GitLab's `reviewerWildcardId` and `reviewerUsername` cannot both be set.",
+          "type": "boolean"
+        },
+        "include_subgroups": {
+          "description": "`group` scope only. `None` means \"not set\", which is what lets `validate` reject\nit on a scope where it has no meaning instead of silently ignoring it.",
+          "type": "boolean"
+        },
+        "labels": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_results": {
+          "type": "integer",
+          "format": "uint",
+          "default": 100,
+          "minimum": 0
+        },
+        "milestone": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string",
+          "default": "",
+          "pattern": "\\S"
+        },
+        "not_labels": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "notify": {
+          "description": "Per-filter override of `[notifications].enabled`.",
+          "type": "boolean"
+        },
+        "path": {
+          "description": "Required for `group` and `project` scopes.",
+          "type": "string"
+        },
+        "reviewer": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope",
+          "default": "assigned"
+        },
+        "show_drafts": {
+          "description": "Per-filter override of `[ui].show_drafts`.",
+          "type": "boolean"
+        },
+        "state": {
+          "$ref": "#/$defs/StateFilter",
+          "default": "opened"
+        },
+        "target_branch": {
+          "type": "string"
+        },
+        "updated_after_days": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "else": {
+            "not": {
+              "required": [
+                "path"
+              ]
+            }
+          },
+          "if": {
+            "properties": {
+              "scope": {
+                "enum": [
+                  "group",
+                  "project"
+                ]
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          },
+          "then": {
+            "properties": {
+              "path": {
+                "pattern": "^[^/\\s]$|^[^/\\s].*[^/]$"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        },
+        {
+          "else": {
+            "not": {
+              "required": [
+                "include_subgroups"
+              ]
+            }
+          },
+          "if": {
+            "properties": {
+              "scope": {
+                "const": "group"
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "reviewer",
+              "has_reviewer"
+            ]
+          }
+        },
+        {
+          "if": {
+            "anyOf": [
+              {
+                "not": {
+                  "required": [
+                    "scope"
+                  ]
+                }
+              },
+              {
+                "properties": {
+                  "scope": {
+                    "enum": [
+                      "assigned",
+                      "review_requested",
+                      "authored"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "assignee": false,
+              "author": false,
+              "has_reviewer": false,
+              "labels": false,
+              "milestone": false,
+              "not_labels": false,
+              "reviewer": false,
+              "target_branch": false,
+              "updated_after_days": false
+            }
+          }
+        }
+      ]
+    },
+    "Gitlab": {
+      "type": "object",
+      "properties": {
+        "max_concurrent_requests": {
+          "type": "integer",
+          "format": "uint",
+          "default": 4,
+          "minimum": 1
+        },
+        "timeout_secs": {
+          "type": "integer",
+          "format": "uint64",
+          "default": 20,
+          "minimum": 1
+        },
+        "token": {
+          "description": "Discouraged; the environment or `token_command` are preferred. Kept as a\nplain `String` here and wrapped in the redacting type at resolution time.",
+          "type": "string"
+        },
+        "token_command": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string",
+          "default": "https://gitlab.com",
+          "pattern": "^https?://"
+        }
+      },
+      "additionalProperties": false
+    },
+    "LinkTarget": {
+      "description": "The column(s) that carry the hyperlink to the merge request.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "title",
+            "id",
+            "both"
+          ]
+        },
+        {
+          "description": "No hyperlinks at all.",
+          "type": "string",
+          "const": "none"
+        }
+      ]
+    },
+    "Notifications": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "$ref": "#/$defs/NotifyBackend",
+          "default": "auto"
+        },
+        "bell": {
+          "type": "boolean",
+          "default": true
+        },
+        "command": {
+          "description": "Used when `backend = \"command\"`; `{title}` and `{body}` are substituted.",
+          "type": "string",
+          "default": ""
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "on_approval": {
+          "type": "boolean",
+          "default": true
+        },
+        "on_merged_or_closed": {
+          "type": "boolean",
+          "default": false
+        },
+        "on_new_discussion": {
+          "type": "boolean",
+          "default": true
+        },
+        "on_new_mr": {
+          "type": "boolean",
+          "default": true
+        },
+        "on_pipeline_change": {
+          "type": "boolean",
+          "default": false
+        },
+        "only_when_unfocused": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "command"
+              }
+            },
+            "required": [
+              "backend"
+            ]
+          },
+          "then": {
+            "properties": {
+              "command": {
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          }
+        }
+      ]
+    },
+    "NotifyBackend": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "osc9",
+        "osc777",
+        "command",
+        "none"
+      ]
+    },
+    "Order": {
+      "type": "string",
+      "enum": [
+        "asc",
+        "desc"
+      ]
+    },
+    "PeopleDisplay": {
+      "description": "How a people-naming column (`assigned`, `approver`, `reviewer`) renders who is there.",
+      "oneOf": [
+        {
+          "description": "Whether the current user is one of them.",
+          "type": "string",
+          "const": "yes_no"
+        },
+        {
+          "description": "The first person's username, `+N` for the rest, `-` for none.",
+          "type": "string",
+          "const": "username"
+        },
+        {
+          "description": "The first person's trigram — initials, `Charles Billow` -> `CBI` — `-` for none.",
+          "type": "string",
+          "const": "trigram"
+        }
+      ]
+    },
+    "Refresh": {
+      "type": "object",
+      "properties": {
+        "interval_secs": {
+          "type": "integer",
+          "format": "uint64",
+          "default": 300,
+          "minimum": 30
+        },
+        "jitter_secs": {
+          "type": "integer",
+          "format": "uint64",
+          "default": 15,
+          "minimum": 0
+        },
+        "pause_when_unfocused": {
+          "type": "boolean",
+          "default": false
+        },
+        "refresh_on_focus": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "Scope": {
+      "description": "Which GraphQL root a filter queries.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "assigned",
+            "review_requested",
+            "authored",
+            "group",
+            "project"
+          ]
+        },
+        {
+          "description": "The unscoped `Query.mergeRequests` root: every merge request the token can see,\ninstance-wide. Takes the same root-only arguments as `group`/`project`, since\nGitLab gives it the same argument set, but no `path`.",
+          "type": "string",
+          "const": "instance"
+        }
+      ]
+    },
+    "Skin": {
+      "description": "Which palette the UI draws with, and any swatch the user wants to differ.",
+      "type": "object",
+      "properties": {
+        "colors": {
+          "description": "Per-swatch overrides: swatch name to `#rrggbb`, applied over the named skin.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^#?[0-9a-fA-F]{6}$"
+          },
+          "default": {},
+          "propertyNames": {
+            "enum": [
+              "rosewater",
+              "flamingo",
+              "pink",
+              "mauve",
+              "red",
+              "maroon",
+              "peach",
+              "yellow",
+              "green",
+              "teal",
+              "sky",
+              "sapphire",
+              "blue",
+              "lavender",
+              "text",
+              "subtext1",
+              "subtext0",
+              "overlay1",
+              "overlay0",
+              "surface2",
+              "surface1",
+              "surface0",
+              "base",
+              "mantle",
+              "crust"
+            ]
+          }
+        },
+        "name": {
+          "description": "A built-in skin name, an alias, or `auto` for the shipped dark default.\nValidated against the built-in table at startup.",
+          "type": "string",
+          "default": "catppuccin-mocha"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Sort": {
+      "type": "object",
+      "properties": {
+        "column": {
+          "$ref": "#/$defs/Column",
+          "default": "updated"
+        },
+        "drafts_last": {
+          "description": "Sink drafts below non-drafts when drafts are shown.",
+          "type": "boolean",
+          "default": true
+        },
+        "order": {
+          "$ref": "#/$defs/Order",
+          "default": "desc"
+        }
+      },
+      "additionalProperties": false
+    },
+    "StateFilter": {
+      "type": "string",
+      "enum": [
+        "opened",
+        "merged",
+        "closed",
+        "all"
+      ]
+    },
+    "Ui": {
+      "type": "object",
+      "properties": {
+        "approver_display": {
+          "description": "How the APPROVER column names people. The first approver's username, `+N` for the\nrest, `-` for none, by default.",
+          "$ref": "#/$defs/PeopleDisplay",
+          "default": "username"
+        },
+        "ascii": {
+          "description": "Substitutes ASCII for every glyph, for terminals without a Unicode-capable font.\nOrthogonal to the colour skin.",
+          "type": "boolean",
+          "default": false
+        },
+        "assigned_display": {
+          "description": "How the ASSIGNED column names people. `Yes`/`No` against whether you are an\nassignee, by default.",
+          "$ref": "#/$defs/PeopleDisplay",
+          "default": "yes_no"
+        },
+        "columns": {
+          "description": "The columns, in display order. A `:wide` suffix (`\"id:wide\"`) hides that column until\nwide mode (`w`) is on. `approved`, `author`, `repo`, `title` and `pipeline` can\nnever be wide-only — validated at config load. A `[[filter]]` can override the\nwhole list with its own `columns`.",
+          "type": "array",
+          "default": [
+            "approved",
+            "author",
+            "repo",
+            "id:wide",
+            "title",
+            "pipeline",
+            "assigned",
+            "approver:wide",
+            "reviewer:wide",
+            "age",
+            "updated",
+            "diff:wide"
+          ],
+          "items": {
+            "$ref": "#/$defs/ColumnSpec"
+          },
+          "minItems": 1
+        },
+        "link": {
+          "description": "Which column's text is the clickable link to the merge request, in a terminal\nthat supports hyperlinks. `id` only links while the `id` column is on screen; `both` links the two, `none` turns hyperlinks off.",
+          "$ref": "#/$defs/LinkTarget",
+          "default": "title"
+        },
+        "mouse": {
+          "type": "boolean",
+          "default": false
+        },
+        "relative_times": {
+          "type": "boolean",
+          "default": true
+        },
+        "reviewer_display": {
+          "description": "How the REVIEWER column names people. The first reviewer's username, `+N` for the\nrest, `-` for none, by default.",
+          "$ref": "#/$defs/PeopleDisplay",
+          "default": "username"
+        },
+        "set_terminal_title": {
+          "type": "boolean",
+          "default": true
+        },
+        "show_drafts": {
+          "type": "boolean",
+          "default": false
+        },
+        "wide": {
+          "description": "Starts with wide mode on, as if `w` had been pressed at launch.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -916,6 +916,19 @@ mod tests {
         assert!(!validator.is_valid(&doc));
     }
 
+    /// `config.schema.json` is the checked-in copy of `mrq schema`, for editors to point at.
+    /// When this fails, regenerate it: `cargo run -- schema > config.schema.json`.
+    #[test]
+    fn the_checked_in_schema_is_up_to_date() {
+        let checked_in: serde_json::Value =
+            serde_json::from_str(include_str!("../../config.schema.json")).unwrap();
+        assert_eq!(
+            checked_in,
+            serde_json::to_value(json_schema()).unwrap(),
+            "config.schema.json is stale: run `cargo run -- schema > config.schema.json`"
+        );
+    }
+
     fn schema_validator() -> jsonschema::Validator {
         jsonschema::validator_for(&serde_json::to_value(json_schema()).unwrap()).unwrap()
     }

@@ -103,6 +103,7 @@ mrq check
 mrq check --offline
 
 # Print JSON Schema for config validation
+# (a copy is checked in as config.schema.json; regenerate it with `mrq schema > config.schema.json`)
 mrq schema
 
 # Generate shell completions
