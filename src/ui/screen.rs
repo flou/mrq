@@ -91,6 +91,11 @@ impl Screen {
             .and_then(|(_, link)| link.as_deref())
     }
 
+    /// The glyph the cell at `(x, y)` last had printed into it.
+    pub fn glyph_at(&self, x: u16, y: u16) -> Option<char> {
+        self.cells.get(&(x, y)).map(|(glyph, _)| *glyph)
+    }
+
     /// Whether a link is still open, so the next text printed anywhere would join it.
     pub fn link_open(&self) -> bool {
         self.link.is_some()

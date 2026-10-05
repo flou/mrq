@@ -15,6 +15,8 @@
 //! help screen: the user has no way to know there was more.
 
 use jiff::Timestamp;
+use ratatui::backend::Backend;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Padding, Paragraph};
@@ -35,6 +37,33 @@ const HEIGHT_PCT: u8 = 70;
 /// Centre a popup over the body, clamped so it always fits.
 pub fn area(body: Rect) -> Rect {
     crate::ui::layout::centred(body, WIDTH_PCT, HEIGHT_PCT)
+}
+
+/// The popup's area on a terminal of `size`: the one place that composes the layout with
+/// [`area`], shared by blanking the region and repainting it.
+pub fn region(size: Rect) -> Rect {
+    area(crate::ui::layout::compute(size).body())
+}
+
+/// Reprint `region` from `buffer` after it was blanked behind ratatui's back.
+///
+/// Blanking leaves the terminal empty while ratatui's previous buffer still holds the
+/// popup's cells, so the next diff skips any list cell equal to the popup cell it replaces
+/// — and that cell stays blank, even after the popup is reopened and closed again. Diffing
+/// a blanked copy against `buffer` sends exactly the cells the terminal is missing.
+pub fn repaint<B>(backend: &mut B, buffer: &Buffer, region: Rect) -> std::io::Result<()>
+where
+    B: Backend<Error = std::io::Error>,
+{
+    let mut blank = buffer.clone();
+    for y in region.top()..region.bottom() {
+        for x in region.left()..region.right() {
+            if let Some(cell) = blank.cell_mut((x, y)) {
+                cell.reset();
+            }
+        }
+    }
+    backend.draw(blank.diff(buffer).into_iter())
 }
 
 /// The text width inside a popup's own area: two cells of border and one of padding on
@@ -1034,6 +1063,49 @@ mod tests {
         let entries = action::help_lines(&keymap());
         let lines = help_lines(&keymap(), &theme(), 80);
         assert_eq!(entries.len(), lines.len());
+    }
+
+    /// Closing a popup blanks its region behind ratatui's back; a list cell equal to the
+    /// popup cell it replaces is skipped by the diff and used to stay blank for good.
+    #[test]
+    fn repaint_restores_every_cell_the_blanking_removed() {
+        use crate::ui::screen::{Screen, Sink};
+        use ratatui::backend::CrosstermBackend;
+        use ratatui::buffer::Buffer;
+
+        let area = Rect::new(0, 0, 12, 3);
+        let buffer = Buffer::with_lines(["abcdefghijkl", "mnopqrstuvwx", "yzabcdefghij"]);
+        let region = Rect::new(2, 1, 6, 2);
+
+        let sink = Sink::default();
+        let mut screen = Screen::default();
+        let mut backend = CrosstermBackend::new(sink.clone());
+
+        // The terminal as it stood before the popup was blanked.
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let glyph = buffer[(x, y)].symbol().chars().next().unwrap();
+                screen.feed(&format!("\x1b[{};{}H{glyph}", y + 1, x + 1));
+            }
+        }
+        for y in region.top()..region.bottom() {
+            for x in region.left()..region.right() {
+                screen.feed(&format!("\x1b[{};{}H ", y + 1, x + 1));
+            }
+        }
+
+        repaint(&mut backend, &buffer, region).unwrap();
+        screen.feed(&sink.take());
+
+        for y in 0..area.height {
+            for x in 0..area.width {
+                assert_eq!(
+                    screen.glyph_at(x, y),
+                    buffer[(x, y)].symbol().chars().next(),
+                    "cell ({x}, {y})"
+                );
+            }
+        }
     }
 
     /// A dragged window edge passes through every size on the way.

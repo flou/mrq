@@ -518,9 +518,9 @@ impl App {
         self.view.viewport = self.table_viewport();
     }
 
-    /// Overwrite the popup's area with spaces, bypassing ratatui's buffers. The next diff
-    /// then repaints whatever differs from the popup's cells, and everything else is
-    /// already blank.
+    /// Overwrite the popup's area with spaces, bypassing ratatui's buffers. ratatui's
+    /// diff then only repaints cells that differ from the popup's, so the caller must
+    /// follow the draw with [`ui::popup::repaint`] for the cells that happen to match.
     fn blank_popup_region(terminal: &mut Terminal<Backend>) -> std::io::Result<()> {
         use crossterm::{
             cursor::MoveTo,
@@ -529,7 +529,7 @@ impl App {
         };
 
         let size = terminal.size()?;
-        let region = ui::popup::area(ui::layout::compute(size.into()).body());
+        let region = ui::popup::region(size.into());
         let blank = " ".repeat(usize::from(region.width));
         let out = terminal.backend_mut();
         queue!(out, ResetColor, SetAttribute(Attribute::Reset))?;
@@ -916,8 +916,12 @@ impl Application for App {
             let completed = self
                 .terminal
                 .draw(|frame| spans = ui::render(frame, &scene))?;
+            let buffer = completed.buffer.clone();
+            if repaint {
+                let region = ui::popup::region(buffer.area);
+                ui::popup::repaint(self.terminal.backend_mut(), &buffer, region)?;
+            }
             if self.hyperlinks {
-                let buffer = completed.buffer.clone();
                 self.links
                     .write(self.terminal.backend_mut(), &buffer, spans)?;
             }
