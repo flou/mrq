@@ -19,25 +19,39 @@ use schemars::JsonSchema;
 use crate::config::validate::NEVER_WIDE;
 use serde::{Deserialize, Serialize};
 
-/// A parsed configuration file, before semantic validation.
+/// The `mrq` configuration file. Every key is optional: an absent key takes its built-in
+/// default, so an empty file is valid. Unknown keys are rejected rather than ignored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    /// Connection to GitLab: instance URL, credentials and request limits.
     pub gitlab: Gitlab,
+    /// How often the merge request lists are refetched in the background.
     pub refresh: Refresh,
+    /// Display options: glyphs, columns, drafts, wide mode, mouse and hyperlinks.
     pub ui: Ui,
+    /// The colour palette, plus optional per-swatch overrides.
     pub skin: Skin,
+    /// The initial sort of every list. Can be changed at runtime from the sort menu.
     pub sort: Sort,
+    /// Notifications for changes seen on refresh.
     pub notifications: Notifications,
+    /// The command used to open merge requests, pipelines and projects.
     pub browser: Browser,
 
-    /// `[[filter]]` array-of-tables. Order defines tab order and the 1..9 shortcuts.
+    /// The merge request lists, one `[[filter]]` array-of-tables entry per tab. Order defines tab
+    /// order and the `1`..`9` shortcuts. At least one is required, and names must be unique.
     #[serde(rename = "filter")]
     pub filters: Vec<Filter>,
 
-    /// Raw `[keys]` table: action name to key specs. Left unparsed here because the
-    /// grammar, the merge over defaults and duplicate detection are all one concern,
-    /// handled in `keymap`.
+    /// Key bindings: action name to a list of key specs, e.g. `quit = ["q", "ctrl-c"]`. Merges
+    /// over the defaults, so naming one action leaves the rest alone; `[]` unbinds it. A key claimed
+    /// by two actions is a startup error.
+    ///
+    /// A key spec is `[modifier-]*key`. Modifiers are `ctrl`, `alt`, `shift` and `super`
+    /// (case-insensitive). A key is a single printable character or one of `enter`, `esc`, `tab`,
+    /// `backspace`, `space`, `up`, `down`, `left`, `right`, `home`, `end`, `pagedown`, `pageup`,
+    /// `insert`, `delete`, `f1`..`f12`.
     pub keys: BTreeMap<String, Vec<String>>,
 }
 
@@ -214,17 +228,27 @@ impl Default for Config {
 
 // ---------------------------------------------------------------------------- [gitlab]
 
+/// GitLab connection settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Gitlab {
+    /// Base URL of the GitLab instance, including the scheme, e.g. `https://gitlab.example.com`.
+    /// Must start with `http://` or `https://`.
     pub url: String,
-    /// Discouraged; the environment or `token_command` are preferred. Kept as a
-    /// plain `String` here and wrapped in the redacting type at resolution time.
+    /// A literal personal access token with the `read_api` scope. Discouraged, since it makes
+    /// this file hold a credential (`mrq` warns at startup if the file is readable by anyone but
+    /// you). Token lookup order, first hit wins: `$MRQ_TOKEN`, `$GITLAB_TOKEN`, `token_command`,
+    /// then this key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// Shell command whose trimmed stdout is the token, e.g.
+    /// `security find-generic-password -s gitlab-pat -w`. The preferred way to keep the token out of
+    /// this file. A non-zero exit is a startup error.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_command: Option<String>,
+    /// Timeout for each GitLab request, in seconds. Must be at least 1.
     pub timeout_secs: u64,
+    /// Maximum number of GitLab requests in flight at once. Must be at least 1.
     pub max_concurrent_requests: usize,
 }
 
@@ -242,12 +266,21 @@ impl Default for Gitlab {
 
 // --------------------------------------------------------------------------- [refresh]
 
+/// Background refresh scheduling.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Refresh {
+    /// Seconds between refresh cycles. Must be at least 30: lower values are rejected at
+    /// startup rather than clamped, because the cost lands on a shared GitLab instance.
     pub interval_secs: u64,
+    /// Random `0..=jitter_secs` seconds added to each cycle, so many `mrq` instances do not all
+    /// poll on the same second. Values above `interval_secs` are clamped to it with a warning.
     pub jitter_secs: u64,
+    /// Refetch the stale filters when the terminal regains focus. Needs a terminal that reports
+    /// focus events.
     pub refresh_on_focus: bool,
+    /// Skip the periodic refresh while the terminal is unfocused. Needs a terminal that reports
+    /// focus events.
     pub pause_when_unfocused: bool,
 }
 
@@ -264,39 +297,49 @@ impl Default for Refresh {
 
 // -------------------------------------------------------------------------------- [ui]
 
+/// Display options.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Ui {
-    /// Substitutes ASCII for every glyph, for terminals without a Unicode-capable font.
-    /// Orthogonal to the colour skin.
+    /// Substitute ASCII for every glyph, for terminals without a Unicode-capable font.
+    /// This is the font question only; colours come from `[skin]`.
     pub ascii: bool,
+    /// Show draft merge requests. A `[[filter]]` can override it with its own `show_drafts`;
+    /// toggled at runtime by the `toggle_drafts` key.
     pub show_drafts: bool,
+    /// Show the AGE and UPDATED columns as relative durations (`3h`, `5d`) instead of dates.
     pub relative_times: bool,
+    /// Capture the mouse. Off by default so the terminal keeps its native text selection and
+    /// copy. Needs a restart to change.
     pub mouse: bool,
+    /// Set the terminal title to the active tab and its merge request counts. Needs a restart
+    /// to change.
     pub set_terminal_title: bool,
-    /// The columns, in display order. A `:wide` suffix (`"id:wide"`) hides that column until
-    /// wide mode (`w`) is on. `approved`, `author`, `repo`, `title` and `pipeline` can
-    /// never be wide-only — validated at config load. A `[[filter]]` can override the
-    /// whole list with its own `columns`.
+    /// The columns, left to right: any subset of the column keys, each at most once, at least
+    /// one. `sort.column` must be one of them. A `:wide` suffix (`"id:wide"`) hides that column
+    /// until wide mode (`w`) is on. `approved`, `author`, `repo`, `title` and `pipeline` identify a
+    /// row and can never be wide-only. A `[[filter]]` can override the whole list with its own
+    /// `columns`.
     pub columns: Vec<ColumnSpec>,
     /// Removed: kept only so `validate` can say what replaced it, instead of serde's
     /// bare "unknown field".
     #[serde(skip_serializing)]
     #[schemars(skip)]
     pub wide_columns: Option<Vec<Column>>,
-    /// Starts with wide mode on, as if `w` had been pressed at launch.
+    /// Start with wide mode on, as if `w` (the `toggle_wide` key) had been pressed at launch.
     pub wide: bool,
-    /// How the ASSIGNED column names people. `Yes`/`No` against whether you are an
-    /// assignee, by default.
+    /// How the ASG column names people: `yes_no` (against whether you are an assignee),
+    /// `username` or `trigram`.
     pub assigned_display: PeopleDisplay,
-    /// How the APPROVER column names people. The first approver's username, `+N` for the
-    /// rest, `-` for none, by default.
+    /// How the APPROVER column names people: `yes_no`, `username` (first approver, `+N` for the
+    /// rest, `-` for none) or `trigram`.
     pub approver_display: PeopleDisplay,
-    /// How the REVIEWER column names people. The first reviewer's username, `+N` for the
-    /// rest, `-` for none, by default.
+    /// How the REVIEWER column names people: `yes_no`, `username` (first reviewer, `+N` for the
+    /// rest, `-` for none) or `trigram`.
     pub reviewer_display: PeopleDisplay,
-    /// Which column's text is the clickable link to the merge request, in a terminal
-    /// that supports hyperlinks. `id` only links while the `id` column is on screen; `both` links the two, `none` turns hyperlinks off.
+    /// Which column is the clickable link to the merge request, in a terminal that supports
+    /// hyperlinks: `title`, `id`, `both`, or `none` to turn hyperlinks off. `id` only links while
+    /// the `id` column is on screen (it is wide-only by default).
     pub link: LinkTarget,
 }
 
@@ -306,8 +349,11 @@ pub struct Ui {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum LinkTarget {
+    /// The TITLE column.
     Title,
+    /// The ID column; only links while that column is on screen.
     Id,
+    /// Both the ID and TITLE columns.
     Both,
     /// No hyperlinks at all.
     None,
@@ -349,11 +395,11 @@ impl Default for Ui {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum PeopleDisplay {
-    /// Whether the current user is one of them.
+    /// `Yes`/`No` against whether the current user is one of them.
     YesNo,
     /// The first person's username, `+N` for the rest, `-` for none.
     Username,
-    /// The first person's trigram — initials, `Charles Billow` -> `CBI` — `-` for none.
+    /// The first person's trigram (initials, `Charles Billow` -> `CBI`), `-` for none.
     Trigram,
 }
 
@@ -363,10 +409,17 @@ pub enum PeopleDisplay {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Skin {
-    /// A built-in skin name, an alias, or `auto` for the shipped dark default.
-    /// Validated against the built-in table at startup.
+    /// A built-in skin name or alias; case-insensitive. Built-ins: `catppuccin-mocha`,
+    /// `catppuccin-macchiato`, `catppuccin-frappe`, `dracula`, `flexoki-dark`, `gruvbox-dark`,
+    /// `monokai`, `nord`, `one-dark`, `rose-pine`, `solarized-dark`, `tokyo-night`. Short names
+    /// work too (`mocha`, `gruvbox`, `solarized`), and `auto` is the shipped dark default,
+    /// `catppuccin-mocha`. Validated at startup.
     pub name: String,
-    /// Per-swatch overrides: swatch name to `#rrggbb`, applied over the named skin.
+    /// Per-swatch overrides applied over the named skin: swatch name to `#rrggbb`. The swatch
+    /// names are the Catppuccin ones: `rosewater`, `flamingo`, `pink`, `mauve`, `red`, `maroon`,
+    /// `peach`, `yellow`, `green`, `teal`, `sky`, `sapphire`, `blue`, `lavender`, `text`,
+    /// `subtext1`, `subtext0`, `overlay1`, `overlay0`, `surface2`, `surface1`, `surface0`, `base`,
+    /// `mantle`, `crust`.
     pub colors: BTreeMap<String, String>,
 }
 
@@ -386,18 +439,31 @@ impl Default for Skin {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum Column {
+    /// Approval checkmark; no header.
     Approved,
+    /// The merge request author.
     Author,
+    /// The project the merge request belongs to.
     Repo,
+    /// The merge request IID.
     Id,
+    /// The merge request title.
     Title,
+    /// Status of the latest pipeline.
     Pipeline,
+    /// Assignees, shown per `[ui].assigned_display`.
     Assigned,
+    /// Approvers, shown per `[ui].approver_display`.
     Approver,
+    /// Reviewers, shown per `[ui].reviewer_display`.
     Reviewer,
+    /// Time since the merge request was opened.
     Age,
+    /// Time since the merge request last changed.
     Updated,
+    /// Size of the change.
     Diff,
+    /// The source branch. Not in the default column list.
     Branch,
 }
 
@@ -579,10 +645,13 @@ impl JsonSchema for ColumnSpec {
 
 // ------------------------------------------------------------------------------ [sort]
 
+/// The initial sort of every list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Sort {
+    /// The column to sort by. Must be one of the columns in `[ui].columns`.
     pub column: Column,
+    /// Sort direction.
     pub order: Order,
     /// Sink drafts below non-drafts when drafts are shown.
     pub drafts_last: bool,
@@ -601,7 +670,9 @@ impl Default for Sort {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Order {
+    /// Ascending: smallest or oldest first.
     Asc,
+    /// Descending: largest or newest first.
     Desc,
 }
 
@@ -617,19 +688,35 @@ impl Order {
 
 // --------------------------------------------------------------------- [notifications]
 
+/// Notifications for changes seen between refreshes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Notifications {
+    /// Master switch. A `[[filter]]` can override it with its own `notify`.
     pub enabled: bool,
+    /// How notifications are delivered: `auto` (detect from the terminal), `osc9` or `osc777`
+    /// (terminal escape sequences), `command` (run `command`) or `none`.
     pub backend: NotifyBackend,
-    /// Used when `backend = "command"`; `{title}` and `{body}` are substituted.
+    /// Shell command run when `backend = "command"`; `{title}` and `{body}` are substituted.
+    /// Required and non-empty in that case.
     pub command: String,
+    /// Also ring the terminal bell when a notification fires.
     pub bell: bool,
+    /// Notify when a merge request newly appears in a filter.
     pub on_new_mr: bool,
+    /// Notify when a merge request in a filter gets approved.
     pub on_approval: bool,
+    /// Notify when a merge request gets a new discussion.
     pub on_new_discussion: bool,
+    /// Notify when a merge request's pipeline status changes. Off by default: this fires far
+    /// more often than the three triggers above and would train you to ignore notifications.
     pub on_pipeline_change: bool,
+    /// Notify when a merge request is merged or closed. Needs a filter whose `state` is `all`,
+    /// `merged` or `closed`: one at the default `opened` never sees the transition, so `mrq`
+    /// rejects the combination at startup. Off by default for the same reason as
+    /// `on_pipeline_change`.
     pub on_merged_or_closed: bool,
+    /// Only notify while the terminal is unfocused. Needs a terminal that reports focus events.
     pub only_when_unfocused: bool,
 }
 
@@ -655,70 +742,102 @@ impl Default for Notifications {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum NotifyBackend {
+    /// Detect the best escape sequence for the terminal.
     Auto,
+    /// The OSC 9 escape sequence: one field, so the title is folded into the body.
     Osc9,
+    /// The OSC 777 escape sequence: separate title and body fields.
     Osc777,
+    /// Run `[notifications].command`.
     Command,
+    /// Never notify.
     None,
 }
 
 // --------------------------------------------------------------------------- [browser]
 
+/// How links are opened.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Browser {
-    /// Empty means `open` on macOS and `xdg-open` on Linux.
+    /// Command used to open a URL, which is passed as its argument. Empty means `open` on macOS
+    /// and `xdg-open` on Linux.
     pub command: String,
 }
 
 // -------------------------------------------------------------------------- [[filter]]
 
+/// One merge request list, shown as a tab.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Filter {
+    /// The tab label. Must be unique and non-empty; also names the filter's cache file.
     pub name: String,
+    /// Which merge requests to list: `assigned` to you, `review_requested` from you, `authored`
+    /// by you, everything under a `group` or in one `project` (both need `path`), or the whole
+    /// `instance`. Only `group`, `project` and `instance` accept the narrowing arguments below.
     pub scope: Scope,
+    /// Which merge request state to list: `opened`, `merged`, `closed` or `all`.
     pub state: StateFilter,
     /// Per-filter override of `[ui].show_drafts`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub show_drafts: Option<bool>,
-    /// Per-filter override of `[ui].columns`, with the same `:wide` wide-only suffix.
+    /// Per-filter override of `[ui].columns`, with the same `:wide` wide-only suffix. Unlike
+    /// `[ui].columns`, it may omit `sort.column`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub columns: Option<Vec<ColumnSpec>>,
     /// Per-filter override of `[notifications].enabled`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notify: Option<bool>,
 
-    /// Required for `group` and `project` scopes.
+    /// GitLab full path like `acme/platform`, without leading or trailing slashes. Required for
+    /// `group` and `project` scopes, and not accepted for any other.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    /// `group` scope only. `None` means "not set", which is what lets `validate` reject
-    /// it on a scope where it has no meaning instead of silently ignoring it.
+    /// Include merge requests from subgroups. `group` scope only; defaults to `true` there.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub include_subgroups: Option<bool>,
 
     // The arguments below are only accepted by the group, project and instance query
     // roots; the `currentUser.*` connections do not take them. `validate` rejects the
     // combination rather than silently dropping the filter.
+    /// Only merge requests carrying all of these labels (AND-ed), e.g. `["team::platform"]`.
+    /// Not accepted on `assigned`, `review_requested` or `authored`.
     pub labels: Vec<String>,
+    /// Exclude merge requests carrying any of these labels. Not accepted on `assigned`,
+    /// `review_requested` or `authored`.
     pub not_labels: Vec<String>,
+    /// Only merge requests opened by this username. Not accepted on `assigned`,
+    /// `review_requested` or `authored`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
+    /// Only merge requests assigned to this username. Not accepted on `assigned`,
+    /// `review_requested` or `authored`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
+    /// Only merge requests with this username as a reviewer. Mutually exclusive with
+    /// `has_reviewer`. Not accepted on `assigned`, `review_requested` or `authored`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reviewer: Option<String>,
     /// `true` for any reviewer, `false` for none; mutually exclusive with `reviewer`,
     /// since GitLab's `reviewerWildcardId` and `reviewerUsername` cannot both be set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub has_reviewer: Option<bool>,
+    /// Only merge requests in the milestone with this title, e.g. `24.Q3`. Not accepted on
+    /// `assigned`, `review_requested` or `authored`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub milestone: Option<String>,
+    /// Only merge requests targeting this branch. Not accepted on `assigned`,
+    /// `review_requested` or `authored`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_branch: Option<String>,
+    /// Only merge requests updated within the last this many days. Bounds the result set for
+    /// large groups and instances. Not accepted on `assigned`, `review_requested` or `authored`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_after_days: Option<u32>,
 
+    /// Maximum number of merge requests fetched for this filter. Clamped to `1..=500`, with a
+    /// warning.
     pub max_results: usize,
 }
 
@@ -822,10 +941,15 @@ impl Filter {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
+    /// Merge requests assigned to you.
     Assigned,
+    /// Merge requests where you are a reviewer.
     ReviewRequested,
+    /// Merge requests you opened.
     Authored,
+    /// Everything under a group and, by default, its subgroups. Requires `path`.
     Group,
+    /// One project. Requires `path`.
     Project,
     /// The unscoped `Query.mergeRequests` root: every merge request the token can see,
     /// instance-wide. Takes the same root-only arguments as `group`/`project`, since
@@ -863,9 +987,13 @@ impl Scope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StateFilter {
+    /// Open merge requests.
     Opened,
+    /// Merged merge requests.
     Merged,
+    /// Closed merge requests.
     Closed,
+    /// Merge requests in any state.
     All,
 }
 

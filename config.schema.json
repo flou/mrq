@@ -1,17 +1,18 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Config",
-  "description": "A parsed configuration file, before semantic validation.",
+  "description": "The `mrq` configuration file. Every key is optional: an absent key takes its built-in\ndefault, so an empty file is valid. Unknown keys are rejected rather than ignored.",
   "type": "object",
   "properties": {
     "browser": {
+      "description": "The command used to open merge requests, pipelines and projects.",
       "$ref": "#/$defs/Browser",
       "default": {
         "command": ""
       }
     },
     "filter": {
-      "description": "`[[filter]]` array-of-tables. Order defines tab order and the 1..9 shortcuts.",
+      "description": "The merge request lists, one `[[filter]]` array-of-tables entry per tab. Order defines tab\norder and the `1`..`9` shortcuts. At least one is required, and names must be unique.",
       "type": "array",
       "default": [
         {
@@ -29,6 +30,7 @@
       "minItems": 1
     },
     "gitlab": {
+      "description": "Connection to GitLab: instance URL, credentials and request limits.",
       "$ref": "#/$defs/Gitlab",
       "default": {
         "max_concurrent_requests": 4,
@@ -37,7 +39,7 @@
       }
     },
     "keys": {
-      "description": "Raw `[keys]` table: action name to key specs. Left unparsed here because the\ngrammar, the merge over defaults and duplicate detection are all one concern,\nhandled in `keymap`.",
+      "description": "Key bindings: action name to a list of key specs, e.g. `quit = [\"q\", \"ctrl-c\"]`. Merges\nover the defaults, so naming one action leaves the rest alone; `[]` unbinds it. A key claimed\nby two actions is a startup error.\n\nA key spec is `[modifier-]*key`. Modifiers are `ctrl`, `alt`, `shift` and `super`\n(case-insensitive). A key is a single printable character or one of `enter`, `esc`, `tab`,\n`backspace`, `space`, `up`, `down`, `left`, `right`, `home`, `end`, `pagedown`, `pageup`,\n`insert`, `delete`, `f1`..`f12`.",
       "type": "object",
       "additionalProperties": {
         "type": "array",
@@ -84,6 +86,7 @@
       }
     },
     "notifications": {
+      "description": "Notifications for changes seen on refresh.",
       "$ref": "#/$defs/Notifications",
       "default": {
         "backend": "auto",
@@ -99,6 +102,7 @@
       }
     },
     "refresh": {
+      "description": "How often the merge request lists are refetched in the background.",
       "$ref": "#/$defs/Refresh",
       "default": {
         "interval_secs": 300,
@@ -108,6 +112,7 @@
       }
     },
     "skin": {
+      "description": "The colour palette, plus optional per-swatch overrides.",
       "$ref": "#/$defs/Skin",
       "default": {
         "colors": {},
@@ -115,6 +120,7 @@
       }
     },
     "sort": {
+      "description": "The initial sort of every list. Can be changed at runtime from the sort menu.",
       "$ref": "#/$defs/Sort",
       "default": {
         "column": "updated",
@@ -123,6 +129,7 @@
       }
     },
     "ui": {
+      "description": "Display options: glyphs, columns, drafts, wide mode, mouse and hyperlinks.",
       "$ref": "#/$defs/Ui",
       "default": {
         "approver_display": "username",
@@ -155,10 +162,11 @@
   "additionalProperties": false,
   "$defs": {
     "Browser": {
+      "description": "How links are opened.",
       "type": "object",
       "properties": {
         "command": {
-          "description": "Empty means `open` on macOS and `xdg-open` on Linux.",
+          "description": "Command used to open a URL, which is passed as its argument. Empty means `open` on macOS\nand `xdg-open` on Linux.",
           "type": "string",
           "default": ""
         }
@@ -167,21 +175,72 @@
     },
     "Column": {
       "description": "A table column. The variant order is not the display order — that comes from\n`[ui].columns` — but it is the order used for the shipped default.",
-      "type": "string",
-      "enum": [
-        "approved",
-        "author",
-        "repo",
-        "id",
-        "title",
-        "pipeline",
-        "assigned",
-        "approver",
-        "reviewer",
-        "age",
-        "updated",
-        "diff",
-        "branch"
+      "oneOf": [
+        {
+          "description": "Approval checkmark; no header.",
+          "type": "string",
+          "const": "approved"
+        },
+        {
+          "description": "The merge request author.",
+          "type": "string",
+          "const": "author"
+        },
+        {
+          "description": "The project the merge request belongs to.",
+          "type": "string",
+          "const": "repo"
+        },
+        {
+          "description": "The merge request IID.",
+          "type": "string",
+          "const": "id"
+        },
+        {
+          "description": "The merge request title.",
+          "type": "string",
+          "const": "title"
+        },
+        {
+          "description": "Status of the latest pipeline.",
+          "type": "string",
+          "const": "pipeline"
+        },
+        {
+          "description": "Assignees, shown per `[ui].assigned_display`.",
+          "type": "string",
+          "const": "assigned"
+        },
+        {
+          "description": "Approvers, shown per `[ui].approver_display`.",
+          "type": "string",
+          "const": "approver"
+        },
+        {
+          "description": "Reviewers, shown per `[ui].reviewer_display`.",
+          "type": "string",
+          "const": "reviewer"
+        },
+        {
+          "description": "Time since the merge request was opened.",
+          "type": "string",
+          "const": "age"
+        },
+        {
+          "description": "Time since the merge request last changed.",
+          "type": "string",
+          "const": "updated"
+        },
+        {
+          "description": "Size of the change.",
+          "type": "string",
+          "const": "diff"
+        },
+        {
+          "description": "The source branch. Not in the default column list.",
+          "type": "string",
+          "const": "branch"
+        }
       ]
     },
     "ColumnSpec": {
@@ -190,16 +249,19 @@
       "pattern": "^((approved|author|repo|title|pipeline)|(id|assigned|approver|reviewer|age|updated|diff|branch)(:wide)?)$"
     },
     "Filter": {
+      "description": "One merge request list, shown as a tab.",
       "type": "object",
       "properties": {
         "assignee": {
+          "description": "Only merge requests assigned to this username. Not accepted on `assigned`,\n`review_requested` or `authored`.",
           "type": "string"
         },
         "author": {
+          "description": "Only merge requests opened by this username. Not accepted on `assigned`,\n`review_requested` or `authored`.",
           "type": "string"
         },
         "columns": {
-          "description": "Per-filter override of `[ui].columns`, with the same `:wide` wide-only suffix.",
+          "description": "Per-filter override of `[ui].columns`, with the same `:wide` wide-only suffix. Unlike\n`[ui].columns`, it may omit `sort.column`.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/ColumnSpec"
@@ -211,10 +273,11 @@
           "type": "boolean"
         },
         "include_subgroups": {
-          "description": "`group` scope only. `None` means \"not set\", which is what lets `validate` reject\nit on a scope where it has no meaning instead of silently ignoring it.",
+          "description": "Include merge requests from subgroups. `group` scope only; defaults to `true` there.",
           "type": "boolean"
         },
         "labels": {
+          "description": "Only merge requests carrying all of these labels (AND-ed), e.g. `[\"team::platform\"]`.\nNot accepted on `assigned`, `review_requested` or `authored`.",
           "type": "array",
           "default": [],
           "items": {
@@ -222,20 +285,24 @@
           }
         },
         "max_results": {
+          "description": "Maximum number of merge requests fetched for this filter. Clamped to `1..=500`, with a\nwarning.",
           "type": "integer",
           "format": "uint",
           "default": 100,
           "minimum": 0
         },
         "milestone": {
+          "description": "Only merge requests in the milestone with this title, e.g. `24.Q3`. Not accepted on\n`assigned`, `review_requested` or `authored`.",
           "type": "string"
         },
         "name": {
+          "description": "The tab label. Must be unique and non-empty; also names the filter's cache file.",
           "type": "string",
           "default": "",
           "pattern": "\\S"
         },
         "not_labels": {
+          "description": "Exclude merge requests carrying any of these labels. Not accepted on `assigned`,\n`review_requested` or `authored`.",
           "type": "array",
           "default": [],
           "items": {
@@ -247,13 +314,15 @@
           "type": "boolean"
         },
         "path": {
-          "description": "Required for `group` and `project` scopes.",
+          "description": "GitLab full path like `acme/platform`, without leading or trailing slashes. Required for\n`group` and `project` scopes, and not accepted for any other.",
           "type": "string"
         },
         "reviewer": {
+          "description": "Only merge requests with this username as a reviewer. Mutually exclusive with\n`has_reviewer`. Not accepted on `assigned`, `review_requested` or `authored`.",
           "type": "string"
         },
         "scope": {
+          "description": "Which merge requests to list: `assigned` to you, `review_requested` from you, `authored`\nby you, everything under a `group` or in one `project` (both need `path`), or the whole\n`instance`. Only `group`, `project` and `instance` accept the narrowing arguments below.",
           "$ref": "#/$defs/Scope",
           "default": "assigned"
         },
@@ -262,13 +331,16 @@
           "type": "boolean"
         },
         "state": {
+          "description": "Which merge request state to list: `opened`, `merged`, `closed` or `all`.",
           "$ref": "#/$defs/StateFilter",
           "default": "opened"
         },
         "target_branch": {
+          "description": "Only merge requests targeting this branch. Not accepted on `assigned`,\n`review_requested` or `authored`.",
           "type": "string"
         },
         "updated_after_days": {
+          "description": "Only merge requests updated within the last this many days. Bounds the result set for\nlarge groups and instances. Not accepted on `assigned`, `review_requested` or `authored`.",
           "type": "integer",
           "format": "uint32",
           "minimum": 0
@@ -375,28 +447,33 @@
       ]
     },
     "Gitlab": {
+      "description": "GitLab connection settings.",
       "type": "object",
       "properties": {
         "max_concurrent_requests": {
+          "description": "Maximum number of GitLab requests in flight at once. Must be at least 1.",
           "type": "integer",
           "format": "uint",
           "default": 4,
           "minimum": 1
         },
         "timeout_secs": {
+          "description": "Timeout for each GitLab request, in seconds. Must be at least 1.",
           "type": "integer",
           "format": "uint64",
           "default": 20,
           "minimum": 1
         },
         "token": {
-          "description": "Discouraged; the environment or `token_command` are preferred. Kept as a\nplain `String` here and wrapped in the redacting type at resolution time.",
+          "description": "A literal personal access token with the `read_api` scope. Discouraged, since it makes\nthis file hold a credential (`mrq` warns at startup if the file is readable by anyone but\nyou). Token lookup order, first hit wins: `$MRQ_TOKEN`, `$GITLAB_TOKEN`, `token_command`,\nthen this key.",
           "type": "string"
         },
         "token_command": {
+          "description": "Shell command whose trimmed stdout is the token, e.g.\n`security find-generic-password -s gitlab-pat -w`. The preferred way to keep the token out of\nthis file. A non-zero exit is a startup error.",
           "type": "string"
         },
         "url": {
+          "description": "Base URL of the GitLab instance, including the scheme, e.g. `https://gitlab.example.com`.\nMust start with `http://` or `https://`.",
           "type": "string",
           "default": "https://gitlab.com",
           "pattern": "^https?://"
@@ -408,12 +485,19 @@
       "description": "The column(s) that carry the hyperlink to the merge request.",
       "oneOf": [
         {
+          "description": "The TITLE column.",
           "type": "string",
-          "enum": [
-            "title",
-            "id",
-            "both"
-          ]
+          "const": "title"
+        },
+        {
+          "description": "The ID column; only links while that column is on screen.",
+          "type": "string",
+          "const": "id"
+        },
+        {
+          "description": "Both the ID and TITLE columns.",
+          "type": "string",
+          "const": "both"
         },
         {
           "description": "No hyperlinks at all.",
@@ -423,46 +507,56 @@
       ]
     },
     "Notifications": {
+      "description": "Notifications for changes seen between refreshes.",
       "type": "object",
       "properties": {
         "backend": {
+          "description": "How notifications are delivered: `auto` (detect from the terminal), `osc9` or `osc777`\n(terminal escape sequences), `command` (run `command`) or `none`.",
           "$ref": "#/$defs/NotifyBackend",
           "default": "auto"
         },
         "bell": {
+          "description": "Also ring the terminal bell when a notification fires.",
           "type": "boolean",
           "default": true
         },
         "command": {
-          "description": "Used when `backend = \"command\"`; `{title}` and `{body}` are substituted.",
+          "description": "Shell command run when `backend = \"command\"`; `{title}` and `{body}` are substituted.\nRequired and non-empty in that case.",
           "type": "string",
           "default": ""
         },
         "enabled": {
+          "description": "Master switch. A `[[filter]]` can override it with its own `notify`.",
           "type": "boolean",
           "default": true
         },
         "on_approval": {
+          "description": "Notify when a merge request in a filter gets approved.",
           "type": "boolean",
           "default": true
         },
         "on_merged_or_closed": {
+          "description": "Notify when a merge request is merged or closed. Needs a filter whose `state` is `all`,\n`merged` or `closed`: one at the default `opened` never sees the transition, so `mrq`\nrejects the combination at startup. Off by default for the same reason as\n`on_pipeline_change`.",
           "type": "boolean",
           "default": false
         },
         "on_new_discussion": {
+          "description": "Notify when a merge request gets a new discussion.",
           "type": "boolean",
           "default": true
         },
         "on_new_mr": {
+          "description": "Notify when a merge request newly appears in a filter.",
           "type": "boolean",
           "default": true
         },
         "on_pipeline_change": {
+          "description": "Notify when a merge request's pipeline status changes. Off by default: this fires far\nmore often than the three triggers above and would train you to ignore notifications.",
           "type": "boolean",
           "default": false
         },
         "only_when_unfocused": {
+          "description": "Only notify while the terminal is unfocused. Needs a terminal that reports focus events.",
           "type": "boolean",
           "default": true
         }
@@ -494,27 +588,53 @@
       ]
     },
     "NotifyBackend": {
-      "type": "string",
-      "enum": [
-        "auto",
-        "osc9",
-        "osc777",
-        "command",
-        "none"
+      "oneOf": [
+        {
+          "description": "Detect the best escape sequence for the terminal.",
+          "type": "string",
+          "const": "auto"
+        },
+        {
+          "description": "The OSC 9 escape sequence: one field, so the title is folded into the body.",
+          "type": "string",
+          "const": "osc9"
+        },
+        {
+          "description": "The OSC 777 escape sequence: separate title and body fields.",
+          "type": "string",
+          "const": "osc777"
+        },
+        {
+          "description": "Run `[notifications].command`.",
+          "type": "string",
+          "const": "command"
+        },
+        {
+          "description": "Never notify.",
+          "type": "string",
+          "const": "none"
+        }
       ]
     },
     "Order": {
-      "type": "string",
-      "enum": [
-        "asc",
-        "desc"
+      "oneOf": [
+        {
+          "description": "Ascending: smallest or oldest first.",
+          "type": "string",
+          "const": "asc"
+        },
+        {
+          "description": "Descending: largest or newest first.",
+          "type": "string",
+          "const": "desc"
+        }
       ]
     },
     "PeopleDisplay": {
       "description": "How a people-naming column (`assigned`, `approver`, `reviewer`) renders who is there.",
       "oneOf": [
         {
-          "description": "Whether the current user is one of them.",
+          "description": "`Yes`/`No` against whether the current user is one of them.",
           "type": "string",
           "const": "yes_no"
         },
@@ -524,32 +644,37 @@
           "const": "username"
         },
         {
-          "description": "The first person's trigram — initials, `Charles Billow` -> `CBI` — `-` for none.",
+          "description": "The first person's trigram (initials, `Charles Billow` -> `CBI`), `-` for none.",
           "type": "string",
           "const": "trigram"
         }
       ]
     },
     "Refresh": {
+      "description": "Background refresh scheduling.",
       "type": "object",
       "properties": {
         "interval_secs": {
+          "description": "Seconds between refresh cycles. Must be at least 30: lower values are rejected at\nstartup rather than clamped, because the cost lands on a shared GitLab instance.",
           "type": "integer",
           "format": "uint64",
           "default": 300,
           "minimum": 30
         },
         "jitter_secs": {
+          "description": "Random `0..=jitter_secs` seconds added to each cycle, so many `mrq` instances do not all\npoll on the same second. Values above `interval_secs` are clamped to it with a warning.",
           "type": "integer",
           "format": "uint64",
           "default": 15,
           "minimum": 0
         },
         "pause_when_unfocused": {
+          "description": "Skip the periodic refresh while the terminal is unfocused. Needs a terminal that reports\nfocus events.",
           "type": "boolean",
           "default": false
         },
         "refresh_on_focus": {
+          "description": "Refetch the stale filters when the terminal regains focus. Needs a terminal that reports\nfocus events.",
           "type": "boolean",
           "default": true
         }
@@ -560,14 +685,29 @@
       "description": "Which GraphQL root a filter queries.",
       "oneOf": [
         {
+          "description": "Merge requests assigned to you.",
           "type": "string",
-          "enum": [
-            "assigned",
-            "review_requested",
-            "authored",
-            "group",
-            "project"
-          ]
+          "const": "assigned"
+        },
+        {
+          "description": "Merge requests where you are a reviewer.",
+          "type": "string",
+          "const": "review_requested"
+        },
+        {
+          "description": "Merge requests you opened.",
+          "type": "string",
+          "const": "authored"
+        },
+        {
+          "description": "Everything under a group and, by default, its subgroups. Requires `path`.",
+          "type": "string",
+          "const": "group"
+        },
+        {
+          "description": "One project. Requires `path`.",
+          "type": "string",
+          "const": "project"
         },
         {
           "description": "The unscoped `Query.mergeRequests` root: every merge request the token can see,\ninstance-wide. Takes the same root-only arguments as `group`/`project`, since\nGitLab gives it the same argument set, but no `path`.",
@@ -581,7 +721,7 @@
       "type": "object",
       "properties": {
         "colors": {
-          "description": "Per-swatch overrides: swatch name to `#rrggbb`, applied over the named skin.",
+          "description": "Per-swatch overrides applied over the named skin: swatch name to `#rrggbb`. The swatch\nnames are the Catppuccin ones: `rosewater`, `flamingo`, `pink`, `mauve`, `red`, `maroon`,\n`peach`, `yellow`, `green`, `teal`, `sky`, `sapphire`, `blue`, `lavender`, `text`,\n`subtext1`, `subtext0`, `overlay1`, `overlay0`, `surface2`, `surface1`, `surface0`, `base`,\n`mantle`, `crust`.",
           "type": "object",
           "additionalProperties": {
             "type": "string",
@@ -619,7 +759,7 @@
           }
         },
         "name": {
-          "description": "A built-in skin name, an alias, or `auto` for the shipped dark default.\nValidated against the built-in table at startup.",
+          "description": "A built-in skin name or alias; case-insensitive. Built-ins: `catppuccin-mocha`,\n`catppuccin-macchiato`, `catppuccin-frappe`, `dracula`, `flexoki-dark`, `gruvbox-dark`,\n`monokai`, `nord`, `one-dark`, `rose-pine`, `solarized-dark`, `tokyo-night`. Short names\nwork too (`mocha`, `gruvbox`, `solarized`), and `auto` is the shipped dark default,\n`catppuccin-mocha`. Validated at startup.",
           "type": "string",
           "default": "catppuccin-mocha"
         }
@@ -627,9 +767,11 @@
       "additionalProperties": false
     },
     "Sort": {
+      "description": "The initial sort of every list.",
       "type": "object",
       "properties": {
         "column": {
+          "description": "The column to sort by. Must be one of the columns in `[ui].columns`.",
           "$ref": "#/$defs/Column",
           "default": "updated"
         },
@@ -639,6 +781,7 @@
           "default": true
         },
         "order": {
+          "description": "Sort direction.",
           "$ref": "#/$defs/Order",
           "default": "desc"
         }
@@ -646,34 +789,50 @@
       "additionalProperties": false
     },
     "StateFilter": {
-      "type": "string",
-      "enum": [
-        "opened",
-        "merged",
-        "closed",
-        "all"
+      "oneOf": [
+        {
+          "description": "Open merge requests.",
+          "type": "string",
+          "const": "opened"
+        },
+        {
+          "description": "Merged merge requests.",
+          "type": "string",
+          "const": "merged"
+        },
+        {
+          "description": "Closed merge requests.",
+          "type": "string",
+          "const": "closed"
+        },
+        {
+          "description": "Merge requests in any state.",
+          "type": "string",
+          "const": "all"
+        }
       ]
     },
     "Ui": {
+      "description": "Display options.",
       "type": "object",
       "properties": {
         "approver_display": {
-          "description": "How the APPROVER column names people. The first approver's username, `+N` for the\nrest, `-` for none, by default.",
+          "description": "How the APPROVER column names people: `yes_no`, `username` (first approver, `+N` for the\nrest, `-` for none) or `trigram`.",
           "$ref": "#/$defs/PeopleDisplay",
           "default": "username"
         },
         "ascii": {
-          "description": "Substitutes ASCII for every glyph, for terminals without a Unicode-capable font.\nOrthogonal to the colour skin.",
+          "description": "Substitute ASCII for every glyph, for terminals without a Unicode-capable font.\nThis is the font question only; colours come from `[skin]`.",
           "type": "boolean",
           "default": false
         },
         "assigned_display": {
-          "description": "How the ASSIGNED column names people. `Yes`/`No` against whether you are an\nassignee, by default.",
+          "description": "How the ASG column names people: `yes_no` (against whether you are an assignee),\n`username` or `trigram`.",
           "$ref": "#/$defs/PeopleDisplay",
           "default": "yes_no"
         },
         "columns": {
-          "description": "The columns, in display order. A `:wide` suffix (`\"id:wide\"`) hides that column until\nwide mode (`w`) is on. `approved`, `author`, `repo`, `title` and `pipeline` can\nnever be wide-only — validated at config load. A `[[filter]]` can override the\nwhole list with its own `columns`.",
+          "description": "The columns, left to right: any subset of the column keys, each at most once, at least\none. `sort.column` must be one of them. A `:wide` suffix (`\"id:wide\"`) hides that column\nuntil wide mode (`w`) is on. `approved`, `author`, `repo`, `title` and `pipeline` identify a\nrow and can never be wide-only. A `[[filter]]` can override the whole list with its own\n`columns`.",
           "type": "array",
           "default": [
             "approved",
@@ -695,33 +854,37 @@
           "minItems": 1
         },
         "link": {
-          "description": "Which column's text is the clickable link to the merge request, in a terminal\nthat supports hyperlinks. `id` only links while the `id` column is on screen; `both` links the two, `none` turns hyperlinks off.",
+          "description": "Which column is the clickable link to the merge request, in a terminal that supports\nhyperlinks: `title`, `id`, `both`, or `none` to turn hyperlinks off. `id` only links while\nthe `id` column is on screen (it is wide-only by default).",
           "$ref": "#/$defs/LinkTarget",
           "default": "title"
         },
         "mouse": {
+          "description": "Capture the mouse. Off by default so the terminal keeps its native text selection and\ncopy. Needs a restart to change.",
           "type": "boolean",
           "default": false
         },
         "relative_times": {
+          "description": "Show the AGE and UPDATED columns as relative durations (`3h`, `5d`) instead of dates.",
           "type": "boolean",
           "default": true
         },
         "reviewer_display": {
-          "description": "How the REVIEWER column names people. The first reviewer's username, `+N` for the\nrest, `-` for none, by default.",
+          "description": "How the REVIEWER column names people: `yes_no`, `username` (first reviewer, `+N` for the\nrest, `-` for none) or `trigram`.",
           "$ref": "#/$defs/PeopleDisplay",
           "default": "username"
         },
         "set_terminal_title": {
+          "description": "Set the terminal title to the active tab and its merge request counts. Needs a restart\nto change.",
           "type": "boolean",
           "default": true
         },
         "show_drafts": {
+          "description": "Show draft merge requests. A `[[filter]]` can override it with its own `show_drafts`;\ntoggled at runtime by the `toggle_drafts` key.",
           "type": "boolean",
           "default": false
         },
         "wide": {
-          "description": "Starts with wide mode on, as if `w` had been pressed at launch.",
+          "description": "Start with wide mode on, as if `w` (the `toggle_wide` key) had been pressed at launch.",
           "type": "boolean",
           "default": false
         }
