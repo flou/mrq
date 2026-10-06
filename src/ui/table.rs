@@ -24,7 +24,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::state::Tab;
 use crate::config::schema::{Column, PeopleDisplay};
-use crate::gitlab::model::{MergeRequest, MrState};
+use crate::gitlab::model::{MergeRequest, MrState, User};
 use crate::term::hyperlink;
 use crate::ui::columns::{self, Allocation};
 use crate::ui::theme::{Role, Theme};
@@ -435,6 +435,20 @@ const fn marks_me(mr: &MergeRequest, column: Column, modes: PeopleDisplayModes) 
     }
 }
 
+/// Whether a cell names someone known not to be able to merge this merge request.
+///
+/// Only the people-naming cells that show a name count: `yes_no` mode shows no one.
+fn names_non_merger(mr: &MergeRequest, column: Column, modes: PeopleDisplayModes) -> bool {
+    match column {
+        Column::Author => mr.author.cannot_merge(),
+        Column::Assigned => {
+            !matches!(modes.assigned, PeopleDisplay::YesNo)
+                && mr.first_assignee().is_some_and(User::cannot_merge)
+        }
+        _ => false,
+    }
+}
+
 /// What the gutter shows for a row.
 const fn gutter(theme: &Theme, selected: bool, is_new: bool) -> &str {
     if selected {
@@ -524,6 +538,16 @@ fn row<'a>(
                     theme.ellipsis(),
                 );
                 Cell::from(pad(&text, width)).style(theme.emphasise(Role::Success))
+            }
+            // A name that cannot merge outranks the green "yours" mark: being unable to
+            // merge your own MR is the thing to notice.
+            other if names_non_merger(mr, *other, modes) && !dimmed => {
+                let text = truncate(
+                    &cell_text(mr, *other, theme, now, modes),
+                    width,
+                    theme.ellipsis(),
+                );
+                Cell::from(pad(&text, width)).style(theme.style(Role::Warning))
             }
             // Green, not bold: bold is APRV's signal, and this only marks the row as
             // yours. ASG carries the same fact `Yes`/`No` did before the trigram existed;
@@ -1667,6 +1691,7 @@ mod tests {
         m.assignees = vec![User {
             username: "cbillow".to_owned(),
             name: Some("Charles Billow".to_owned()),
+            can_merge: None,
         }];
         m.recompute_derived("nobody");
 
@@ -1740,6 +1765,30 @@ mod tests {
 
         assert_eq!(cell_role(&m, Column::Title, false), Role::Warning);
         assert_eq!(cell_role(&m, Column::Author, false), Role::Normal);
+    }
+
+    /// A name that cannot merge is flagged, and the flag beats the green "yours" mark.
+    #[test]
+    fn a_non_merging_author_or_assignee_is_flagged() {
+        let mut m = mr("a", "someone");
+        let names = all(PeopleDisplay::Username);
+        assert!(!names_non_merger(&m, Column::Author, names), "unknown");
+
+        m.author.can_merge = Some(true);
+        assert!(!names_non_merger(&m, Column::Author, names));
+
+        m.author.can_merge = Some(false);
+        m.assignees = vec![User {
+            can_merge: Some(false),
+            ..User::new("me")
+        }];
+        assert!(names_non_merger(&m, Column::Author, names));
+        assert!(names_non_merger(&m, Column::Assigned, names));
+        assert!(
+            !names_non_merger(&m, Column::Assigned, all(PeopleDisplay::YesNo)),
+            "yes/no names no one"
+        );
+        assert!(!names_non_merger(&m, Column::Title, names));
     }
 
     /// Colouring a draft's pipeline green invites reading it as ready.

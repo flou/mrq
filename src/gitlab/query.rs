@@ -108,7 +108,7 @@ impl Fragment {
         let mut lost: Vec<&str> = Vec::new();
         if self.minimal {
             // `assignees` survives the reduction, so it is deliberately not listed.
-            lost.extend(["reviewers", "labels", "approvers"]);
+            lost.extend(["reviewers", "labels", "approvers", "merge permissions"]);
         }
         for field in &self.excluded {
             let name = field.as_str();
@@ -149,6 +149,17 @@ pub struct Document {
 fn mr_fields(fragment: &Fragment) -> String {
     // (field name, rendered selection, is a nested connection). The name is what an
     // `undefinedField` error reports, so exclusion matches on it directly.
+    // Whether each user may merge is a per-user permission check, so it goes with the
+    // nested connections: dropped on the minimal rung, and on an `undefinedField` for
+    // either name on older instances.
+    let can_merge = if fragment.is_minimal()
+        || fragment.excludes("mergeRequestInteraction")
+        || fragment.excludes("canMerge")
+    {
+        ""
+    } else {
+        " mergeRequestInteraction { canMerge }"
+    };
     let selections: Vec<(&str, String, bool)> = vec![
         ("id", "id".into(), false),
         ("iid", "iid".into(), false),
@@ -163,7 +174,11 @@ fn mr_fields(fragment: &Fragment) -> String {
         ("targetBranch", "targetBranch".into(), false),
         ("conflicts", "conflicts".into(), false),
         ("mergeStatusEnum", "mergeStatusEnum".into(), false),
-        ("author", "author { username name }".into(), false),
+        (
+            "author",
+            format!("author {{ username name{can_merge} }}"),
+            false,
+        ),
         ("project", "project { fullPath }".into(), false),
         (
             "diffStatsSummary",
@@ -198,7 +213,9 @@ fn mr_fields(fragment: &Fragment) -> String {
         // trigram rendering (`ui::table::trigram`).
         (
             "assignees",
-            format!("assignees(first: {ASSIGNEES_CAP}) {{ nodes {{ username name }} }}"),
+            format!(
+                "assignees(first: {ASSIGNEES_CAP}) {{ nodes {{ username name{can_merge} }} }}"
+            ),
             false,
         ),
         (
@@ -795,6 +812,25 @@ mod tests {
                 rendered.contains("assignees(first:") && rendered.contains("username name"),
                 "{rendered}"
             );
+        }
+    }
+
+    #[test]
+    fn merge_permission_is_requested_only_on_the_full_selection() {
+        let full = mr_fields(&Fragment::full());
+        assert_eq!(
+            full.matches("mergeRequestInteraction { canMerge }").count(),
+            2
+        );
+
+        for fragment in [
+            Fragment::minimal(),
+            Fragment::full().excluding(["mergeRequestInteraction"]),
+            Fragment::full().excluding(["canMerge"]),
+        ] {
+            let rendered = mr_fields(&fragment);
+            assert!(!rendered.contains("canMerge"), "{rendered}");
+            assert!(rendered.contains("author { username name }"), "{rendered}");
         }
     }
 

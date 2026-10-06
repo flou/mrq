@@ -19,6 +19,11 @@ pub struct User {
     pub username: String,
     /// Display name. Absent on some instances for service accounts.
     pub name: Option<String>,
+    /// Whether this user may merge this particular merge request, per GitLab's
+    /// `mergeRequestInteraction.canMerge`. `None` when unknown: the field was not
+    /// requested (minimal or degraded query), or the cache predates it.
+    #[serde(default)]
+    pub can_merge: Option<bool>,
 }
 
 impl User {
@@ -26,7 +31,13 @@ impl User {
         Self {
             username: username.into(),
             name: None,
+            can_merge: None,
         }
+    }
+
+    /// Known not to be able to merge. Unknown is deliberately not a problem.
+    pub const fn cannot_merge(&self) -> bool {
+        matches!(self.can_merge, Some(false))
     }
 }
 

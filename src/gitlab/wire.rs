@@ -55,10 +55,20 @@ pub struct MergeRequestConnection {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WireUser {
     pub username: String,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
+    pub merge_request_interaction: Option<WireInteraction>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireInteraction {
+    #[serde(default)]
+    pub can_merge: Option<bool>,
 }
 
 impl From<WireUser> for User {
@@ -66,6 +76,7 @@ impl From<WireUser> for User {
         Self {
             username: u.username,
             name: u.name,
+            can_merge: u.merge_request_interaction.and_then(|i| i.can_merge),
         }
     }
 }
@@ -749,6 +760,25 @@ mod tests {
 
         assert_eq!(mr.created_at, jiff::Timestamp::UNIX_EPOCH);
         assert_eq!(anomalies.unparsable_timestamps, ["not a date"]);
+    }
+
+    #[test]
+    fn can_merge_decodes_when_present_and_is_unknown_when_absent() {
+        let mut value =
+            fixture()["data"]["currentUser"]["assignedMergeRequests"]["nodes"][0].clone();
+        value["author"]["mergeRequestInteraction"] = serde_json::json!({"canMerge": false});
+        let wire: WireMergeRequest = serde_json::from_value(value.clone()).unwrap();
+        let mr = wire.into_model(INSTANCE, ME, &mut Anomalies::default());
+        assert_eq!(mr.author.can_merge, Some(false));
+        assert!(mr.author.cannot_merge());
+
+        value["author"]
+            .as_object_mut()
+            .unwrap()
+            .remove("mergeRequestInteraction");
+        let wire: WireMergeRequest = serde_json::from_value(value).unwrap();
+        let mr = wire.into_model(INSTANCE, ME, &mut Anomalies::default());
+        assert_eq!(mr.author.can_merge, None);
     }
 
     #[test]
