@@ -348,6 +348,11 @@ impl MergeRequest {
         u64::from(self.additions) + u64::from(self.deletions)
     }
 
+    /// Merged or closed: nothing left to act on. `Locked` is still in flight.
+    pub const fn is_finished(&self) -> bool {
+        matches!(self.state, MrState::Merged | MrState::Closed)
+    }
+
     /// Whether the title should be rendered as a problem.
     pub const fn is_blocked(&self) -> bool {
         self.conflicts || self.merge_status.is_blocked()

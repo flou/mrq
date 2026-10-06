@@ -396,7 +396,7 @@ const fn discussion_prefix(mr: &MergeRequest, theme: &Theme) -> &'static str {
 /// Drafts always are. Merged and closed MRs are too, but only next to opened ones
 /// (`mixed`): in a list of nothing but finished MRs, dimming them all says nothing.
 const fn is_dimmed(mr: &MergeRequest, mixed: bool) -> bool {
-    mr.draft || (mixed && matches!(mr.state, MrState::Merged | MrState::Closed))
+    mr.draft || (mixed && mr.is_finished())
 }
 
 /// Which role a cell's text takes.

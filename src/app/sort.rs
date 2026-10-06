@@ -20,8 +20,15 @@ use crate::gitlab::model::MergeRequest;
 ///
 /// `drafts_last` sinks drafts below everything else regardless of the active sort, which
 /// is what keeps a long tail of drafts from burying the merge requests that need action.
+///
+/// Merged and closed merge requests always form a block below everything else, drafts
+/// included, whatever the active sort.
 pub fn sort(rows: &mut [&MergeRequest], column: Column, order: Order, drafts_last: bool) {
     rows.sort_by(|a, b| {
+        match a.is_finished().cmp(&b.is_finished()) {
+            Ordering::Equal => {}
+            other => return other,
+        }
         if drafts_last {
             // Compared before the column so it partitions the list rather than merely
             // influencing it.
@@ -121,7 +128,7 @@ const fn pipeline_severity(mr: &MergeRequest) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gitlab::model::{Pipeline, PipelineStatus, User, fixtures::mr};
+    use crate::gitlab::model::{MrState, Pipeline, PipelineStatus, User, fixtures::mr};
     use jiff::Timestamp;
 
     fn at(iso: &str) -> Timestamp {
@@ -404,6 +411,55 @@ mod tests {
                 assert!(rows[2].draft);
             }
         }
+    }
+
+    /// Merged and closed form the bottom block under every column and direction.
+    #[test]
+    fn finished_mrs_sink_below_opened_ones() {
+        for column in Column::DEFAULT {
+            for order in [Order::Asc, Order::Desc] {
+                for drafts_last in [true, false] {
+                    let mut mrs = Vec::new();
+                    for (id, state, draft) in [
+                        ("m", MrState::Merged, false),
+                        ("o1", MrState::Opened, false),
+                        ("c", MrState::Closed, false),
+                        ("l", MrState::Locked, false),
+                        ("o2", MrState::Opened, true),
+                        ("md", MrState::Merged, true),
+                    ] {
+                        let mut m = row(id, "someone");
+                        m.state = state;
+                        m.draft = draft;
+                        mrs.push(m);
+                    }
+
+                    let mut rows = refs(&mrs);
+                    sort(&mut rows, column, order, drafts_last);
+                    let finished = rows.iter().filter(|m| m.is_finished()).count();
+                    assert_eq!(finished, 3);
+                    assert!(
+                        rows[3..].iter().all(|m| m.is_finished()),
+                        "{column:?}/{order:?}/{drafts_last}: {:?}",
+                        ids(&rows)
+                    );
+                }
+            }
+        }
+    }
+
+    /// Drafts still sink within the opened block, ahead of finished non-drafts.
+    #[test]
+    fn drafts_stay_above_finished_mrs() {
+        let mut draft = row("draft", "someone");
+        draft.draft = true;
+        let mut merged = row("merged", "someone");
+        merged.state = MrState::Merged;
+
+        let mrs = vec![merged, draft];
+        let mut rows = refs(&mrs);
+        sort(&mut rows, Column::Title, Order::Asc, true);
+        assert_eq!(ids(&rows), ["draft", "merged"]);
     }
 
     #[test]
