@@ -22,7 +22,8 @@ use crate::ui::skins;
 pub enum Role {
     /// Ordinary table text.
     Normal,
-    /// De-emphasised: drafts, skipped pipelines, absent values.
+    /// De-emphasised: drafts, merged and closed MRs next to opened ones, skipped pipelines,
+    /// absent values.
     Dim,
     /// Tab names, panel titles and popup headings.
     Header,

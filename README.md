@@ -101,6 +101,8 @@ filter for `group`, `project` or `instance`. Each scope is a separate query, and
 | `target_branch`      | `group`, `project`, `instance`    |                                                                          |
 | `updated_after_days` | `group`, `project`, `instance`    | bounds the result set, useful for large groups/instances               |
 
+With `state = "all"`, merged and closed MRs are dimmed while the list also holds opened ones.
+
 `mrq check` validates a config file against these rules without starting the TUI.
 
 ## Usage

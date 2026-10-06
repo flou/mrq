@@ -24,7 +24,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::state::Tab;
 use crate::config::schema::{Column, PeopleDisplay};
-use crate::gitlab::model::MergeRequest;
+use crate::gitlab::model::{MergeRequest, MrState};
 use crate::term::hyperlink;
 use crate::ui::columns::{self, Allocation};
 use crate::ui::theme::{Role, Theme};
@@ -391,11 +391,19 @@ const fn discussion_prefix(mr: &MergeRequest, theme: &Theme) -> &'static str {
     }
 }
 
+/// Whether a row is dimmed wholesale.
+///
+/// Drafts always are. Merged and closed MRs are too, but only next to opened ones
+/// (`mixed`): in a list of nothing but finished MRs, dimming them all says nothing.
+const fn is_dimmed(mr: &MergeRequest, mixed: bool) -> bool {
+    mr.draft || (mixed && matches!(mr.state, MrState::Merged | MrState::Closed))
+}
+
 /// Which role a cell's text takes.
-const fn cell_role(mr: &MergeRequest, column: Column) -> Role {
-    if mr.draft {
-        // Drafts are dimmed wholesale: they are present for completeness, not for
-        // action, and colouring their pipeline green invites reading them as ready.
+const fn cell_role(mr: &MergeRequest, column: Column, dimmed: bool) -> Role {
+    if dimmed {
+        // Dimmed rows are present for completeness, not for action, and colouring
+        // their pipeline green invites reading them as ready.
         return Role::Dim;
     }
     match column {
@@ -457,12 +465,14 @@ fn header<'a>(allocation: &Allocation, theme: &Theme) -> Row<'a> {
 }
 
 /// Build one data row.
+#[allow(clippy::too_many_arguments)]
 fn row<'a>(
     mr: &MergeRequest,
     allocation: &Allocation,
     theme: &Theme,
     selected: bool,
     is_new: bool,
+    dimmed: bool,
     now: jiff::Timestamp,
     modes: PeopleDisplayModes,
 ) -> Row<'a> {
@@ -488,11 +498,11 @@ fn row<'a>(
             // The pipeline cell is a glyph with its own role, independent of the row's.
             Column::Pipeline => {
                 let (glyph, role) = theme.pipeline(mr.pipeline.as_ref().map(|p| &p.status));
-                let role = if mr.draft { Role::Dim } else { role };
+                let role = if dimmed { Role::Dim } else { role };
                 Cell::from(pad(glyph, width)).style(theme.style(role))
             }
             // Additions and deletions are coloured separately, so the cell is two spans.
-            Column::Diff if !mr.draft => diff_spans(mr, width, theme),
+            Column::Diff if !dimmed => diff_spans(mr, width, theme),
             // The block covers the checkmark: an unseen MR is not one to skim past.
             Column::Approved if fresh => {
                 Cell::from(theme.new_block().repeat(width)).style(theme.style(Role::Fresh))
@@ -507,7 +517,7 @@ fn row<'a>(
             }
             // Bold on top of `Role::Success`'s green, so an approved MR stands out at a
             // glance rather than blending into the rest of the row.
-            Column::Approved if mr.approved && !mr.draft => {
+            Column::Approved if mr.approved && !dimmed => {
                 let text = truncate(
                     &cell_text(mr, *column, theme, now, modes),
                     width,
@@ -518,7 +528,7 @@ fn row<'a>(
             // Green, not bold: bold is APRV's signal, and this only marks the row as
             // yours. ASG carries the same fact `Yes`/`No` did before the trigram existed;
             // APPROVER and REVIEWER extend it to a name the ASG column never had.
-            other if marks_me(mr, *other, modes) && !mr.draft => {
+            other if marks_me(mr, *other, modes) && !dimmed => {
                 let text = truncate(
                     &cell_text(mr, *other, theme, now, modes),
                     width,
@@ -532,7 +542,7 @@ fn row<'a>(
                     width,
                     theme.ellipsis(),
                 );
-                Cell::from(pad(&text, width)).style(theme.style(cell_role(mr, *other)))
+                Cell::from(pad(&text, width)).style(theme.style(cell_role(mr, *other, dimmed)))
             }
         };
         cells.push(cell);
@@ -541,7 +551,7 @@ fn row<'a>(
     let mut row = Row::new(cells);
     if selected {
         row = row.style(theme.style(Role::Selection));
-    } else if mr.draft {
+    } else if dimmed {
         row = row.style(theme.style(Role::Dim));
     }
     row
@@ -579,6 +589,8 @@ pub fn build<'a>(
     modes: PeopleDisplayModes,
 ) -> Table<'a> {
     let selected = tab.selected_id();
+    // Over every fetched row, not the visible ones: a search must not toggle dimming.
+    let mixed = tab.all().iter().any(|mr| mr.state == MrState::Opened);
 
     let body: Vec<Row> = rows
         .iter()
@@ -590,6 +602,7 @@ pub fn build<'a>(
                 theme,
                 selected == Some(mr.id.as_str()),
                 tab.is_new(&mr.id),
+                is_dimmed(mr, mixed),
                 now,
                 modes,
             )
@@ -1542,7 +1555,10 @@ mod tests {
             ),
             "[Draft] Migration guide"
         );
-        assert_eq!(cell_role(&m, Column::Title), Role::Dim);
+        assert_eq!(
+            cell_role(&m, Column::Title, is_dimmed(&m, false)),
+            Role::Dim
+        );
     }
 
     #[test]
@@ -1722,8 +1738,8 @@ mod tests {
         let mut m = mr("a", "someone");
         m.conflicts = true;
 
-        assert_eq!(cell_role(&m, Column::Title), Role::Warning);
-        assert_eq!(cell_role(&m, Column::Author), Role::Normal);
+        assert_eq!(cell_role(&m, Column::Title, false), Role::Warning);
+        assert_eq!(cell_role(&m, Column::Author, false), Role::Normal);
     }
 
     /// Colouring a draft's pipeline green invites reading it as ready.
@@ -1734,11 +1750,37 @@ mod tests {
         m.conflicts = true;
 
         assert_eq!(
-            cell_role(&m, Column::Title),
+            cell_role(&m, Column::Title, is_dimmed(&m, false)),
             Role::Dim,
             "dim wins over warning"
         );
-        assert_eq!(cell_role(&m, Column::Author), Role::Dim);
+        assert_eq!(
+            cell_role(&m, Column::Author, is_dimmed(&m, false)),
+            Role::Dim
+        );
+    }
+
+    /// Finished MRs recede next to opened ones, but not in a list of only finished ones.
+    #[test]
+    fn merged_and_closed_are_dimmed_only_next_to_opened_ones() {
+        let mut merged = mr("a", "someone");
+        merged.state = MrState::Merged;
+        let mut closed = mr("b", "someone");
+        closed.state = MrState::Closed;
+        let mut locked = mr("c", "someone");
+        locked.state = MrState::Locked;
+        let mut opened = mr("d", "someone");
+        opened.state = MrState::Opened;
+
+        assert!(is_dimmed(&merged, true));
+        assert!(is_dimmed(&closed, true));
+        assert!(!is_dimmed(&opened, true));
+        assert!(!is_dimmed(&locked, true), "locked is not finished");
+        assert!(
+            !is_dimmed(&merged, false),
+            "nothing opened to contrast with"
+        );
+        assert!(!is_dimmed(&closed, false));
     }
 
     /// Reverse video plus a marker, so selection survives a terminal with
