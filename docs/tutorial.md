@@ -2,9 +2,18 @@
 
 In this tutorial you install mrq, connect it to GitLab, and open a merge request from your terminal. It takes about five minutes.
 
-You need a GitLab account, a Rust toolchain, and a terminal with a Unicode font.
+You need a GitLab account, [mise](https://mise.jdx.dev) or a Rust toolchain, and a terminal with a Unicode font.
 
 ## 1. Install mrq
+
+With [mise](https://mise.jdx.dev) (builds from the git repository using the Rust toolchain):
+
+```bash
+mise use -g rust  # if cargo isn't installed yet
+mise use -g cargo:https://github.com/flou/mrq@branch:main
+```
+
+Or build from source, from a clone of the repository:
 
 ```bash
 cargo install --path .
