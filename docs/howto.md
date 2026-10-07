@@ -145,3 +145,17 @@ For zsh, add `fpath+=~/.local/share/zsh/site-functions && autoload -Uz compinit 
 ```bash
 mrq schema > config.schema.json
 ```
+
+## Cut a release
+
+Bump `version` in `Cargo.toml`, commit, then tag and push:
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The `Release` workflow refuses a tag that does not match `Cargo.toml`. It builds macOS and
+Linux archives (x86_64 and aarch64), publishes them as a GitHub release and attaches a
+signed `packslip.sigstore.json`. Run the workflow by hand from the Actions tab to build
+the archives without publishing anything.
