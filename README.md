@@ -4,7 +4,15 @@ A keyboard-driven TUI for the GitLab merge requests you need to review.
 
 ## Installation
 
-With [mise](https://mise.jdx.dev) (builds from the git repository using the Rust toolchain):
+Prebuilt binaries for macOS and Linux (x86_64 and aarch64) are attached to each
+[GitHub release](https://github.com/flou/mrq/releases), with a signed
+[packslip](https://packslip.dev) bundle (`packslip.sigstore.json`) to verify them. With mise:
+
+```bash
+mise use -g github:flou/mrq
+```
+
+To build the latest `main` with mise instead (needs the Rust toolchain):
 
 ```bash
 mise use -g rust  # if cargo isn't installed yet
