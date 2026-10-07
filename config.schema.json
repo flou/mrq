@@ -150,6 +150,7 @@
           "diff:wide"
         ],
         "link": "title",
+        "merged_by_display": "username",
         "mouse": false,
         "relative_times": true,
         "reviewer_display": "username",
@@ -222,6 +223,11 @@
           "const": "reviewer"
         },
         {
+          "description": "Who merged the merge request, shown per `[ui].merged_by_display`. Not in the default\ncolumn list, and hidden unless a merged merge request is on screen.",
+          "type": "string",
+          "const": "merged_by"
+        },
+        {
           "description": "Time since the merge request was opened.",
           "type": "string",
           "const": "age"
@@ -246,7 +252,7 @@
     "ColumnSpec": {
       "description": "A column key, optionally suffixed `:wide` to show it only in wide mode.",
       "type": "string",
-      "pattern": "^((approved|author|repo|title|pipeline)|(id|assigned|approver|reviewer|age|updated|diff|branch)(:wide)?)$"
+      "pattern": "^((approved|author|repo|title|pipeline)|(id|assigned|approver|reviewer|merged_by|age|updated|diff|branch)(:wide)?)$"
     },
     "Filter": {
       "description": "One merge request list, shown as a tab.",
@@ -702,7 +708,7 @@
       ]
     },
     "PeopleDisplay": {
-      "description": "How a people-naming column (`assigned`, `approver`, `reviewer`) renders who is there.",
+      "description": "How a people-naming column (`assigned`, `approver`, `reviewer`, `merged_by`) renders who is there.",
       "oneOf": [
         {
           "description": "`Yes`/`No` against whether the current user is one of them.",
@@ -944,6 +950,11 @@
           "description": "Which column is the clickable link to the merge request, in a terminal that supports\nhyperlinks: `title`, `id`, `both`, or `none` to turn hyperlinks off. `id` only links while\nthe `id` column is on screen (it is wide-only by default).",
           "$ref": "#/$defs/LinkTarget",
           "default": "title"
+        },
+        "merged_by_display": {
+          "description": "How the MERGED BY column names the merger: `yes_no` (against whether you merged it),\n`username` (`-` when nobody merged it) or `trigram`.",
+          "$ref": "#/$defs/PeopleDisplay",
+          "default": "username"
         },
         "mouse": {
           "description": "Capture the mouse. Off by default so the terminal keeps its native text selection and\ncopy. The details and comments popups capture it while open regardless, to select text.",

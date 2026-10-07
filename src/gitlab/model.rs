@@ -248,6 +248,11 @@ pub struct MergeRequest {
     pub draft: bool,
     pub state: MrState,
     pub author: User,
+    /// Who merged it. Only set for a merged merge request: GitLab's `mergeUser` also names
+    /// whoever enabled auto-merge on an open one. Missing from caches written before this
+    /// field existed.
+    #[serde(default)]
+    pub merged_by: Option<User>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub source_branch: String,
@@ -288,6 +293,8 @@ pub struct MergeRequest {
     #[serde(default)]
     pub(super) authored_by_me: bool,
     #[serde(default)]
+    pub(super) merged_by_me: bool,
+    #[serde(default)]
     pub(super) reviewing_me: bool,
 }
 
@@ -307,6 +314,10 @@ impl MergeRequest {
             current_user,
         );
         self.authored_by_me = eq_user(&self.author.username, current_user);
+        self.merged_by_me = self
+            .merged_by
+            .as_ref()
+            .is_some_and(|u| eq_user(&u.username, current_user));
         self.reviewing_me = contains_user(self.reviewers.iter().map(String::as_str), current_user);
     }
 
@@ -326,6 +337,7 @@ impl MergeRequest {
             self.approved_by_me,
             self.assigned_to_me,
             self.authored_by_me,
+            self.merged_by_me,
             self.reviewing_me,
         );
         self.recompute_derived(current_user);
@@ -334,6 +346,7 @@ impl MergeRequest {
                 self.approved_by_me,
                 self.assigned_to_me,
                 self.authored_by_me,
+                self.merged_by_me,
                 self.reviewing_me,
             )
     }
@@ -348,6 +361,10 @@ impl MergeRequest {
 
     pub const fn authored_by_me(&self) -> bool {
         self.authored_by_me
+    }
+
+    pub const fn merged_by_me(&self) -> bool {
+        self.merged_by_me
     }
 
     pub const fn reviewing_me(&self) -> bool {
@@ -408,6 +425,7 @@ pub(crate) mod fixtures {
             draft: false,
             state: MrState::Opened,
             author: User::new(author),
+            merged_by: None,
             created_at: "2026-09-10T09:00:00Z".parse().unwrap(),
             updated_at: "2026-09-11T08:30:00Z".parse().unwrap(),
             source_branch: "feat/dark".to_owned(),
@@ -436,6 +454,7 @@ pub(crate) mod fixtures {
             approved_by_me: false,
             assigned_to_me: false,
             authored_by_me: false,
+            merged_by_me: false,
             reviewing_me: false,
         }
     }

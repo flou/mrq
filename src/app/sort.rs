@@ -81,6 +81,12 @@ fn compare(a: &MergeRequest, b: &MergeRequest, column: Column) -> Ordering {
 
         Column::Approver => people_order(&a.approved_by, &b.approved_by),
         Column::Reviewer => people_order(&a.reviewers, &b.reviewers),
+        Column::MergedBy => match (&a.merged_by, &b.merged_by) {
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+            (Some(x), Some(y)) => case_insensitive(&x.username, &y.username),
+        },
 
         // Oldest first for AGE: an ascending age column should put the merge request
         // that has been waiting longest at the top, and that is the earliest timestamp.

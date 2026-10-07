@@ -62,6 +62,7 @@ Unknown config keys are an error.
 | `assigned_display` | `yes_no` | `yes_no`, `username` or `trigram`. |
 | `approver_display` | `username` | Same values. |
 | `reviewer_display` | `username` | Same values. |
+| `merged_by_display` | `username` | Same values, for the `merged_by` column. |
 | `link` | `title` | Hyperlinked column: `title`, `id`, `both` or `none`. |
 | `mouse` | `false` | Capture the mouse. The details and comments popups capture it while open regardless, to select text. |
 | `set_terminal_title` | `true` | Set the terminal title. |
@@ -71,7 +72,7 @@ Unknown config keys are an error.
 Default `columns`:
 `approved, author, repo, id:wide, title, pipeline, assigned, approver:wide, reviewer:wide, age, updated, diff:wide`.
 
-Available columns: `approved`, `author`, `repo`, `id`, `title`, `pipeline`, `assigned`, `approver`, `reviewer`, `age`, `updated`, `diff`, `branch`. Each may appear once. A `:wide` suffix shows it only in wide mode.
+Available columns: `approved`, `author`, `repo`, `id`, `title`, `pipeline`, `assigned`, `approver`, `reviewer`, `merged_by`, `age`, `updated`, `diff`, `branch`. Each may appear once. A `:wide` suffix shows it only in wide mode. `merged_by` is not in the default columns; once added, it only appears while a merged merge request is listed.
 
 ## `[skin]`
 

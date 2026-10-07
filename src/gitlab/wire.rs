@@ -143,6 +143,9 @@ pub struct WireMergeRequest {
     pub merge_status_enum: Option<String>,
 
     pub author: Option<WireUser>,
+    /// Who merged it, or who enabled auto-merge.
+    #[serde(default)]
+    pub merge_user: Option<WireUser>,
     pub project: Option<WireProject>,
     #[serde(default)]
     pub diff_stats_summary: Option<WireDiffStats>,
@@ -288,6 +291,13 @@ impl WireMergeRequest {
             file_count: 0,
         });
 
+        let state = parse_state(self.state.as_deref());
+        // `mergeUser` also names whoever enabled auto-merge on an open merge request.
+        let merged_by = match state {
+            MrState::Merged => self.merge_user.map(User::from),
+            _ => None,
+        };
+
         let mut mr = MergeRequest {
             id: self.id,
             iid: self.iid,
@@ -297,11 +307,12 @@ impl WireMergeRequest {
             description: self.description.unwrap_or_default(),
             web_url: self.web_url,
             draft: self.draft,
-            state: parse_state(self.state.as_deref()),
+            state,
             author: self
                 .author
                 .map(User::from)
                 .unwrap_or_else(|| User::new("unknown")),
+            merged_by,
             created_at: parse_timestamp(&self.created_at, anomalies),
             updated_at: parse_timestamp(&self.updated_at, anomalies),
             source_branch: self.source_branch,
@@ -352,6 +363,7 @@ impl WireMergeRequest {
             approved_by_me: false,
             assigned_to_me: false,
             authored_by_me: false,
+            merged_by_me: false,
             reviewing_me: false,
         };
 
@@ -779,6 +791,34 @@ mod tests {
         let wire: WireMergeRequest = serde_json::from_value(value).unwrap();
         let mr = wire.into_model(INSTANCE, ME, &mut Anomalies::default());
         assert_eq!(mr.author.can_merge, None);
+    }
+
+    /// `mergeUser` also names whoever enabled auto-merge, so only a merged row keeps it.
+    #[test]
+    fn merged_by_is_kept_only_for_a_merged_merge_request() {
+        let mut value =
+            fixture()["data"]["currentUser"]["assignedMergeRequests"]["nodes"][0].clone();
+        value["mergeUser"] = serde_json::json!({"username": "User1", "name": "Me Too"});
+
+        value["state"] = serde_json::json!("merged");
+        let wire: WireMergeRequest = serde_json::from_value(value.clone()).unwrap();
+        let mr = wire.into_model(INSTANCE, ME, &mut Anomalies::default());
+        assert_eq!(
+            mr.merged_by.as_ref().map(|u| u.username.as_str()),
+            Some("User1")
+        );
+        assert!(mr.merged_by_me(), "comparison ignores case");
+
+        value["state"] = serde_json::json!("opened");
+        let wire: WireMergeRequest = serde_json::from_value(value.clone()).unwrap();
+        let mr = wire.into_model(INSTANCE, ME, &mut Anomalies::default());
+        assert_eq!(mr.merged_by, None);
+
+        value["mergeUser"] = serde_json::Value::Null;
+        value["state"] = serde_json::json!("merged");
+        let wire: WireMergeRequest = serde_json::from_value(value).unwrap();
+        let mr = wire.into_model(INSTANCE, ME, &mut Anomalies::default());
+        assert_eq!(mr.merged_by, None);
     }
 
     #[test]

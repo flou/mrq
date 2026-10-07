@@ -43,7 +43,7 @@
 # show_drafts = false
 # relative_times = true
 
-# How the ASG / APPROVER / REVIEWER columns name people. One of:
+# How the ASG / APPROVER / REVIEWER / MERGED BY columns name people. One of:
 #
 #   yes_no    "Yes"/"No" against whether you are one of them
 #   username  the first person's username, +N for the rest, `-` for none
@@ -54,6 +54,7 @@
 # assigned_display = "yes_no"
 # approver_display = "username"
 # reviewer_display = "username"
+# merged_by_display = "username"
 
 # Which column is the clickable link to the merge request, in terminals that support
 # hyperlinks: "title", "id", "both", or "none" to turn hyperlinks off. "id" only links
@@ -66,10 +67,11 @@
 
 # set_terminal_title = true
 
-# Display order, left to right. Any subset of these keys (plus branch), each at most once;
+# Display order, left to right. Any subset of these keys (plus branch and merged_by), each at most once;
 # `sort.column` below has to be one of them. A ":wide" suffix hides that column until wide mode
 # (w) is toggled on; approved, author, repo, title and pipeline identify a row and can never
-# be wide-only. A [[filter]] can override the whole list with its own `columns`.
+# be wide-only. merged_by is not in the default list; when added, it only shows while a merged
+# merge request is on screen. A [[filter]] can override the whole list with its own `columns`.
 # columns = ["approved", "author", "repo", "id:wide", "title", "pipeline", "assigned", "approver:wide", "reviewer:wide", "age", "updated", "diff:wide"]
 
 # Start with wide mode on; w still toggles it.

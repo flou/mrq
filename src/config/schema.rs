@@ -351,6 +351,9 @@ pub struct Ui {
     /// How the REVIEWER column names people: `yes_no`, `username` (first reviewer, `+N` for the
     /// rest, `-` for none) or `trigram`.
     pub reviewer_display: PeopleDisplay,
+    /// How the MERGED BY column names the merger: `yes_no` (against whether you merged it),
+    /// `username` (`-` when nobody merged it) or `trigram`.
+    pub merged_by_display: PeopleDisplay,
     /// Which column is the clickable link to the merge request, in a terminal that supports
     /// hyperlinks: `title`, `id`, `both`, or `none` to turn hyperlinks off. `id` only links while
     /// the `id` column is on screen (it is wide-only by default).
@@ -398,12 +401,13 @@ impl Default for Ui {
             assigned_display: PeopleDisplay::YesNo,
             approver_display: PeopleDisplay::Username,
             reviewer_display: PeopleDisplay::Username,
+            merged_by_display: PeopleDisplay::Username,
             link: LinkTarget::Title,
         }
     }
 }
 
-/// How a people-naming column (`assigned`, `approver`, `reviewer`) renders who is there.
+/// How a people-naming column (`assigned`, `approver`, `reviewer`, `merged_by`) renders who is there.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
 )]
@@ -471,6 +475,9 @@ pub enum Column {
     Approver,
     /// Reviewers, shown per `[ui].reviewer_display`.
     Reviewer,
+    /// Who merged the merge request, shown per `[ui].merged_by_display`. Not in the default
+    /// column list, and hidden unless a merged merge request is on screen.
+    MergedBy,
     /// Time since the merge request was opened.
     Age,
     /// Time since the merge request last changed.
@@ -483,7 +490,7 @@ pub enum Column {
 
 impl Column {
     /// Every column, including those not in the default list.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Approved,
         Self::Author,
         Self::Repo,
@@ -493,6 +500,7 @@ impl Column {
         Self::Assigned,
         Self::Approver,
         Self::Reviewer,
+        Self::MergedBy,
         Self::Age,
         Self::Updated,
         Self::Diff,
@@ -526,6 +534,7 @@ impl Column {
             Self::Assigned => "assigned",
             Self::Approver => "approver",
             Self::Reviewer => "reviewer",
+            Self::MergedBy => "merged_by",
             Self::Age => "age",
             Self::Updated => "updated",
             Self::Diff => "diff",
@@ -548,6 +557,7 @@ impl Column {
             Self::Assigned => "ASG",
             Self::Approver => "APPROVER",
             Self::Reviewer => "REVIEWER",
+            Self::MergedBy => "MERGED BY",
             Self::Age => "AGE",
             Self::Updated => "UPDATED",
             Self::Diff => "DIFF",

@@ -79,12 +79,13 @@ pub const ID_MIN: u16 = 3;
 pub const FIT_MAX: u16 = 30;
 
 /// The order columns are dropped in when the terminal is too narrow.
-const DROP_ORDER: [Column; 6] = [
+const DROP_ORDER: [Column; 7] = [
     Column::Id,
     Column::Age,
     Column::Assigned,
     Column::Approver,
     Column::Reviewer,
+    Column::MergedBy,
     Column::Diff,
 ];
 
@@ -108,6 +109,8 @@ pub struct Fitted {
     pub approver: Option<u16>,
     /// Widest REVIEWER cell on the current rows, in any display mode.
     pub reviewer: Option<u16>,
+    /// Widest MERGED BY cell on the current rows, in any display mode.
+    pub merged_by: Option<u16>,
     /// Widest ID cell (`!iid`) on the current rows, at least [`ID_MIN`].
     pub id: Option<u16>,
 }
@@ -130,6 +133,7 @@ const fn keep_priority(column: Column) -> u8 {
         Column::Assigned => 2,
         Column::Approver => 2,
         Column::Reviewer => 2,
+        Column::MergedBy => 2,
         Column::Diff => 1,
         Column::Branch => 6,
     }
@@ -210,6 +214,17 @@ const fn rules(column: Column, fitted: Fitted) -> Rules {
         }
         Column::Reviewer => {
             let preferred = match fitted.reviewer {
+                Some(width) => width,
+                None => 14,
+            };
+            Rules {
+                preferred,
+                minimum: if preferred < 8 { preferred } else { 8 },
+                flex: false,
+            }
+        }
+        Column::MergedBy => {
+            let preferred = match fitted.merged_by {
                 Some(width) => width,
                 None => 14,
             };

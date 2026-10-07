@@ -60,6 +60,7 @@ pub fn allocate(
         assigned: assigned_fit(rows, modes.assigned),
         approver: approver_fit(rows, modes.approver),
         reviewer: reviewer_fit(rows, modes.reviewer),
+        merged_by: merged_by_fit(rows, modes.merged_by),
         id: id_fit(rows),
     };
     columns::allocate(columns, width.saturating_sub(GUTTER_WIDTH), fitted)
@@ -118,6 +119,14 @@ fn reviewer_fit(rows: &[&MergeRequest], mode: PeopleDisplay) -> Option<u16> {
     content_fit(
         rows.iter().map(|mr| reviewer_cell(mr, mode).width()),
         Column::Reviewer,
+    )
+}
+
+/// The MERGED BY column's content width; see [`approver_fit`].
+fn merged_by_fit(rows: &[&MergeRequest], mode: PeopleDisplay) -> Option<u16> {
+    content_fit(
+        rows.iter().map(|mr| merged_by_cell(mr, mode).width()),
+        Column::MergedBy,
     )
 }
 
@@ -308,7 +317,19 @@ fn reviewer_cell(mr: &MergeRequest, mode: PeopleDisplay) -> Cow<'_, str> {
     }
 }
 
-/// `username` display mode, shared by all three people-naming columns: the first
+/// The MERGED BY cell, in whichever of the three [`PeopleDisplay`] modes is configured.
+fn merged_by_cell(mr: &MergeRequest, mode: PeopleDisplay) -> Cow<'_, str> {
+    match mode {
+        PeopleDisplay::YesNo => Cow::Borrowed(if mr.merged_by_me() { "Yes" } else { "No" }),
+        PeopleDisplay::Username => people_cell(mr.merged_by.iter().map(|u| u.username.as_str())),
+        PeopleDisplay::Trigram => match &mr.merged_by {
+            Some(user) => Cow::Owned(trigram(user.name.as_deref(), &user.username)),
+            None => Cow::Borrowed(NOBODY_MARK),
+        },
+    }
+}
+
+/// `username` display mode, shared by all the people-naming columns: the first
 /// person's username, `+N` for the rest, `-` for none.
 fn people_cell<'a>(mut people: impl Iterator<Item = &'a str>) -> Cow<'a, str> {
     match people.next() {
@@ -331,6 +352,7 @@ pub struct PeopleDisplayModes {
     pub assigned: PeopleDisplay,
     pub approver: PeopleDisplay,
     pub reviewer: PeopleDisplay,
+    pub merged_by: PeopleDisplay,
 }
 
 impl Default for PeopleDisplayModes {
@@ -339,6 +361,7 @@ impl Default for PeopleDisplayModes {
             assigned: PeopleDisplay::YesNo,
             approver: PeopleDisplay::Username,
             reviewer: PeopleDisplay::Username,
+            merged_by: PeopleDisplay::Username,
         }
     }
 }
@@ -375,6 +398,7 @@ fn cell_text<'a>(
         Column::Assigned => assigned_cell(mr, modes.assigned),
         Column::Approver => approver_cell(mr, modes.approver),
         Column::Reviewer => reviewer_cell(mr, modes.reviewer),
+        Column::MergedBy => merged_by_cell(mr, modes.merged_by),
         Column::Age => Cow::Owned(relative_time(mr.created_at, now)),
         Column::Updated => Cow::Owned(relative_time(mr.updated_at, now)),
         Column::Diff => Cow::Owned(diff_cell(mr)),
@@ -422,6 +446,7 @@ const fn marks_me(mr: &MergeRequest, column: Column, modes: PeopleDisplayModes) 
         Column::Assigned => !matches!(modes.assigned, PeopleDisplay::YesNo) && mr.assigned_to_me(),
         Column::Approver => !matches!(modes.approver, PeopleDisplay::YesNo) && mr.approved_by_me(),
         Column::Reviewer => !matches!(modes.reviewer, PeopleDisplay::YesNo) && mr.reviewing_me(),
+        Column::MergedBy => !matches!(modes.merged_by, PeopleDisplay::YesNo) && mr.merged_by_me(),
         Column::Approved
         | Column::Author
         | Column::Repo
@@ -901,6 +926,7 @@ mod tests {
             assigned: mode,
             approver: mode,
             reviewer: mode,
+            merged_by: mode,
         }
     }
 
@@ -1425,6 +1451,37 @@ mod tests {
     }
 
     #[test]
+    fn merged_by_cell_names_the_merger_and_marks_the_current_user() {
+        let mut m = mr("a", "jdoe");
+        let default = PeopleDisplayModes::default();
+        assert_eq!(
+            cell_text(&m, Column::MergedBy, &theme(false), now(), default),
+            "-"
+        );
+
+        m.merged_by = Some(User::new("asmith"));
+        m.recompute_derived("me");
+        assert_eq!(
+            cell_text(&m, Column::MergedBy, &theme(false), now(), default),
+            "asmith"
+        );
+        assert!(!marks_me(&m, Column::MergedBy, default));
+
+        let yes_no = PeopleDisplayModes {
+            merged_by: PeopleDisplay::YesNo,
+            ..default
+        };
+        assert_eq!(
+            cell_text(&m, Column::MergedBy, &theme(false), now(), yes_no),
+            "No"
+        );
+
+        m.recompute_derived("asmith");
+        assert!(marks_me(&m, Column::MergedBy, default));
+        assert!(!marks_me(&m, Column::MergedBy, yes_no));
+    }
+
+    #[test]
     fn approver_and_reviewer_cells_read_from_their_own_lists() {
         let mut m = mr("a", "jdoe");
         m.approved_by = vec!["asmith".to_owned()];
@@ -1489,6 +1546,7 @@ mod tests {
             assigned: PeopleDisplay::YesNo,
             approver: PeopleDisplay::YesNo,
             reviewer: PeopleDisplay::YesNo,
+            merged_by: PeopleDisplay::Username,
         };
         assert_eq!(
             cell_text(&m, Column::Approver, &theme(false), now(), yes_no),
@@ -1503,6 +1561,7 @@ mod tests {
             assigned: PeopleDisplay::YesNo,
             approver: PeopleDisplay::Trigram,
             reviewer: PeopleDisplay::Trigram,
+            merged_by: PeopleDisplay::Username,
         };
         assert_eq!(
             cell_text(&m, Column::Approver, &theme(false), now(), trigram),
@@ -1535,6 +1594,7 @@ mod tests {
             assigned: PeopleDisplay::YesNo,
             approver: PeopleDisplay::YesNo,
             reviewer: PeopleDisplay::YesNo,
+            merged_by: PeopleDisplay::Username,
         };
         assert!(
             !marks_me(&m, Column::Approver, yes_no),
@@ -1553,6 +1613,7 @@ mod tests {
             assigned: PeopleDisplay::Trigram,
             approver: PeopleDisplay::Username,
             reviewer: PeopleDisplay::Username,
+            merged_by: PeopleDisplay::Username,
         };
         assert!(marks_me(&m, Column::Approver, named), "me is in the list");
         assert!(

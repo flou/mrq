@@ -179,6 +179,7 @@ fn mr_fields(fragment: &Fragment) -> String {
             format!("author {{ username name{can_merge} }}"),
             false,
         ),
+        ("mergeUser", "mergeUser { username name }".into(), false),
         ("project", "project { fullPath }".into(), false),
         (
             "diffStatsSummary",
@@ -690,6 +691,7 @@ mod tests {
             "targetBranch",
             "conflicts",
             "mergeStatusEnum",
+            "mergeUser",
             "diffStatsSummary",
             "approved",
             "resolvableDiscussionsCount",
@@ -752,6 +754,18 @@ mod tests {
         }
         assert!(fragment.is_degraded());
         assert!(!fragment.is_minimal());
+    }
+
+    /// An older GitLab that rejects `mergeUser` loses only the MERGED BY column.
+    #[test]
+    fn a_rejected_merge_user_is_dropped_alone() {
+        let fragment = Fragment::full().excluding(["mergeUser"]);
+        let rendered = mr_fields(&fragment);
+
+        assert!(!rendered.contains("mergeUser"), "{rendered}");
+        for kept in ["author", "approvedBy", "reviewers", "labels"] {
+            assert!(rendered.contains(kept), "`{kept}` should have survived");
+        }
     }
 
     #[test]

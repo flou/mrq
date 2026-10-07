@@ -618,7 +618,10 @@ impl App {
     /// copies it.
     fn select_in_popup(&mut self, event: MouseEvent) -> Option<bool> {
         let popup = self.view.mode.popup_state()?;
-        if !matches!(popup.kind, action::Popup::Details | action::Popup::Discussions) {
+        if !matches!(
+            popup.kind,
+            action::Popup::Details | action::Popup::Discussions
+        ) {
             return None;
         }
         let size = self.terminal.size().ok()?;
@@ -666,11 +669,10 @@ impl App {
     /// details or comments popup is open. Without capture the terminal selects across the
     /// whole screen and none of the popup's own selection events would ever arrive.
     fn sync_mouse_capture(&mut self) {
-        let text_popup = self
-            .view
-            .mode
-            .popup_state()
-            .is_some_and(|p| matches!(p.kind, action::Popup::Details | action::Popup::Discussions));
+        let text_popup =
+            self.view.mode.popup_state().is_some_and(|p| {
+                matches!(p.kind, action::Popup::Details | action::Popup::Discussions)
+            });
         let want = self.config.ui.mouse || text_popup;
         if want == self.mouse_captured {
             return;
@@ -707,7 +709,18 @@ impl App {
             .tabs
             .active()
             .map_or(ui_columns.as_slice(), |tab| tab.columns_or(ui_columns));
-        ui::columns::for_wide_mode(columns, self.view.wide)
+        let mut columns = ui::columns::for_wide_mode(columns, self.view.wide);
+        // MERGED BY says nothing about an open merge request, so it only takes up room
+        // while a merged one is on screen.
+        if !self
+            .view
+            .visible_rows()
+            .iter()
+            .any(|mr| mr.merged_by.is_some())
+        {
+            columns.retain(|column| *column != Column::MergedBy);
+        }
+        columns
     }
 
     const fn people_display_modes(&self) -> ui::table::PeopleDisplayModes {
@@ -715,6 +728,7 @@ impl App {
             assigned: self.config.ui.assigned_display,
             approver: self.config.ui.approver_display,
             reviewer: self.config.ui.reviewer_display,
+            merged_by: self.config.ui.merged_by_display,
         }
     }
 
@@ -996,24 +1010,20 @@ impl Application for App {
                 Self::blank_popup_region(&mut self.terminal)?;
             }
             let mut spans = Vec::new();
-            let completed = self
-                .terminal
-                .draw(|frame| {
-                    spans = ui::render(frame, &scene);
-                    if let (Some(selection), Some(popup)) =
-                        (selection, scene.view.mode.popup_state())
-                    {
-                        let content = ui::popup::content(ui::popup::area(
-                            ui::layout::compute(frame.area()).body(),
-                        ));
-                        let top = ui::selection::top_line(
-                            popup.cursor,
-                            popup.styled.len(),
-                            usize::from(content.height),
-                        );
-                        selection.highlight(frame.buffer_mut(), content, top, &popup.styled);
-                    }
-                })?;
+            let completed = self.terminal.draw(|frame| {
+                spans = ui::render(frame, &scene);
+                if let (Some(selection), Some(popup)) = (selection, scene.view.mode.popup_state()) {
+                    let content = ui::popup::content(ui::popup::area(
+                        ui::layout::compute(frame.area()).body(),
+                    ));
+                    let top = ui::selection::top_line(
+                        popup.cursor,
+                        popup.styled.len(),
+                        usize::from(content.height),
+                    );
+                    selection.highlight(frame.buffer_mut(), content, top, &popup.styled);
+                }
+            })?;
             let buffer = completed.buffer.clone();
             if repaint {
                 let region = ui::popup::region(buffer.area);

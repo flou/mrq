@@ -1389,6 +1389,12 @@ fn detail_lines(mr: &MergeRequest, theme: &Theme, width: usize) -> Vec<markdown:
         )),
         plain(format!("State:       {}", mr.state.label())),
         plain(format!(
+            "Merged by:   {}",
+            mr.merged_by
+                .as_ref()
+                .map_or("-", |user| user.username.as_str())
+        )),
+        plain(format!(
             "Approved:    {}{}",
             if mr.approved { "yes" } else { "no" },
             if mr.approved_by.is_empty() {
