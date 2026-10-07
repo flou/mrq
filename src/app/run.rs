@@ -90,6 +90,11 @@ pub struct App {
     links: crate::ui::table::Links,
     /// Whether the last frame had a popup open, to force a full repaint when that changes.
     popup_open: bool,
+    /// Whether mouse capture is on right now: always with `ui.mouse`, otherwise only while
+    /// a text popup is open so its text can be drag-selected.
+    mouse_captured: bool,
+    /// The text selected with the mouse in an open details or comments popup.
+    selection: Option<ui::selection::Selection>,
     /// When the session began, as the spinner's phase reference.
     started: Instant,
     quit: bool,
@@ -403,10 +408,8 @@ impl App {
         }
 
         let mut message = String::from("config reloaded");
-        if old.ui.mouse != self.config.ui.mouse
-            || old.ui.set_terminal_title != self.config.ui.set_terminal_title
-        {
-            message.push_str(" (ui.mouse and ui.set_terminal_title need a restart)");
+        if old.ui.set_terminal_title != self.config.ui.set_terminal_title {
+            message.push_str(" (ui.set_terminal_title needs a restart)");
         }
         self.view.flash(message);
         tracing::info!(workers_restarted = workers_changed, "config reloaded");
@@ -571,9 +574,13 @@ impl App {
     /// Wheel scrolls the cursor — or an open popup, if one has the keyboard. A click
     /// selects the row under it, and a click on the title cell also opens that merge
     /// request; with a popup open, a click does nothing rather than acting on the row
-    /// hidden behind it. Everything else — hover, drag, the other buttons — changes
-    /// nothing.
+    /// hidden behind it. A drag in a details or comments popup selects text (see
+    /// `select_in_popup`); everything else — hover, other drags, the other buttons —
+    /// changes nothing.
     fn handle_mouse(&mut self, event: MouseEvent) -> bool {
+        if let Some(redraw) = self.select_in_popup(event) {
+            return redraw;
+        }
         match event.kind {
             MouseEventKind::ScrollUp => action::popup_wheel(&mut self.view, &self.keymap, true)
                 .unwrap_or_else(|| action::mouse_wheel(&mut self.view, true)),
@@ -600,6 +607,77 @@ impl App {
                 selected
             }
             _ => false,
+        }
+    }
+
+    /// Drag-select text in an open details or comments popup, bounded to the popup's text
+    /// rectangle. `None` when the event is not for the selection, so the caller carries on.
+    ///
+    /// A press outside the popup starts nothing; once started, a drag clamps to the
+    /// rectangle however far the pointer strays, and releasing a non-empty selection
+    /// copies it.
+    fn select_in_popup(&mut self, event: MouseEvent) -> Option<bool> {
+        let popup = self.view.mode.popup_state()?;
+        if !matches!(popup.kind, action::Popup::Details | action::Popup::Discussions) {
+            return None;
+        }
+        let size = self.terminal.size().ok()?;
+        let region = ui::popup::area(ui::layout::compute(size.into()).body());
+        let content = ui::popup::content(region);
+        let total = popup.styled.len();
+        let top = ui::selection::top_line(popup.cursor, total, usize::from(content.height));
+        let at = |x, y| ui::selection::point_at(content, top, total, x, y);
+
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let inside = region.contains((event.column, event.row).into());
+                self.selection = if inside {
+                    at(event.column, event.row).map(|point| ui::selection::Selection {
+                        anchor: point,
+                        head: point,
+                    })
+                } else {
+                    None
+                };
+                Some(true)
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let head = at(event.column, event.row)?;
+                let selection = self.selection.as_mut()?;
+                selection.head = head;
+                Some(true)
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                let selection = self.selection?;
+                if selection.is_empty() {
+                    self.selection = None;
+                } else {
+                    let text = selection.text(&popup.styled);
+                    self.copy(&text);
+                    self.view.flash("copied selection");
+                }
+                Some(true)
+            }
+            _ => None,
+        }
+    }
+
+    /// Capture the mouse when it is wanted: always with `ui.mouse`, otherwise only while a
+    /// details or comments popup is open. Without capture the terminal selects across the
+    /// whole screen and none of the popup's own selection events would ever arrive.
+    fn sync_mouse_capture(&mut self) {
+        let text_popup = self
+            .view
+            .mode
+            .popup_state()
+            .is_some_and(|p| matches!(p.kind, action::Popup::Details | action::Popup::Discussions));
+        let want = self.config.ui.mouse || text_popup;
+        if want == self.mouse_captured {
+            return;
+        }
+        match guard::set_mouse_capture(want) {
+            Ok(()) => self.mouse_captured = want,
+            Err(error) => tracing::warn!(%error, want, "could not change mouse capture"),
         }
     }
 
@@ -840,6 +918,7 @@ impl Application for App {
     }
 
     fn draw(&mut self) {
+        self.sync_mouse_capture();
         // Refreshed before anything else, so the action layer's next scroll decision
         // sees this frame's real window rather than last frame's.
         self.sync_viewport();
@@ -908,6 +987,10 @@ impl Application for App {
         let popup_open = self.view.mode.popup_state().is_some();
         let repaint = self.popup_open && !popup_open;
         self.popup_open = popup_open;
+        if !popup_open {
+            self.selection = None;
+        }
+        let selection = self.selection;
         let _ = crate::term::sync::frame(|| {
             if repaint {
                 Self::blank_popup_region(&mut self.terminal)?;
@@ -915,7 +998,22 @@ impl Application for App {
             let mut spans = Vec::new();
             let completed = self
                 .terminal
-                .draw(|frame| spans = ui::render(frame, &scene))?;
+                .draw(|frame| {
+                    spans = ui::render(frame, &scene);
+                    if let (Some(selection), Some(popup)) =
+                        (selection, scene.view.mode.popup_state())
+                    {
+                        let content = ui::popup::content(ui::popup::area(
+                            ui::layout::compute(frame.area()).body(),
+                        ));
+                        let top = ui::selection::top_line(
+                            popup.cursor,
+                            popup.styled.len(),
+                            usize::from(content.height),
+                        );
+                        selection.highlight(frame.buffer_mut(), content, top, &popup.styled);
+                    }
+                })?;
             let buffer = completed.buffer.clone();
             if repaint {
                 let region = ui::popup::region(buffer.area);
@@ -1031,9 +1129,10 @@ pub async fn run(
         .await
         .unwrap_or(false);
 
+    let mouse = config.ui.mouse;
     let guard = Guard::enter(guard::Options {
         keyboard_enhancements,
-        mouse: config.ui.mouse,
+        mouse,
         title_stack: config.ui.set_terminal_title,
     })
     .map_err(|e| Error::Other(format!("could not take over the terminal: {e}")))?;
@@ -1177,6 +1276,8 @@ pub async fn run(
         browser_helpers,
         links: crate::ui::table::Links::default(),
         popup_open: false,
+        mouse_captured: mouse,
+        selection: None,
         started: Instant::now(),
         quit: false,
         fatal: None,

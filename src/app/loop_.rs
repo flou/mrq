@@ -58,7 +58,12 @@ pub async fn run<A: Application>(
         };
 
         let is_render_tick = matches!(event, AppEvent::RenderTick);
-        let is_key = matches!(&event, AppEvent::Input(TermEvent::Key(_)));
+        // A drag highlight has to follow the pointer, so mouse input paints like a key.
+        // Motion reports nothing changed, so it costs no frame.
+        let is_key = matches!(
+            &event,
+            AppEvent::Input(TermEvent::Key(_) | TermEvent::Mouse(_))
+        );
         let (flow, changed) = app.handle(event);
         dirty |= changed;
 

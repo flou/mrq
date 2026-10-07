@@ -74,6 +74,16 @@ pub fn content_width(popup_area: Rect) -> usize {
     usize::from(popup_area.width).saturating_sub(4)
 }
 
+/// The rectangle a popup's text occupies: inside the border and the horizontal padding.
+pub fn content(popup_area: Rect) -> Rect {
+    Rect::new(
+        popup_area.x.saturating_add(2),
+        popup_area.y.saturating_add(1),
+        u16::try_from(content_width(popup_area)).unwrap_or(u16::MAX),
+        u16::try_from(content_height(popup_area)).unwrap_or(u16::MAX),
+    )
+}
+
 /// The text height inside a popup's own area: one cell of border on each side. The one
 /// place this subtraction happens, mirroring [`content_width`], so `build` and `App`
 /// (which needs it to know how many scroll positions a text popup has) can't drift apart.

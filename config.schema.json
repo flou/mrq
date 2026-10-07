@@ -946,7 +946,7 @@
           "default": "title"
         },
         "mouse": {
-          "description": "Capture the mouse. Off by default so the terminal keeps its native text selection and\ncopy. Needs a restart to change.",
+          "description": "Capture the mouse. Off by default so the terminal keeps its native text selection and\ncopy. The details and comments popups capture it while open regardless, to select text.",
           "type": "boolean",
           "default": false
         },

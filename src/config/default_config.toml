@@ -61,6 +61,7 @@
 # link = "title"
 
 # Mouse capture. Off by default so the terminal keeps its native selection and copy.
+# The details and comments popups capture it while open regardless, to select text.
 # mouse = false
 
 # set_terminal_title = true

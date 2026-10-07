@@ -63,7 +63,7 @@ Unknown config keys are an error.
 | `approver_display` | `username` | Same values. |
 | `reviewer_display` | `username` | Same values. |
 | `link` | `title` | Hyperlinked column: `title`, `id`, `both` or `none`. |
-| `mouse` | `false` | Capture the mouse. |
+| `mouse` | `false` | Capture the mouse. The details and comments popups capture it while open regardless, to select text. |
 | `set_terminal_title` | `true` | Set the terminal title. |
 | `columns` | see below | Column order. |
 | `wide` | `false` | Start in wide mode. |

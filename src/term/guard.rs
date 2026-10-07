@@ -282,6 +282,30 @@ impl Drop for Guard {
     }
 }
 
+/// Turn mouse capture on or off while the session runs, keeping [`ACTIVE`] in step so a
+/// panic or signal still releases it. Idempotent in the terminal: repeating a state is a
+/// harmless re-send.
+pub fn set_mouse_capture(on: bool) -> io::Result<()> {
+    set_mouse_with(&mut CrosstermOps::new(), on)
+}
+
+fn set_mouse_with(ops: &mut dyn TerminalOps, on: bool) -> io::Result<()> {
+    // Recorded before enabling, so a panic right after the write still restores it; a
+    // failed enable is rolled back so `ACTIVE` never claims what the terminal lacks.
+    if on {
+        ACTIVE.fetch_or(Step::Mouse.bit(), Ordering::SeqCst);
+        if let Err(error) = apply_step(ops, Step::Mouse, true).and_then(|()| ops.flush()) {
+            ACTIVE.fetch_and(!Step::Mouse.bit(), Ordering::SeqCst);
+            return Err(error);
+        }
+        Ok(())
+    } else {
+        let result = apply_step(ops, Step::Mouse, false).and_then(|()| ops.flush());
+        ACTIVE.fetch_and(!Step::Mouse.bit(), Ordering::SeqCst);
+        result
+    }
+}
+
 /// Install a panic hook that restores the terminal before the previous hook reports.
 ///
 /// Ordering is the whole point: `color_eyre`'s hook writes a multi-line report, and on
@@ -740,5 +764,20 @@ mod tests {
             seen.push(step.bit());
         }
         assert_eq!(seen.len(), Step::ORDER.len());
+    }
+
+    /// Runtime capture keeps `ACTIVE` honest, so a panic while it is on still releases it.
+    #[test]
+    fn runtime_mouse_capture_is_tracked_for_emergency_restore() {
+        let (mut ops, calls) = Recorder::new();
+        let before = ACTIVE.load(Ordering::SeqCst);
+
+        set_mouse_with(&mut ops, true).unwrap();
+        assert_ne!(ACTIVE.load(Ordering::SeqCst) & Step::Mouse.bit(), 0);
+        set_mouse_with(&mut ops, false).unwrap();
+        assert_eq!(ACTIVE.load(Ordering::SeqCst) & Step::Mouse.bit(), 0);
+
+        assert_eq!(*calls.borrow(), [(Step::Mouse, true), (Step::Mouse, false)]);
+        ACTIVE.store(before, Ordering::SeqCst);
     }
 }

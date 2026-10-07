@@ -12,6 +12,7 @@
 //! - `statusbar` — position, sort, refresh state and transient flashes
 //! - `tabbar`    — the filter tabs with overflow and error markers
 //! - `popup`     — help, sort menu, filter switcher, skin picker and log overlays
+//! - `selection` — mouse text selection bounded to a text popup
 //! - `markdown`  — the details popup's description renderer
 //! - `theme`     — roles to colours and glyphs at three colour depths
 //! - `palette`   — the 25 named swatches a skin is made of
@@ -28,6 +29,7 @@ pub mod markdown;
 
 pub mod palette;
 pub mod popup;
+pub mod selection;
 pub mod skins;
 pub mod statusbar;
 pub mod tabbar;

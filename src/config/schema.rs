@@ -324,7 +324,7 @@ pub struct Ui {
     /// Show the AGE and UPDATED columns as relative durations (`3h`, `5d`) instead of dates.
     pub relative_times: bool,
     /// Capture the mouse. Off by default so the terminal keeps its native text selection and
-    /// copy. Needs a restart to change.
+    /// copy. The details and comments popups capture it while open regardless, to select text.
     pub mouse: bool,
     /// Set the terminal title to the active tab and its merge request counts. Needs a restart
     /// to change.
