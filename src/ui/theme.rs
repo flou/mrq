@@ -350,11 +350,6 @@ impl Theme {
         "*"
     }
 
-    /// The block a new row draws over its gutter and APRV cells, so it reads without colour.
-    pub const fn new_block(&self) -> &'static str {
-        if self.ascii { "#" } else { "█" }
-    }
-
     /// The gutter cell when a row is neither selected nor new.
     pub const fn blank_marker(&self) -> &'static str {
         " "

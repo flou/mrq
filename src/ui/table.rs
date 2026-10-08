@@ -481,10 +481,9 @@ fn names_non_merger(mr: &MergeRequest, column: Column, modes: PeopleDisplayModes
 
 /// What the gutter shows for a row.
 const fn gutter(theme: &Theme, selected: bool, is_new: bool) -> &str {
-    if selected {
+    // A new row shares the selection bar's glyph; only its colour tells them apart.
+    if selected || is_new {
         theme.selection_marker()
-    } else if is_new {
-        theme.new_block()
     } else {
         theme.blank_marker()
     }
@@ -547,10 +546,6 @@ fn row<'a>(
             }
             // Additions and deletions are coloured separately, so the cell is two spans.
             Column::Diff if !dimmed => diff_spans(mr, width, theme),
-            // The block covers the checkmark: an unseen MR is not one to skim past.
-            Column::Approved if fresh => {
-                Cell::from(theme.new_block().repeat(width)).style(theme.style(Role::Fresh))
-            }
             Column::Title if fresh => {
                 let text = truncate(
                     &cell_text(mr, *column, theme, now, modes),
@@ -1918,7 +1913,7 @@ mod tests {
         let theme = theme(false);
 
         assert_eq!(gutter(&theme, true, false), theme.selection_marker());
-        assert_eq!(gutter(&theme, false, true), theme.new_block());
+        assert_eq!(gutter(&theme, false, true), theme.selection_marker());
         assert_eq!(gutter(&theme, false, false), theme.blank_marker());
         assert_eq!(
             gutter(&theme, true, true),
@@ -1987,21 +1982,21 @@ mod tests {
     }
 
     #[test]
-    fn a_new_row_draws_a_block_over_the_gutter_and_approval_and_a_fresh_title() {
+    fn a_new_row_draws_a_fresh_gutter_and_a_fresh_title() {
         let (buffer, allocation) = fresh_buffer(None);
         let theme = theme(false);
-        let block = theme.new_block();
         let fresh = theme.style(Role::Fresh);
         let area = Rect::new(0, 0, 120, 3);
         let title_x = column_x(&allocation, area, Column::Title).unwrap();
         let approved_x = column_x(&allocation, area, Column::Approved).unwrap();
-        let approved_width = allocation.width_of(Column::Approved).unwrap();
 
-        for x in 0..approved_x + approved_width {
-            let cell = &buffer[(x, 1)];
-            assert_eq!(cell.symbol(), block, "block at x={x}");
-            assert_eq!(Some(cell.fg), fresh.fg, "fresh colour at x={x}");
-        }
+        assert_eq!(buffer[(0, 1)].symbol(), theme.selection_marker(), "gutter");
+        assert_eq!(Some(buffer[(0, 1)].fg), fresh.fg, "gutter is fresh");
+        assert_ne!(
+            Some(buffer[(approved_x, 1)].fg),
+            fresh.fg,
+            "approval keeps its own styling"
+        );
         assert_eq!(Some(buffer[(title_x, 1)].fg), fresh.fg, "title is fresh");
     }
 
@@ -2014,7 +2009,6 @@ mod tests {
 
         assert_eq!(buffer[(0, 1)].symbol(), theme.selection_marker());
         assert_ne!(Some(buffer[(title_x, 1)].fg), theme.style(Role::Fresh).fg);
-        assert_ne!(buffer[(1, 1)].symbol(), theme.new_block());
     }
 
     #[test]
@@ -2029,7 +2023,7 @@ mod tests {
 
         let lines = render(std::slice::from_ref(&m), &tab, 120, 5);
         assert!(
-            lines[1].starts_with(theme(false).new_block()),
+            lines[1].starts_with(theme(false).selection_marker()),
             "row: {:?}",
             lines[1]
         );
@@ -2042,7 +2036,7 @@ mod tests {
         );
         let lines = render(&[m], &tab, 120, 5);
         assert!(
-            !lines[1].starts_with(theme(false).new_block()),
+            !lines[1].starts_with(theme(false).selection_marker()),
             "row: {:?}",
             lines[1]
         );
