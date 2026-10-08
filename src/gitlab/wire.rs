@@ -799,6 +799,7 @@ mod tests {
         let mut value =
             fixture()["data"]["currentUser"]["assignedMergeRequests"]["nodes"][0].clone();
         value["mergeUser"] = serde_json::json!({"username": "User1", "name": "Me Too"});
+        value["author"]["username"] = serde_json::json!("someone-else");
 
         value["state"] = serde_json::json!("merged");
         let wire: WireMergeRequest = serde_json::from_value(value.clone()).unwrap();

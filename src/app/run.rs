@@ -710,13 +710,13 @@ impl App {
             .active()
             .map_or(ui_columns.as_slice(), |tab| tab.columns_or(ui_columns));
         let mut columns = ui::columns::for_wide_mode(columns, self.view.wide);
-        // MERGED BY says nothing about an open merge request, so it only takes up room
-        // while a merged one is on screen.
+        // MERGED BY says nothing about an open or self-merged merge request, so it only
+        // takes up room while one merged by someone other than its author is on screen.
         if !self
             .view
             .visible_rows()
             .iter()
-            .any(|mr| mr.merged_by.is_some())
+            .any(|mr| mr.merged_by_other().is_some())
         {
             columns.retain(|column| *column != Column::MergedBy);
         }

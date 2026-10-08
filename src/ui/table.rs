@@ -318,11 +318,16 @@ fn reviewer_cell(mr: &MergeRequest, mode: PeopleDisplay) -> Cow<'_, str> {
 }
 
 /// The MERGED BY cell, in whichever of the three [`PeopleDisplay`] modes is configured.
+/// Blank (`-`) when the author merged it themselves.
 fn merged_by_cell(mr: &MergeRequest, mode: PeopleDisplay) -> Cow<'_, str> {
     match mode {
         PeopleDisplay::YesNo => Cow::Borrowed(if mr.merged_by_me() { "Yes" } else { "No" }),
-        PeopleDisplay::Username => people_cell(mr.merged_by.iter().map(|u| u.username.as_str())),
-        PeopleDisplay::Trigram => match &mr.merged_by {
+        PeopleDisplay::Username => people_cell(
+            mr.merged_by_other()
+                .map(|u| u.username.as_str())
+                .into_iter(),
+        ),
+        PeopleDisplay::Trigram => match mr.merged_by_other() {
             Some(user) => Cow::Owned(trigram(user.name.as_deref(), &user.username)),
             None => Cow::Borrowed(NOBODY_MARK),
         },
@@ -1479,6 +1484,19 @@ mod tests {
         m.recompute_derived("asmith");
         assert!(marks_me(&m, Column::MergedBy, default));
         assert!(!marks_me(&m, Column::MergedBy, yes_no));
+
+        m.merged_by = Some(User::new("JDoe"));
+        m.recompute_derived("jdoe");
+        assert_eq!(
+            cell_text(&m, Column::MergedBy, &theme(false), now(), default),
+            "-",
+            "a self-merge is left blank"
+        );
+        assert_eq!(
+            cell_text(&m, Column::MergedBy, &theme(false), now(), yes_no),
+            "No"
+        );
+        assert!(!marks_me(&m, Column::MergedBy, default));
     }
 
     #[test]

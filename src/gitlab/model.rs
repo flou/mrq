@@ -315,10 +315,17 @@ impl MergeRequest {
         );
         self.authored_by_me = eq_user(&self.author.username, current_user);
         self.merged_by_me = self
-            .merged_by
-            .as_ref()
+            .merged_by_other()
             .is_some_and(|u| eq_user(&u.username, current_user));
         self.reviewing_me = contains_user(self.reviewers.iter().map(String::as_str), current_user);
+    }
+
+    /// Who merged it, unless that is its author: a self-merge is the expected case and
+    /// would only repeat the AUTHOR column, so the MERGED BY column leaves it blank.
+    pub fn merged_by_other(&self) -> Option<&User> {
+        self.merged_by
+            .as_ref()
+            .filter(|u| !eq_user(&u.username, &self.author.username))
     }
 
     /// The first assignee, for the ASSIGNED column's trigram rendering.

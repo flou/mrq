@@ -81,7 +81,7 @@ fn compare(a: &MergeRequest, b: &MergeRequest, column: Column) -> Ordering {
 
         Column::Approver => people_order(&a.approved_by, &b.approved_by),
         Column::Reviewer => people_order(&a.reviewers, &b.reviewers),
-        Column::MergedBy => match (&a.merged_by, &b.merged_by) {
+        Column::MergedBy => match (a.merged_by_other(), b.merged_by_other()) {
             (None, None) => Ordering::Equal,
             (None, Some(_)) => Ordering::Greater,
             (Some(_), None) => Ordering::Less,
