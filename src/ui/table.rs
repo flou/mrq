@@ -404,10 +404,19 @@ fn cell_text<'a>(
         Column::Approver => approver_cell(mr, modes.approver),
         Column::Reviewer => reviewer_cell(mr, modes.reviewer),
         Column::MergedBy => merged_by_cell(mr, modes.merged_by),
+        Column::Status => Cow::Borrowed(status_label(mr)),
         Column::Age => Cow::Owned(relative_time(mr.created_at, now)),
         Column::Updated => Cow::Owned(relative_time(mr.updated_at, now)),
         Column::Diff => Cow::Owned(diff_cell(mr)),
         Column::Branch => Cow::Borrowed(mr.source_branch.as_str()),
+    }
+}
+
+/// The STATUS cell: the merge request's state, with an open draft reading `draft`.
+const fn status_label(mr: &MergeRequest) -> &'static str {
+    match mr.state {
+        MrState::Opened if mr.draft => "draft",
+        state => state.label(),
     }
 }
 
@@ -438,6 +447,12 @@ const fn cell_role(mr: &MergeRequest, column: Column, dimmed: bool) -> Role {
     match column {
         // A conflicted or unmergeable title is a problem, not a failure.
         Column::Title if mr.is_blocked() => Role::Warning,
+        Column::Status => match mr.state {
+            MrState::Opened => Role::Normal,
+            MrState::Merged => Role::Success,
+            MrState::Closed => Role::Failure,
+            MrState::Locked => Role::Warning,
+        },
         Column::Diff => Role::Normal,
         _ => Role::Normal,
     }
@@ -458,6 +473,7 @@ const fn marks_me(mr: &MergeRequest, column: Column, modes: PeopleDisplayModes) 
         | Column::Id
         | Column::Title
         | Column::Pipeline
+        | Column::Status
         | Column::Age
         | Column::Updated
         | Column::Diff
@@ -1448,6 +1464,23 @@ mod tests {
             ),
             "!3658"
         );
+    }
+
+    #[test]
+    fn status_cell_reads_draft_for_an_open_draft_and_the_state_otherwise() {
+        let mut m = mr("a", "jdoe");
+        let modes = PeopleDisplayModes::default();
+        let status = |m: &MergeRequest| {
+            cell_text(m, Column::Status, &theme(false), now(), modes).into_owned()
+        };
+        assert_eq!(status(&m), "open");
+        m.draft = true;
+        assert_eq!(status(&m), "draft");
+        m.state = MrState::Merged;
+        assert_eq!(status(&m), "merged");
+        m.state = MrState::Closed;
+        assert_eq!(status(&m), "closed");
+        assert_eq!(cell_role(&m, Column::Status, false), Role::Failure);
     }
 
     #[test]

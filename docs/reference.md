@@ -73,7 +73,7 @@ Unknown config keys are an error.
 Default `columns`:
 `approved, author, repo, id:wide, title, pipeline, assigned, approver:wide, reviewer:wide, age, updated, diff:wide`.
 
-Available columns: `approved`, `author`, `repo`, `id`, `title`, `pipeline`, `assigned`, `approver`, `reviewer`, `merged_by`, `age`, `updated`, `diff`, `branch`. Each may appear once. A `:wide` suffix shows it only in wide mode. `merged_by` is not in the default columns; once added, it only appears while a merge request merged by someone other than its author is listed, and is blank for a self-merge.
+Available columns: `approved`, `author`, `repo`, `id`, `title`, `pipeline`, `assigned`, `approver`, `reviewer`, `merged_by`, `status`, `age`, `updated`, `diff`, `branch`. Each may appear once. A `:wide` suffix shows it only in wide mode. `merged_by` is not in the default columns; once added, it only appears while a merge request merged by someone other than its author is listed, and is blank for a self-merge. `status` (`draft`, `open`, `merged`, `closed` or `locked`) is not in the default columns either.
 
 ## `[skin]`
 

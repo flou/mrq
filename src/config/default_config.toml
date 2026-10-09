@@ -68,7 +68,7 @@
 
 # set_terminal_title = true
 
-# Display order, left to right. Any subset of these keys (plus branch and merged_by), each at most once;
+# Display order, left to right. Any subset of these keys (plus branch, merged_by and status), each at most once;
 # `sort.column` below has to be one of them. A ":wide" suffix hides that column until wide mode
 # (w) is toggled on; approved, author, repo, title and pipeline identify a row and can never
 # be wide-only. merged_by is not in the default list; when added, it only shows while a merged

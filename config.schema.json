@@ -228,6 +228,11 @@
           "const": "merged_by"
         },
         {
+          "description": "Where the merge request stands: `draft`, `open`, `merged`, `closed` or `locked`. Not in\nthe default column list.",
+          "type": "string",
+          "const": "status"
+        },
+        {
           "description": "Time since the merge request was opened.",
           "type": "string",
           "const": "age"
@@ -252,7 +257,7 @@
     "ColumnSpec": {
       "description": "A column key, optionally suffixed `:wide` to show it only in wide mode.",
       "type": "string",
-      "pattern": "^((approved|author|repo|title|pipeline)|(id|assigned|approver|reviewer|merged_by|age|updated|diff|branch)(:wide)?)$"
+      "pattern": "^((approved|author|repo|title|pipeline)|(id|assigned|approver|reviewer|merged_by|status|age|updated|diff|branch)(:wide)?)$"
     },
     "Filter": {
       "description": "One merge request list, shown as a tab.",

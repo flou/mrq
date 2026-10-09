@@ -79,13 +79,14 @@ pub const ID_MIN: u16 = 3;
 pub const FIT_MAX: u16 = 30;
 
 /// The order columns are dropped in when the terminal is too narrow.
-const DROP_ORDER: [Column; 7] = [
+const DROP_ORDER: [Column; 8] = [
     Column::Id,
     Column::Age,
     Column::Assigned,
     Column::Approver,
     Column::Reviewer,
     Column::MergedBy,
+    Column::Status,
     Column::Diff,
 ];
 
@@ -134,6 +135,7 @@ const fn keep_priority(column: Column) -> u8 {
         Column::Approver => 2,
         Column::Reviewer => 2,
         Column::MergedBy => 2,
+        Column::Status => 2,
         Column::Diff => 1,
         Column::Branch => 6,
     }
@@ -234,6 +236,12 @@ const fn rules(column: Column, fitted: Fitted) -> Rules {
                 flex: false,
             }
         }
+        // Wide enough for the longest label, `merged`/`closed`/`locked`.
+        Column::Status => Rules {
+            preferred: 6,
+            minimum: 6,
+            flex: false,
+        },
         Column::Id => {
             let preferred = match fitted.id {
                 Some(width) => width,

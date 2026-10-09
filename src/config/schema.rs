@@ -482,6 +482,9 @@ pub enum Column {
     /// Who merged the merge request, shown per `[ui].merged_by_display`. Not in the default
     /// column list, and hidden unless a merged merge request is on screen.
     MergedBy,
+    /// Where the merge request stands: `draft`, `open`, `merged`, `closed` or `locked`. Not in
+    /// the default column list.
+    Status,
     /// Time since the merge request was opened.
     Age,
     /// Time since the merge request last changed.
@@ -494,7 +497,7 @@ pub enum Column {
 
 impl Column {
     /// Every column, including those not in the default list.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Approved,
         Self::Author,
         Self::Repo,
@@ -505,6 +508,7 @@ impl Column {
         Self::Approver,
         Self::Reviewer,
         Self::MergedBy,
+        Self::Status,
         Self::Age,
         Self::Updated,
         Self::Diff,
@@ -539,6 +543,7 @@ impl Column {
             Self::Approver => "approver",
             Self::Reviewer => "reviewer",
             Self::MergedBy => "merged_by",
+            Self::Status => "status",
             Self::Age => "age",
             Self::Updated => "updated",
             Self::Diff => "diff",
@@ -562,6 +567,7 @@ impl Column {
             Self::Approver => "APPROVER",
             Self::Reviewer => "REVIEWER",
             Self::MergedBy => "MERGED BY",
+            Self::Status => "STATUS",
             Self::Age => "AGE",
             Self::Updated => "UPDATED",
             Self::Diff => "DIFF",

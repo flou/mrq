@@ -14,7 +14,7 @@
 use std::cmp::Ordering;
 
 use crate::config::schema::{Column, Order};
-use crate::gitlab::model::MergeRequest;
+use crate::gitlab::model::{MergeRequest, MrState};
 
 /// Order rows in place.
 ///
@@ -56,6 +56,17 @@ fn tiebreak(a: &MergeRequest, b: &MergeRequest) -> Ordering {
         .then_with(|| a.id.cmp(&b.id))
 }
 
+/// Where a row sits in the STATUS column's ascending order.
+const fn status_rank(mr: &MergeRequest) -> u8 {
+    match mr.state {
+        MrState::Opened if mr.draft => 0,
+        MrState::Opened => 1,
+        MrState::Merged => 2,
+        MrState::Closed => 3,
+        MrState::Locked => 4,
+    }
+}
+
 /// Compare two rows by one column, ascending.
 fn compare(a: &MergeRequest, b: &MergeRequest, column: Column) -> Ordering {
     match column {
@@ -87,6 +98,9 @@ fn compare(a: &MergeRequest, b: &MergeRequest, column: Column) -> Ordering {
             (Some(_), None) => Ordering::Less,
             (Some(x), Some(y)) => case_insensitive(&x.username, &y.username),
         },
+
+        // Workflow order: draft, open, merged, closed, locked.
+        Column::Status => status_rank(a).cmp(&status_rank(b)),
 
         // Oldest first for AGE: an ascending age column should put the merge request
         // that has been waiting longest at the top, and that is the earliest timestamp.
