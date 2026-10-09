@@ -176,7 +176,11 @@ fn supports_hyperlinks(env: &TermEnv, multiplexed: bool) -> bool {
 fn notify_escape(env: &TermEnv) -> NotifyEscape {
     let term = env.term();
     match env.program().as_str() {
-        "iterm.app" | "wezterm" | "ghostty" => NotifyEscape::Osc9,
+        // OSC 9 has no title field, so Ghostty and WezTerm title it with the window
+        // title — which mrq sets to the *active* tab, not the filter that fired. Both also
+        // speak OSC 777, which carries a title of its own. iTerm2 only knows OSC 9.
+        "wezterm" | "ghostty" => NotifyEscape::Osc777,
+        "iterm.app" => NotifyEscape::Osc9,
         _ if term.starts_with("xterm-kitty") => NotifyEscape::Osc777,
         _ if term.starts_with("wezterm") || term.starts_with("foot") => NotifyEscape::Osc777,
         _ if term.starts_with("rxvt") || term.starts_with("urxvt") => NotifyEscape::Osc777,
@@ -343,7 +347,8 @@ mod tests {
     #[test]
     fn notification_escapes_follow_the_terminal() {
         assert_eq!(notify_escape(&program("iTerm.app")), NotifyEscape::Osc9);
-        assert_eq!(notify_escape(&program("WezTerm")), NotifyEscape::Osc9);
+        assert_eq!(notify_escape(&program("WezTerm")), NotifyEscape::Osc777);
+        assert_eq!(notify_escape(&program("ghostty")), NotifyEscape::Osc777);
         assert_eq!(notify_escape(&env("xterm-kitty")), NotifyEscape::Osc777);
         assert_eq!(notify_escape(&env("rxvt-unicode")), NotifyEscape::Osc777);
         assert_eq!(notify_escape(&env("xterm-256color")), NotifyEscape::None);
