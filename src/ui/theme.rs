@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, Borders};
 use crate::app::state::Attention;
 use crate::config::schema::Skin;
 use crate::error::ConfigError;
-use crate::gitlab::model::PipelineStatus;
+use crate::gitlab::model::{MrState, PipelineStatus};
 use crate::term::caps::{Capabilities, ColorDepth, Rgb};
 use crate::ui::palette::{self, Palette};
 use crate::ui::skins;
@@ -215,6 +215,12 @@ impl Theme {
         self.style(role).add_modifier(Modifier::BOLD)
     }
 
+    /// The style for a role, struck through: a closed merge request's title, which was
+    /// abandoned rather than finished.
+    pub fn struck(&self, role: Role) -> Style {
+        self.style(role).add_modifier(Modifier::CROSSED_OUT)
+    }
+
     /// The colour for a role, or `None` when the terminal has no colour.
     fn colour(&self, role: Role) -> Option<Color> {
         match self.depth {
@@ -392,6 +398,21 @@ impl Theme {
     /// The mark for "this merge request is approved".
     pub const fn approved_mark(&self) -> &'static str {
         if self.ascii { "y" } else { "✔" }
+    }
+
+    /// The prefix on the title of a merge request that is not plainly open, with its
+    /// role: merged, closed or draft. Empty for an open merge request.
+    ///
+    /// The role holds on a dimmed row too: this mark is what tells the dimmed states
+    /// apart.
+    pub const fn state_mark(&self, state: MrState, draft: bool) -> (&'static str, Role) {
+        match state {
+            MrState::Merged => (if self.ascii { "M " } else { "✓ " }, Role::Success),
+            MrState::Closed => (if self.ascii { "C " } else { "✗ " }, Role::Failure),
+            MrState::Locked => (if self.ascii { "L " } else { "⊘ " }, Role::Warning),
+            MrState::Opened if draft => (if self.ascii { "D " } else { "✎ " }, Role::Pending),
+            MrState::Opened => ("", Role::Normal),
+        }
     }
 
     /// The prefix on the title of a merge request with unresolved discussions.
@@ -992,6 +1013,15 @@ mod tests {
         glyphs.push(theme.tab_divider());
         glyphs.push(theme.ellipsis());
         glyphs.push(theme.discussion_mark());
+        for state in [
+            MrState::Opened,
+            MrState::Merged,
+            MrState::Closed,
+            MrState::Locked,
+        ] {
+            glyphs.push(theme.state_mark(state, false).0);
+            glyphs.push(theme.state_mark(state, true).0);
+        }
         glyphs.extend(theme.spinner_frames());
 
         let border = theme.border_set();

@@ -70,7 +70,7 @@ Each merge request appears once. Only `assigned`, `review_requested` and `author
 
 ## See merged and closed merge requests
 
-Set `state = "all"` (or `merged` / `closed`). Merged and closed rows are grouped at the bottom, whatever the sort, and dimmed in a list that also holds open ones.
+Set `state = "all"` (or `merged` / `closed`). Merged and closed rows are grouped at the bottom, whatever the sort, and dimmed in a list that also holds open ones. A mark before the title tells the states apart: `✓` merged, `✗` closed (title struck through), `✎` draft — `M`, `C`, `D` with `ascii = true`.
 
 ## Choose which columns to show
 

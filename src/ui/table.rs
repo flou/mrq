@@ -390,12 +390,12 @@ fn cell_text<'a>(
         Column::Repo => Cow::Borrowed(mr.project_name.as_str()),
         Column::Id => Cow::Owned(format!("!{}", mr.iid)),
         Column::Title => {
+            let (state, _) = theme.state_mark(mr.state, mr.draft);
             let mark = discussion_prefix(mr, theme);
-            match (mark.is_empty(), mr.draft) {
-                (true, false) => Cow::Borrowed(mr.title.as_str()),
-                (true, true) => Cow::Owned(format!("[Draft] {}", mr.title)),
-                (false, false) => Cow::Owned(format!("{mark}{}", mr.title)),
-                (false, true) => Cow::Owned(format!("{mark}[Draft] {}", mr.title)),
+            if state.is_empty() && mark.is_empty() {
+                Cow::Borrowed(mr.title.as_str())
+            } else {
+                Cow::Owned(format!("{state}{mark}{}", mr.title))
             }
         }
         // Filled in by the caller, which has the theme and therefore the glyph set.
@@ -562,14 +562,7 @@ fn row<'a>(
             }
             // Additions and deletions are coloured separately, so the cell is two spans.
             Column::Diff if !dimmed => diff_spans(mr, width, theme),
-            Column::Title if fresh => {
-                let text = truncate(
-                    &cell_text(mr, *column, theme, now, modes),
-                    width,
-                    theme.ellipsis(),
-                );
-                Cell::from(pad(&text, width)).style(theme.style(Role::Fresh))
-            }
+            Column::Title => title_cell(mr, width, theme, fresh, dimmed, now, modes),
             // Bold on top of `Role::Success`'s green, so an approved MR stands out at a
             // glance rather than blending into the rest of the row.
             Column::Approved if mr.approved && !dimmed => {
@@ -620,6 +613,50 @@ fn row<'a>(
         row = row.style(theme.style(Role::Dim));
     }
     row
+}
+
+/// The TITLE cell: the state mark in its own colour, then the title.
+///
+/// The mark keeps its role on a dimmed row — it is what tells a draft, a merged and a
+/// closed row apart once all three are dimmed. A closed title is struck through, the
+/// text only and not the padding after it.
+fn title_cell<'a>(
+    mr: &MergeRequest,
+    width: usize,
+    theme: &Theme,
+    fresh: bool,
+    dimmed: bool,
+    now: jiff::Timestamp,
+    modes: PeopleDisplayModes,
+) -> Cell<'a> {
+    let text = truncate(
+        &cell_text(mr, Column::Title, theme, now, modes),
+        width,
+        theme.ellipsis(),
+    );
+    let (mark, mark_role) = theme.state_mark(mr.state, mr.draft);
+    let (mark, rest) = match text.strip_prefix(mark) {
+        Some(rest) => (mark, rest),
+        // Too narrow for the mark to survive truncation whole: the text alone.
+        None => ("", text.as_str()),
+    };
+
+    let role = if fresh {
+        Role::Fresh
+    } else {
+        cell_role(mr, Column::Title, dimmed)
+    };
+    let style = if mr.state == MrState::Closed {
+        theme.struck(role)
+    } else {
+        theme.style(role)
+    };
+    let padding = " ".repeat(width.saturating_sub(text.width()));
+    Cell::from(Line::from(vec![
+        Span::styled(mark.to_owned(), theme.style(mark_role)),
+        Span::styled(rest.to_owned(), style),
+        Span::raw(padding),
+    ]))
 }
 
 fn diff_spans<'a>(mr: &MergeRequest, width: usize, theme: &Theme) -> Cell<'a> {
@@ -785,9 +822,11 @@ pub fn link_spans(
 
         let end = x + text_width;
         let mut cells = Vec::new();
-        // The discussion marker is a status, not part of the title: leave it unlinked.
+        // The state and discussion markers are statuses, not part of the title: leave
+        // them unlinked.
         let skip = if column == Column::Title {
-            u16::try_from(discussion_prefix(mr, theme).width()).unwrap_or(0)
+            let (state, _) = theme.state_mark(mr.state, mr.draft);
+            u16::try_from(state.width() + discussion_prefix(mr, theme).width()).unwrap_or(0)
         } else {
             0
         };
@@ -1684,7 +1723,7 @@ mod tests {
                 now(),
                 PeopleDisplayModes::default()
             ),
-            "[Draft] Migration guide"
+            "✎ Migration guide"
         );
         assert_eq!(
             cell_role(&m, Column::Title, is_dimmed(&m, false)),
@@ -1715,7 +1754,84 @@ mod tests {
         assert_eq!(title(&m, true), "* Migration guide");
 
         m.draft = true;
-        assert_eq!(title(&m, false), "💬 [Draft] Migration guide");
+        assert_eq!(title(&m, false), "✎ 💬 Migration guide");
+    }
+
+    #[test]
+    fn each_state_but_open_puts_its_own_mark_before_the_title() {
+        let title = |m: &MergeRequest, ascii: bool| {
+            cell_text(
+                m,
+                Column::Title,
+                &theme(ascii),
+                now(),
+                PeopleDisplayModes::default(),
+            )
+            .into_owned()
+        };
+        let mut m = mr("a", "someone");
+        m.title = "Fix".into();
+
+        assert_eq!(title(&m, false), "Fix");
+        m.state = MrState::Merged;
+        assert_eq!(title(&m, false), "✓ Fix");
+        assert_eq!(title(&m, true), "M Fix");
+        m.state = MrState::Closed;
+        assert_eq!(title(&m, false), "✗ Fix");
+        assert_eq!(title(&m, true), "C Fix");
+        m.state = MrState::Opened;
+        m.draft = true;
+        assert_eq!(title(&m, true), "D Fix");
+    }
+
+    /// The mark is what tells dimmed rows apart, so it keeps its colour; a closed title
+    /// is struck through, a merged one is not.
+    #[test]
+    fn the_state_mark_survives_dimming_and_a_closed_title_is_struck() {
+        let theme = theme(false);
+        let spans = |m: &MergeRequest| {
+            let cell = title_cell(
+                m,
+                20,
+                &theme,
+                false,
+                true,
+                now(),
+                PeopleDisplayModes::default(),
+            );
+            let mut buffer = Buffer::empty(Rect::new(0, 0, 20, 1));
+            ratatui::widgets::Widget::render(
+                ratatui::widgets::Table::new(vec![Row::new(vec![cell])], [Constraint::Length(20)]),
+                Rect::new(0, 0, 20, 1),
+                &mut buffer,
+            );
+            buffer
+        };
+        let mut m = mr("a", "someone");
+        m.title = "Fix".into();
+
+        m.state = MrState::Closed;
+        let buffer = spans(&m);
+        assert_eq!(buffer[(0, 0)].fg, theme.style(Role::Failure).fg.unwrap());
+        assert!(
+            buffer[(2, 0)]
+                .modifier
+                .contains(ratatui::style::Modifier::CROSSED_OUT)
+        );
+        assert!(
+            !buffer[(10, 0)]
+                .modifier
+                .contains(ratatui::style::Modifier::CROSSED_OUT)
+        );
+
+        m.state = MrState::Merged;
+        let buffer = spans(&m);
+        assert_eq!(buffer[(0, 0)].fg, theme.style(Role::Success).fg.unwrap());
+        assert!(
+            !buffer[(2, 0)]
+                .modifier
+                .contains(ratatui::style::Modifier::CROSSED_OUT)
+        );
     }
 
     #[test]
