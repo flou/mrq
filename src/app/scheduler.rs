@@ -183,6 +183,7 @@ pub fn spawn_generation(
         let worker = Worker {
             id: crate::app::event::tag(generation, index),
             filter: filter.clone(),
+            max_results: filter.max_results(&config.gitlab),
             refresh: config.refresh.clone(),
             instance_url: config.gitlab.url.clone(),
             identity: identity.clone(),
@@ -208,6 +209,8 @@ pub fn spawn_generation(
 struct Worker {
     id: FilterId,
     filter: crate::config::schema::Filter,
+    /// The filter's override or the `[gitlab]` default, resolved once at spawn.
+    max_results: usize,
     refresh: Refresh,
     instance_url: String,
     /// The identity probe's result. Not yet known at construction time — the whole
@@ -382,6 +385,7 @@ impl Worker {
         let result = fetch::fetch(
             &self.client,
             &self.filter,
+            self.max_results,
             degradation,
             current_user,
             &self.instance_url,

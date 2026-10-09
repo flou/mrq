@@ -22,6 +22,7 @@
 
 # timeout_secs = 20
 # max_concurrent_requests = 4
+# max_results = 40                  # per filter, 1..=500; a [[filter]] can override it
 
 [refresh]
 # Seconds between refresh cycles. The minimum is 30 — below that mrq refuses to start
@@ -158,7 +159,7 @@ scope = "assigned"
 # show_drafts = false               # per-filter override of [ui].show_drafts
 # columns = ["approved", "author", "title", "age", "branch:wide"]   # per-filter override of [ui].columns
 # notify = true                     # per-filter override of [notifications].enabled
-# max_results = 100                 # 1..=500
+# max_results = 40                  # per-filter override of [gitlab].max_results
 
 # [[filter]]
 # name = "Reviewing"

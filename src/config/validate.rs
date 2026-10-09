@@ -49,7 +49,7 @@ pub fn validate(config: &mut Config) -> Result<Vec<Clamped>, ConfigError> {
     let mut clamps = Vec::new();
     let mut errors: Vec<String> = Vec::new();
 
-    check_gitlab(config, &mut errors);
+    check_gitlab(config, &mut errors, &mut clamps);
     check_refresh(config, &mut errors, &mut clamps);
     check_ui_and_sort(config, &mut errors);
     check_notifications(config, &mut errors);
@@ -71,7 +71,7 @@ pub fn validate(config: &mut Config) -> Result<Vec<Clamped>, ConfigError> {
     Ok(clamps)
 }
 
-fn check_gitlab(config: &Config, errors: &mut Vec<String>) {
+fn check_gitlab(config: &mut Config, errors: &mut Vec<String>, clamps: &mut Vec<Clamped>) {
     let url = config.gitlab.url.trim();
     if url.is_empty() {
         errors.push("gitlab.url: must not be empty".into());
@@ -88,6 +88,19 @@ fn check_gitlab(config: &Config, errors: &mut Vec<String>) {
     }
     if config.gitlab.max_concurrent_requests == 0 {
         errors.push("gitlab.max_concurrent_requests: must be at least 1".into());
+    }
+    clamp_max_results("gitlab.max_results", &mut config.gitlab.max_results, clamps);
+}
+
+fn clamp_max_results(key: &str, value: &mut usize, clamps: &mut Vec<Clamped>) {
+    let clamped = (*value).clamp(MIN_MAX_RESULTS, MAX_MAX_RESULTS);
+    if clamped != *value {
+        clamps.push(Clamped {
+            key: key.into(),
+            from: value.to_string(),
+            to: clamped.to_string(),
+        });
+        *value = clamped;
     }
 }
 
@@ -243,14 +256,8 @@ fn check_filters(config: &mut Config, errors: &mut Vec<String>, clamps: &mut Vec
             check_columns(&format!("{at}.columns"), columns, errors);
         }
 
-        let clamped = filter.max_results.clamp(MIN_MAX_RESULTS, MAX_MAX_RESULTS);
-        if clamped != filter.max_results {
-            clamps.push(Clamped {
-                key: format!("{at}.max_results"),
-                from: filter.max_results.to_string(),
-                to: clamped.to_string(),
-            });
-            filter.max_results = clamped;
+        if let Some(max_results) = &mut filter.max_results {
+            clamp_max_results(&format!("{at}.max_results"), max_results, clamps);
         }
     }
 }
@@ -378,16 +385,33 @@ mod tests {
     #[test]
     fn max_results_clamps_per_filter() {
         let mut c = config();
-        c.filters[0].max_results = 5_000;
+        c.filters[0].max_results = Some(5_000);
 
         let clamps = validate(&mut c).unwrap();
-        assert_eq!(c.filters[0].max_results, MAX_MAX_RESULTS);
+        assert_eq!(c.filters[0].max_results, Some(MAX_MAX_RESULTS));
         assert_eq!(clamps[0].key, "filter[0].max_results");
 
         let mut c = config();
-        c.filters[0].max_results = 0;
+        c.filters[0].max_results = Some(0);
         validate(&mut c).unwrap();
-        assert_eq!(c.filters[0].max_results, MIN_MAX_RESULTS);
+        assert_eq!(c.filters[0].max_results, Some(MIN_MAX_RESULTS));
+    }
+
+    #[test]
+    fn max_results_clamps_globally() {
+        let mut c = config();
+        c.gitlab.max_results = 5_000;
+
+        let clamps = validate(&mut c).unwrap();
+        assert_eq!(c.gitlab.max_results, MAX_MAX_RESULTS);
+        assert_eq!(clamps[0].key, "gitlab.max_results");
+        // An unset override stays unset, so it keeps following the global value.
+        assert_eq!(c.filters[0].max_results, None);
+
+        let mut c = config();
+        c.gitlab.max_results = 0;
+        validate(&mut c).unwrap();
+        assert_eq!(c.gitlab.max_results, MIN_MAX_RESULTS);
     }
 
     /// Jitter larger than the interval makes refreshes unpredictable rather than merely

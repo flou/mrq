@@ -17,7 +17,6 @@
       "default": [
         {
           "labels": [],
-          "max_results": 100,
           "name": "Assigned",
           "not_labels": [],
           "scope": "assigned",
@@ -34,6 +33,7 @@
       "$ref": "#/$defs/Gitlab",
       "default": {
         "max_concurrent_requests": 4,
+        "max_results": 40,
         "timeout_secs": 20,
         "url": "https://gitlab.com"
       }
@@ -291,10 +291,9 @@
           }
         },
         "max_results": {
-          "description": "Maximum number of merge requests fetched for this filter. Clamped to `1..=500`, with a\nwarning.",
+          "description": "Per-filter override of `[gitlab].max_results`: the maximum number of merge requests\nfetched for this filter. Clamped to `1..=500`, with a warning.",
           "type": "integer",
           "format": "uint",
-          "default": 100,
           "minimum": 0
         },
         "milestone": {
@@ -533,6 +532,13 @@
           "format": "uint",
           "default": 4,
           "minimum": 1
+        },
+        "max_results": {
+          "description": "Default maximum number of merge requests fetched per filter. A filter's own\n`max_results` overrides it. Clamped to `1..=500`, with a warning.",
+          "type": "integer",
+          "format": "uint",
+          "default": 40,
+          "minimum": 0
         },
         "timeout_secs": {
           "description": "Timeout for each GitLab request, in seconds. Must be at least 1.",

@@ -42,6 +42,7 @@ Unknown config keys are an error.
 | `token` | | Literal token. Needs the `read_api` scope. |
 | `timeout_secs` | `20` | Request timeout. |
 | `max_concurrent_requests` | `4` | Parallel requests. |
+| `max_results` | `40` | Merge requests fetched per filter, `1..=500`. A filter's own `max_results` overrides it. |
 
 ## `[refresh]`
 
@@ -140,7 +141,7 @@ Each block is a tab.
 | `show_drafts` | all | Overrides `[ui].show_drafts`. |
 | `columns` | all | Overrides `[ui].columns`. |
 | `notify` | all | Overrides `[notifications].enabled`. |
-| `max_results` | all | `1..=500`, default `100`. |
+| `max_results` | all | Overrides `[gitlab].max_results`. `1..=500`. |
 | `path` | `group`, `project` | GitLab full path, e.g. `acme/platform`. No leading or trailing slash. |
 | `include_subgroups` | `group` | Default `true`. |
 | `labels` | `group`, `project`, `instance` | AND-ed. |

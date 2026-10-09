@@ -101,6 +101,7 @@ impl Default for Degradation {
 pub async fn fetch(
     client: &Client,
     filter: &Filter,
+    max_results: usize,
     degradation: &mut Degradation,
     current_user: &str,
     instance_url: &str,
@@ -109,8 +110,16 @@ pub async fn fetch(
     let singles = filter.split_by_scope();
     let mut merged: Option<Snapshot> = None;
     for single in &singles {
-        let next =
-            fetch_single(client, single, degradation, current_user, instance_url, now).await?;
+        let next = fetch_single(
+            client,
+            single,
+            max_results,
+            degradation,
+            current_user,
+            instance_url,
+            now,
+        )
+        .await?;
         merged = Some(match merged {
             None => next,
             Some(previous) => previous.union(next),
@@ -129,8 +138,8 @@ pub async fn fetch(
         snapshot
             .merge_requests
             .sort_by_key(|mr| std::cmp::Reverse(mr.updated_at));
-        if snapshot.merge_requests.len() > filter.max_results {
-            snapshot.merge_requests.truncate(filter.max_results);
+        if snapshot.merge_requests.len() > max_results {
+            snapshot.merge_requests.truncate(max_results);
             snapshot.truncated = true;
         }
     }
@@ -163,6 +172,7 @@ impl Snapshot {
 async fn fetch_single(
     client: &Client,
     filter: &Filter,
+    max_results: usize,
     degradation: &mut Degradation,
     current_user: &str,
     instance_url: &str,
@@ -172,8 +182,8 @@ async fn fetch_single(
         match paginate(
             client,
             filter,
-            &degradation.fragment,
-            degradation.page_size,
+            max_results,
+            degradation,
             current_user,
             instance_url,
             now,
@@ -244,8 +254,8 @@ fn next_rung(page_size: u32, fragment: &Fragment) -> Option<(u32, Fragment)> {
 async fn paginate(
     client: &Client,
     filter: &Filter,
-    fragment: &Fragment,
-    page_size: u32,
+    max_results: usize,
+    degradation: &Degradation,
     current_user: &str,
     instance_url: &str,
     now: Timestamp,
@@ -260,7 +270,11 @@ async fn paginate(
     // its value — so the query text is fixed once a cursor exists, and only
     // `variables["after"]` changes from page to page. Rebuilding per page re-ran the same
     // handful of `format!` calls for no reason beyond the first two pages.
-    let mut document = query::build(filter, fragment, page_size, cursor.as_deref(), now);
+    let Degradation {
+        fragment,
+        page_size,
+    } = degradation;
+    let mut document = query::build(filter, fragment, *page_size, cursor.as_deref(), now);
 
     for _ in 0..MAX_PAGES {
         let response = client
@@ -289,8 +303,8 @@ async fn paginate(
         merge_requests.extend(page.merge_requests);
         merge(&mut anomalies, page.anomalies);
 
-        if merge_requests.len() >= filter.max_results {
-            merge_requests.truncate(filter.max_results);
+        if merge_requests.len() >= max_results {
+            merge_requests.truncate(max_results);
             // Only truncated if the server actually had more; hitting the cap exactly on
             // the last page is a complete list, not a capped one.
             truncated = page.has_next_page;
@@ -319,7 +333,7 @@ async fn paginate(
                 if cursor.is_none() {
                     // The one shape change: the first page declared no `$after` at all.
                     cursor = Some(next);
-                    document = query::build(filter, fragment, page_size, cursor.as_deref(), now);
+                    document = query::build(filter, fragment, *page_size, cursor.as_deref(), now);
                 } else {
                     document.variables["after"] = serde_json::Value::String(next.clone());
                     cursor = Some(next);
@@ -401,6 +415,7 @@ mod tests {
         fetch(
             client,
             filter,
+            filter.max_results(&Gitlab::default()),
             &mut Degradation::none(),
             "me",
             INSTANCE,
@@ -411,7 +426,7 @@ mod tests {
 
     fn filter(max_results: usize) -> Filter {
         Filter {
-            max_results,
+            max_results: Some(max_results),
             ..Filter::named("Assigned", Scope::Assigned)
         }
     }
@@ -516,7 +531,7 @@ mod tests {
 
     fn two_scopes(max_results: usize) -> Filter {
         Filter {
-            max_results,
+            max_results: Some(max_results),
             scope: Scopes::many([Scope::Assigned, Scope::ReviewRequested]).unwrap(),
             ..Filter::named("Mine", Scope::Assigned)
         }
@@ -793,6 +808,7 @@ mod tests {
         fetch(
             &client,
             &filter(100),
+            100,
             &mut degradation,
             "me",
             INSTANCE,
@@ -807,6 +823,7 @@ mod tests {
         fetch(
             &client,
             &filter(100),
+            100,
             &mut degradation,
             "me",
             INSTANCE,
@@ -850,6 +867,7 @@ mod tests {
         fetch(
             &client,
             &filter(100),
+            100,
             &mut degradation,
             "me",
             INSTANCE,
@@ -860,6 +878,7 @@ mod tests {
         fetch(
             &client,
             &filter(100),
+            100,
             &mut degradation,
             "me",
             INSTANCE,
@@ -895,6 +914,7 @@ mod tests {
         let snapshot = fetch(
             &client_for(&server),
             &filter(100),
+            100,
             &mut degradation,
             "me",
             INSTANCE,

@@ -537,11 +537,11 @@ path = "acme/platform"
             )
         );
         assert_eq!(
-            entry(&entries, "filter[0].max_results"),
+            entry(&entries, "filter[0].state"),
             &(
-                "filter[0].max_results".to_owned(),
+                "filter[0].state".to_owned(),
                 Source::Default,
-                "100".to_owned()
+                "opened".to_owned()
             )
         );
     }

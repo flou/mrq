@@ -48,7 +48,7 @@ macro_rules! fixture {
 
 fn filter(max_results: usize) -> Filter {
     Filter {
-        max_results,
+        max_results: Some(max_results),
         ..Filter::named("Assigned", Scope::Assigned)
     }
 }
@@ -133,6 +133,7 @@ impl Recording {
         fetch(
             &client_for(&self.server),
             &filter(max_results),
+            max_results,
             degradation,
             ME,
             INSTANCE,

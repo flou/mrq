@@ -264,6 +264,9 @@ pub struct Gitlab {
     pub timeout_secs: u64,
     /// Maximum number of GitLab requests in flight at once. Must be at least 1.
     pub max_concurrent_requests: usize,
+    /// Default maximum number of merge requests fetched per filter. A filter's own
+    /// `max_results` overrides it. Clamped to `1..=500`, with a warning.
+    pub max_results: usize,
 }
 
 impl Default for Gitlab {
@@ -274,6 +277,7 @@ impl Default for Gitlab {
             token_command: None,
             timeout_secs: 20,
             max_concurrent_requests: 4,
+            max_results: 40,
         }
     }
 }
@@ -862,9 +866,10 @@ pub struct Filter {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_after_days: Option<u32>,
 
-    /// Maximum number of merge requests fetched for this filter. Clamped to `1..=500`, with a
-    /// warning.
-    pub max_results: usize,
+    /// Per-filter override of `[gitlab].max_results`: the maximum number of merge requests
+    /// fetched for this filter. Clamped to `1..=500`, with a warning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_results: Option<usize>,
 }
 
 impl Default for Filter {
@@ -887,7 +892,7 @@ impl Default for Filter {
             milestone: None,
             target_branch: None,
             updated_after_days: None,
-            max_results: 100,
+            max_results: None,
         }
     }
 }
@@ -899,6 +904,12 @@ impl Filter {
             scope: scope.into(),
             ..Self::default()
         }
+    }
+
+    /// The maximum number of merge requests to fetch: this filter's override, else the
+    /// `[gitlab]` default.
+    pub fn max_results(&self, gitlab: &Gitlab) -> usize {
+        self.max_results.unwrap_or(gitlab.max_results)
     }
 
     /// One single-scope copy of this filter per listed scope, in order. Each is queried on
@@ -1488,7 +1499,8 @@ notify = false
         let c: Config = toml::from_str(doc).unwrap();
         assert_eq!(c.filters.len(), 4);
         assert_eq!(c.filters[1].scope, Scope::ReviewRequested);
-        assert_eq!(c.filters[1].max_results, 100, "default applies");
+        assert_eq!(c.filters[1].max_results, None, "default applies");
+        assert_eq!(c.filters[1].max_results(&c.gitlab), 40);
         assert_eq!(c.filters[1].notify, None, "default applies");
         assert_eq!(c.filters[3].notify, Some(false));
 
@@ -1632,5 +1644,27 @@ notify = false
         assert_eq!(cols.len(), 2);
         assert!(cols[1].wide);
         assert_eq!(Config::default().filters[0].columns, None);
+    }
+
+    /// A filter without its own `max_results` follows `[gitlab].max_results`; one with it
+    /// keeps its own.
+    #[test]
+    fn filter_max_results_falls_back_to_the_gitlab_default() {
+        let doc = r#"
+[gitlab]
+max_results = 30
+
+[[filter]]
+name = "Inherits"
+scope = "assigned"
+
+[[filter]]
+name = "Overrides"
+scope = "authored"
+max_results = 5
+"#;
+        let c: Config = toml::from_str(doc).unwrap();
+        assert_eq!(c.filters[0].max_results(&c.gitlab), 30);
+        assert_eq!(c.filters[1].max_results(&c.gitlab), 5);
     }
 }
