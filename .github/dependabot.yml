@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # Keeps the SHA pins (and their `# vX.Y.Z` comments) in .github/workflows fresh.
+  # Dependabot updates both the digest and the version comment for pinned actions.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+    groups:
+      github-actions:
+        patterns: ["*"]

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#MISE description="Re-pin and update the GitHub Actions in .github/workflows to their latest releases."
+# Dependabot keeps these pins fresh on a weekly schedule; this updates them on demand.
+
+set -Eeuo pipefail
+
+cd "${MISE_PROJECT_ROOT:-$(dirname "$0")/..}"
+
+printf '\n\033[1m== update GitHub Actions ==\033[0m\n'
+exec mise x pinact@5 -- pinact run --update

@@ -1,0 +1,10 @@
+version: 3
+
+rules:
+  # dtolnay/rust-toolchain distributes rustup and is referenced by branch, not by a semver
+  # tag, so pinact can't verify or update its `# stable` comment and errors on it.
+  # Leave it untouched here and bump it by hand when the stable toolchain moves.
+  - ignore: true
+    conditions:
+      - expr: |
+          ActionRepoFullName == "dtolnay/rust-toolchain"
