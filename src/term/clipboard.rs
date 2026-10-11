@@ -288,7 +288,14 @@ mod tests {
     #[test]
     fn a_failing_helper_reports_its_exit_status() {
         assert!(matches!(
-            run_native(&["false".to_owned()], "x"),
+            run_native(
+                &[
+                    "/bin/sh".to_owned(),
+                    "-c".to_owned(),
+                    "cat >/dev/null; exit 42".to_owned(),
+                ],
+                "x",
+            ),
             Err(Error::NonZero(_))
         ));
     }
