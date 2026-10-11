@@ -1,0 +1,59 @@
+name: Release-plz
+
+# On every push to main this keeps a release PR up to date with the next version and
+# changelog. Merging that PR pushes the vX.Y.Z tag, which triggers the Release workflow
+# to build and publish the signed binaries.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# release-pr and release both mutate the repo, so never run two of them at once. This
+# is not cancel-in-progress: a pending release must not be dropped by a newer push.
+concurrency:
+  group: release-plz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-pr:
+    name: release-pr
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Push the release branch
+      pull-requests: write # Open and update the release PR
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # release-plz walks the whole history to build the changelog.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - name: Run release-plz
+        uses: release-plz/action@f393a7b38aca9d9b4c58447b291dbac963901df6 # v0.5.141
+        with:
+          command: release-pr
+        env:
+          # A PAT (not GITHUB_TOKEN) is required so CI runs on the release PR.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Push the tag
+      pull-requests: read # Detect the merged release PR
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - name: Run release-plz
+        uses: release-plz/action@f393a7b38aca9d9b4c58447b291dbac963901df6 # v0.5.141
+        with:
+          command: release
+        env:
+          # Must be a PAT: a tag pushed with GITHUB_TOKEN would not trigger release.yml.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}

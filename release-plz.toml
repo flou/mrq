@@ -1,0 +1,14 @@
+# release-plz bumps the version in Cargo.toml and updates CHANGELOG.md in a release
+# PR. Merging that PR pushes the matching vX.Y.Z tag, and that tag is what triggers
+# .github/workflows/release.yml to build the binaries and publish the signed release.
+[workspace]
+# mrq ships as a binary from GitHub releases, not from crates.io, so derive versions
+# from git tags instead of the cargo registry and skip `cargo publish`.
+git_only = true
+# release.yml owns GitHub releases (it signs them with packslip), so release-plz must
+# only push the tag and leave the release itself alone.
+git_release_enable = false
+# Only release when the release PR is merged, not on every push to main.
+release_always = false
+# mrq has no library target, so there is no public API for cargo-semver-checks to guard.
+semver_check = false
