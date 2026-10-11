@@ -69,7 +69,7 @@ jobs:
           set -euo pipefail
           name="mrq-$VERSION-$TARGET"
           mkdir -p "dist/$name"
-          cp "target/$TARGET/release/mrq" README.md "dist/$name/"
+          cp "target/$TARGET/release/mrq" LICENSE README.md "dist/$name/"
           "dist/$name/mrq" --version
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && shasum -a 256 "$name.tar.gz" >"$name.tar.gz.sha256")

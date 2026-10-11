@@ -148,14 +148,16 @@ mrq schema > config.schema.json
 
 ## Cut a release
 
-Bump `version` in `Cargo.toml`, commit, then tag and push:
+Bump `version` in `Cargo.toml`, refresh `Cargo.lock`, commit, then tag and push:
 
 ```bash
+cargo check        # update Cargo.lock
 git tag v0.2.0
 git push origin v0.2.0
 ```
 
-The `Release` workflow refuses a tag that does not match `Cargo.toml`. It builds macOS and
-Linux archives (x86_64 and aarch64), publishes them as a GitHub release and attaches a
-signed `packslip.sigstore.json`. Run the workflow by hand from the Actions tab to build
-the archives without publishing anything.
+The `Release` workflow refuses a tag that does not match `Cargo.toml`, and the build runs
+`cargo build --locked`, so `Cargo.lock` must track the new version too. It builds macOS and
+Linux archives (x86_64 and aarch64), publishes them as a GitHub release, attaches a signed
+`packslip.sigstore.json`, and ships the `LICENSE` in each archive. Run the workflow by hand
+from the Actions tab to build the archives without publishing anything.
