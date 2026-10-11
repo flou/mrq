@@ -6,11 +6,10 @@ You need a GitLab account, [mise](https://mise.jdx.dev) or a Rust toolchain, and
 
 ## 1. Install mrq
 
-With [mise](https://mise.jdx.dev) (builds from the git repository using the Rust toolchain):
+With [mise](https://mise.jdx.dev):
 
 ```bash
-mise use -g rust  # if cargo isn't installed yet
-mise use -g cargo:https://github.com/flou/mrq@branch:main
+mise use -g packslip:github.com/flou/mrq
 ```
 
 Or build from source, from a clone of the repository:
