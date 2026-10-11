@@ -63,13 +63,19 @@ jobs:
           targets: ${{ matrix.target }}
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       - run: cargo build --release --locked --target "$TARGET"
+      # Attribution for the crates in the binary: Apache-2.0 and friends require their
+      # copyright notices to travel with what we distribute, so bundle the generated file
+      # next to LICENSE instead of only publishing it on the release page.
+      - name: Generate third-party licenses
+        run: mise run licenses
       - name: Package
         run: |
           set -euo pipefail
           name="mrq-$VERSION-$TARGET"
           mkdir -p "dist/$name"
-          cp "target/$TARGET/release/mrq" LICENSE README.md "dist/$name/"
+          cp "target/$TARGET/release/mrq" LICENSE README.md THIRD-PARTY-LICENSES.md "dist/$name/"
           "dist/$name/mrq" --version
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && shasum -a 256 "$name.tar.gz" >"$name.tar.gz.sha256")

@@ -25,6 +25,7 @@ run() {
 run "fmt" cargo fmt --all -- --check
 run "clippy" cargo clippy --all-targets --all-features -- -D warnings
 run "test" cargo test --all-targets
+run "deny" mise run deny
 # No `cargo test --doc`: mrq is a binary-only crate, so there is no lib target and the
 # command errors out rather than finding nothing to do.
 
