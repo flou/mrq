@@ -2,6 +2,8 @@
 
 A keyboard-driven TUI for the GitLab merge requests you need to review.
 
+![mrq screenshot](docs/assets/screenshot.png)
+
 ## Installation
 
 With [mise](https://mise.jdx.dev) (builds from the git repository using the Rust toolchain):
