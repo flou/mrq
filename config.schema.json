@@ -34,6 +34,7 @@
       "default": {
         "max_concurrent_requests": 4,
         "max_results": 40,
+        "max_results_closed": 10,
         "timeout_secs": 20,
         "url": "https://gitlab.com"
       }
@@ -328,6 +329,12 @@
           "format": "uint",
           "minimum": 0
         },
+        "max_results_closed": {
+          "description": "Per-filter override of `[gitlab].max_results_closed`. Only used when `state` is `all`.\nClamped to `1..=500`, with a warning.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
         "milestone": {
           "description": "Only merge requests in the milestone with this title, e.g. `24.Q3`. Not accepted on\n`assigned`, `review_requested` or `authored`.",
           "type": "string"
@@ -570,6 +577,13 @@
           "type": "integer",
           "format": "uint",
           "default": 40,
+          "minimum": 0
+        },
+        "max_results_closed": {
+          "description": "Default maximum number of merged and closed merge requests fetched, together, for a\nfilter whose `state` is `all`. Open ones are capped by `max_results` alone, so recent\nmerges cannot push them out. Clamped to `1..=500`, with a warning.",
+          "type": "integer",
+          "format": "uint",
+          "default": 10,
           "minimum": 0
         },
         "timeout_secs": {

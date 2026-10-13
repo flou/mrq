@@ -25,7 +25,7 @@ use crate::config::schema::{Config, Refresh};
 use crate::error::{Phase, Recovery};
 use crate::gitlab::client::Client;
 use crate::gitlab::error::Backoff;
-use crate::gitlab::fetch::{self, Degradation};
+use crate::gitlab::fetch::{self, Caps, Degradation};
 
 /// A request for a filter to refresh now, sent by `ctrl-r` or a focus gain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +184,7 @@ pub fn spawn_generation(
             id: crate::app::event::tag(generation, index),
             filter: filter.clone(),
             max_results: filter.max_results(&config.gitlab),
+            max_results_closed: filter.max_results_closed(&config.gitlab),
             refresh: config.refresh.clone(),
             instance_url: config.gitlab.url.clone(),
             identity: identity.clone(),
@@ -211,6 +212,8 @@ struct Worker {
     filter: crate::config::schema::Filter,
     /// The filter's override or the `[gitlab]` default, resolved once at spawn.
     max_results: usize,
+    /// Cap on merged and closed rows for a `state = all` filter, resolved like `max_results`.
+    max_results_closed: usize,
     refresh: Refresh,
     instance_url: String,
     /// The identity probe's result. Not yet known at construction time — the whole
@@ -385,7 +388,10 @@ impl Worker {
         let result = fetch::fetch(
             &self.client,
             &self.filter,
-            self.max_results,
+            Caps {
+                results: self.max_results,
+                closed: self.max_results_closed,
+            },
             degradation,
             current_user,
             &self.instance_url,
