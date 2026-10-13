@@ -1002,6 +1002,7 @@ impl Application for App {
             hyperlinks: self.hyperlinks,
             link_columns: self.config.ui.link.columns(),
             people_display: self.people_display_modes(),
+            dim_drafts: self.config.ui.dim_drafts,
         };
 
         // The scene borrows `self`; `Terminal::draw` only takes `self.terminal`, and

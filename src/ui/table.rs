@@ -23,7 +23,7 @@ use ratatui::widgets::{Cell, Row, Table};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::state::Tab;
-use crate::config::schema::{Column, PeopleDisplay};
+use crate::config::schema::{Column, DimDrafts, PeopleDisplay};
 use crate::gitlab::model::{MergeRequest, MrState, User};
 use crate::term::hyperlink;
 use crate::ui::columns::{self, Allocation};
@@ -431,10 +431,11 @@ const fn discussion_prefix(mr: &MergeRequest, theme: &Theme) -> &'static str {
 
 /// Whether a row is dimmed wholesale.
 ///
-/// Drafts always are. Merged and closed MRs are too, but only next to opened ones
-/// (`mixed`): in a list of nothing but finished MRs, dimming them all says nothing.
-const fn is_dimmed(mr: &MergeRequest, mixed: bool) -> bool {
-    mr.draft || (mixed && mr.is_finished())
+/// Drafts are when `[ui].dim_drafts` covers their author. Merged and closed MRs are too,
+/// but only next to opened ones (`mixed`): in a list of nothing but finished MRs, dimming
+/// them all says nothing.
+const fn is_dimmed(mr: &MergeRequest, mixed: bool, dim_drafts: DimDrafts) -> bool {
+    (mr.draft && dim_drafts.dims(mr.authored_by_me())) || (mixed && mr.is_finished())
 }
 
 /// Which role a cell's text takes.
@@ -689,6 +690,7 @@ pub fn build<'a>(
     theme: &Theme,
     now: jiff::Timestamp,
     modes: PeopleDisplayModes,
+    dim_drafts: DimDrafts,
 ) -> Table<'a> {
     let selected = tab.selected_id();
     // Over every fetched row, not the visible ones: a search must not toggle dimming.
@@ -704,7 +706,7 @@ pub fn build<'a>(
                 theme,
                 selected == Some(mr.id.as_str()),
                 tab.is_new(&mr.id),
-                is_dimmed(mr, mixed),
+                is_dimmed(mr, mixed, dim_drafts),
                 now,
                 modes,
             )
@@ -1025,6 +1027,7 @@ mod tests {
                     &theme,
                     now(),
                     PeopleDisplayModes::default(),
+                    DimDrafts::All,
                 );
                 frame.render_widget(table, frame.area());
             })
@@ -1726,7 +1729,7 @@ mod tests {
             "✎ Migration guide"
         );
         assert_eq!(
-            cell_role(&m, Column::Title, is_dimmed(&m, false)),
+            cell_role(&m, Column::Title, is_dimmed(&m, false, DimDrafts::All)),
             Role::Dim
         );
     }
@@ -2022,14 +2025,57 @@ mod tests {
         m.conflicts = true;
 
         assert_eq!(
-            cell_role(&m, Column::Title, is_dimmed(&m, false)),
+            cell_role(&m, Column::Title, is_dimmed(&m, false, DimDrafts::All)),
             Role::Dim,
             "dim wins over warning"
         );
         assert_eq!(
-            cell_role(&m, Column::Author, is_dimmed(&m, false)),
+            cell_role(&m, Column::Author, is_dimmed(&m, false, DimDrafts::All)),
             Role::Dim
         );
+    }
+
+    /// `[ui].dim_drafts` picks which drafts recede, by whether you authored them.
+    #[test]
+    fn dim_drafts_selects_drafts_by_author() {
+        let mut mine = mr("a", "me");
+        mine.draft = true;
+        mine.recompute_derived("me");
+        let mut theirs = mr("b", "someone");
+        theirs.draft = true;
+        theirs.recompute_derived("me");
+
+        for (setting, dims_mine, dims_theirs) in [
+            (DimDrafts::All, true, true),
+            (DimDrafts::Mine, true, false),
+            (DimDrafts::Theirs, false, true),
+            (DimDrafts::None, false, false),
+        ] {
+            assert_eq!(
+                is_dimmed(&mine, false, setting),
+                dims_mine,
+                "{setting:?} mine"
+            );
+            assert_eq!(
+                is_dimmed(&theirs, false, setting),
+                dims_theirs,
+                "{setting:?} theirs"
+            );
+        }
+    }
+
+    /// The setting only spares drafts: it neither dims a non-draft nor undims a finished MR.
+    #[test]
+    fn dim_drafts_leaves_non_drafts_alone() {
+        let mut opened = mr("a", "someone");
+        opened.recompute_derived("me");
+        let mut merged = mr("b", "someone");
+        merged.state = MrState::Merged;
+        merged.recompute_derived("me");
+
+        assert!(!is_dimmed(&opened, true, DimDrafts::All));
+        assert!(!is_dimmed(&opened, true, DimDrafts::Theirs));
+        assert!(is_dimmed(&merged, true, DimDrafts::None));
     }
 
     /// Finished MRs recede next to opened ones, but not in a list of only finished ones.
@@ -2044,15 +2090,18 @@ mod tests {
         let mut opened = mr("d", "someone");
         opened.state = MrState::Opened;
 
-        assert!(is_dimmed(&merged, true));
-        assert!(is_dimmed(&closed, true));
-        assert!(!is_dimmed(&opened, true));
-        assert!(!is_dimmed(&locked, true), "locked is not finished");
+        assert!(is_dimmed(&merged, true, DimDrafts::All));
+        assert!(is_dimmed(&closed, true, DimDrafts::All));
+        assert!(!is_dimmed(&opened, true, DimDrafts::All));
         assert!(
-            !is_dimmed(&merged, false),
+            !is_dimmed(&locked, true, DimDrafts::All),
+            "locked is not finished"
+        );
+        assert!(
+            !is_dimmed(&merged, false, DimDrafts::All),
             "nothing opened to contrast with"
         );
-        assert!(!is_dimmed(&closed, false));
+        assert!(!is_dimmed(&closed, false, DimDrafts::All));
     }
 
     /// Reverse video plus a marker, so selection survives a terminal with
@@ -2123,6 +2172,7 @@ mod tests {
                     &theme,
                     now(),
                     PeopleDisplayModes::default(),
+                    DimDrafts::All,
                 );
                 frame.render_widget(table, area);
             })
@@ -2255,6 +2305,7 @@ mod tests {
                     &theme,
                     now(),
                     PeopleDisplayModes::default(),
+                    DimDrafts::All,
                 );
                 frame.render_widget(table, frame.area());
             })
@@ -2311,6 +2362,7 @@ mod tests {
                     &theme,
                     now(),
                     PeopleDisplayModes::default(),
+                    DimDrafts::All,
                 );
                 frame.render_widget(table, frame.area());
             })
@@ -2368,6 +2420,7 @@ mod tests {
                         &theme,
                         now(),
                         PeopleDisplayModes::default(),
+                        DimDrafts::All,
                     );
                     frame.render_widget(table, area);
                 })
@@ -2507,6 +2560,7 @@ mod tests {
                         &theme(false),
                         now(),
                         PeopleDisplayModes::default(),
+                        DimDrafts::All,
                     );
                     frame.render_widget(table, AREA);
                     spans = link_spans(
@@ -2661,6 +2715,7 @@ mod tests {
                         &theme(false),
                         now(),
                         PeopleDisplayModes::default(),
+                        DimDrafts::All,
                     );
                     frame.render_widget(table, self.area);
                     spans = link_spans(
@@ -2910,6 +2965,7 @@ mod tests {
                             &theme(false),
                             now(),
                             PeopleDisplayModes::default(),
+                            DimDrafts::All,
                         );
                         frame.render_widget(table, area);
                         spans = link_spans(

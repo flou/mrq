@@ -150,6 +150,7 @@
           "updated",
           "diff:wide"
         ],
+        "dim_drafts": "all",
         "link": "title",
         "merged_by_display": "username",
         "mouse": false,
@@ -259,6 +260,31 @@
       "description": "A column key, optionally suffixed `:wide` to show it only in wide mode.",
       "type": "string",
       "pattern": "^((approved|author|repo|title|pipeline)|(id|assigned|approver|reviewer|merged_by|status|age|updated|diff|branch)(:wide)?)$"
+    },
+    "DimDrafts": {
+      "description": "Which draft merge requests are greyed out.",
+      "oneOf": [
+        {
+          "description": "Every draft.",
+          "type": "string",
+          "const": "all"
+        },
+        {
+          "description": "Drafts you authored.",
+          "type": "string",
+          "const": "mine"
+        },
+        {
+          "description": "Drafts someone else authored.",
+          "type": "string",
+          "const": "theirs"
+        },
+        {
+          "description": "No draft.",
+          "type": "string",
+          "const": "none"
+        }
+      ]
     },
     "Filter": {
       "description": "One merge request list, shown as a tab.",
@@ -957,6 +983,11 @@
             "$ref": "#/$defs/ColumnSpec"
           },
           "minItems": 1
+        },
+        "dim_drafts": {
+          "description": "Which draft merge requests are greyed out: `all`, `mine` (authored by you), `theirs`\n(authored by someone else) or `none`.",
+          "$ref": "#/$defs/DimDrafts",
+          "default": "all"
         },
         "link": {
           "description": "Which column is the clickable link to the merge request, in a terminal that supports\nhyperlinks: `title`, `id`, `both`, or `none` to turn hyperlinks off. `id` only links while\nthe `id` column is on screen (it is wide-only by default).",

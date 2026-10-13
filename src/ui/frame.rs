@@ -225,6 +225,7 @@ fn render(world: &World, width: u16, height: u16, hyperlinks: bool) -> Vec<Strin
         hyperlinks,
         link_columns: &[Column::Title],
         people_display: super::table::PeopleDisplayModes::default(),
+        dim_drafts: crate::config::schema::DimDrafts::All,
     };
 
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -326,6 +327,7 @@ fn links_are_returned_only_when_hyperlinks_are_supported() {
             hyperlinks,
             link_columns: &[Column::Title],
             people_display: super::table::PeopleDisplayModes::default(),
+            dim_drafts: crate::config::schema::DimDrafts::All,
         };
         let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
         let mut spans = Vec::new();
@@ -381,6 +383,7 @@ fn a_popup_hides_the_links_and_closing_it_restores_them() {
             hyperlinks: true,
             link_columns: &[Column::Title],
             people_display: super::table::PeopleDisplayModes::default(),
+            dim_drafts: crate::config::schema::DimDrafts::All,
         };
         let mut spans = Vec::new();
         let completed = terminal
@@ -449,6 +452,7 @@ fn a_skin_change_repaints_every_cell_in_the_new_background() {
         hyperlinks: false,
         link_columns: &[Column::Title],
         people_display: super::table::PeopleDisplayModes::default(),
+        dim_drafts: crate::config::schema::DimDrafts::All,
     };
     terminal
         .draw(|frame| {
@@ -476,6 +480,7 @@ fn a_skin_change_repaints_every_cell_in_the_new_background() {
         hyperlinks: false,
         link_columns: &[Column::Title],
         people_display: super::table::PeopleDisplayModes::default(),
+        dim_drafts: crate::config::schema::DimDrafts::All,
     };
     terminal
         .draw(|frame| {
@@ -524,6 +529,7 @@ fn previewing_a_skin_repaints_the_popup_background() {
             hyperlinks: false,
             link_columns: &[Column::Title],
             people_display: super::table::PeopleDisplayModes::default(),
+            dim_drafts: crate::config::schema::DimDrafts::All,
         };
         terminal
             .draw(|frame| {

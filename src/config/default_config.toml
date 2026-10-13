@@ -42,6 +42,10 @@
 # ascii = false
 
 # show_drafts = false
+
+# Which drafts are greyed out: all, mine (authored by you), theirs (authored by someone
+# else) or none.
+# dim_drafts = "all"
 # relative_times = true
 
 # How the ASG / APPROVER / REVIEWER / MERGED BY columns name people. One of:
