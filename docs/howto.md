@@ -96,6 +96,17 @@ down = []        # unbind
 
 Naming an action replaces its default keys. Two actions on one key is a startup error. See [key specs](reference.md#key-specs).
 
+## Read a diff in the terminal
+
+Press `\` to fetch the selected merge request's diff and open it in `delta`, or `less -R` if delta is not installed. Quit the viewer to return to mrq. To use another viewer:
+
+```toml
+[diff]
+command = "riff"                      # or "delta --side-by-side", "less -R", ...
+```
+
+The command reads the diff on stdin and runs through `sh -c`. `shift-D` opens the diffs page in the browser instead.
+
 ## Get desktop notifications
 
 Notifications are on by default for new merge requests, approvals and new discussions. To add pipeline changes and merges:

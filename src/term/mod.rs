@@ -17,6 +17,7 @@
 //! - `notify`    — OSC 9 / OSC 777 / command notification backends and the bell
 //! - `clipboard` — the OSC 52 copy and its native helper fallbacks
 //! - `browser`   — the detached `open`/`xdg-open` launch actions
+//! - `pager`     — the diff viewer that takes over the suspended terminal
 //! - `title`     — the OSC 0 screen title: format, escape, and sanitisation
 //!
 //! # Invariant
@@ -31,6 +32,7 @@ pub mod clipboard;
 pub mod guard;
 pub mod hyperlink;
 pub mod notify;
+pub mod pager;
 pub mod signal;
 pub mod sync;
 pub mod title;

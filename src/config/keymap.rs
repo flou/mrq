@@ -39,6 +39,7 @@ pub enum Action {
     OpenPipeline,
     OpenProject,
     OpenDiffs,
+    ViewDiff,
     CopyUrl,
     CopyBranch,
     ShowDetails,
@@ -90,7 +91,7 @@ impl Category {
 
 impl Action {
     /// Every action, in help-popup order.
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 34] = [
         Self::Down,
         Self::Up,
         Self::PageDown,
@@ -103,6 +104,7 @@ impl Action {
         Self::OpenPipeline,
         Self::OpenProject,
         Self::OpenDiffs,
+        Self::ViewDiff,
         Self::CopyUrl,
         Self::CopyBranch,
         Self::ShowDetails,
@@ -145,6 +147,7 @@ impl Action {
             Self::OpenPipeline => "open_pipeline",
             Self::OpenProject => "open_project",
             Self::OpenDiffs => "open_diffs",
+            Self::ViewDiff => "view_diff",
             Self::CopyUrl => "copy_url",
             Self::CopyBranch => "copy_branch",
             Self::ShowDetails => "show_details",
@@ -188,6 +191,7 @@ impl Action {
             Self::OpenPipeline => "Open the latest pipeline",
             Self::OpenProject => "Open the project",
             Self::OpenDiffs => "Open the merge request diffs",
+            Self::ViewDiff => "Show the diff in the terminal",
             Self::CopyUrl => "Copy the merge request URL",
             Self::CopyBranch => "Copy the source branch name",
             Self::ShowDetails => "Show merge request details",
@@ -222,6 +226,7 @@ impl Action {
             | Self::OpenPipeline
             | Self::OpenProject
             | Self::OpenDiffs
+            | Self::ViewDiff
             | Self::CopyUrl
             | Self::CopyBranch
             | Self::ShowDetails
@@ -507,6 +512,7 @@ pub const DEFAULT_BINDINGS: &[(Action, &[&str])] = &[
     (Action::OpenPipeline, &["p"]),
     (Action::OpenProject, &["shift-O"]),
     (Action::OpenDiffs, &["shift-D"]),
+    (Action::ViewDiff, &["\\"]),
     (Action::CopyUrl, &["y"]),
     (Action::CopyBranch, &["shift-Y"]),
     (Action::ShowDetails, &["d"]),
@@ -741,6 +747,7 @@ mod tests {
             ("p", Action::OpenPipeline),
             ("shift-O", Action::OpenProject),
             ("shift-D", Action::OpenDiffs),
+            ("\\", Action::ViewDiff),
             ("y", Action::CopyUrl),
             ("shift-Y", Action::CopyBranch),
             ("d", Action::ShowDetails),
@@ -804,6 +811,15 @@ mod tests {
         assert_eq!(
             map.action_for(press(KeyCode::Char('d'), KeyModifiers::empty())),
             Some(Action::ShowDetails)
+        );
+    }
+
+    #[test]
+    fn backslash_shows_the_diff_in_the_terminal() {
+        let map = resolve(&BTreeMap::new()).unwrap();
+        assert_eq!(
+            map.action_for(press(KeyCode::Char('\\'), KeyModifiers::empty())),
+            Some(Action::ViewDiff)
         );
     }
 

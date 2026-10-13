@@ -98,7 +98,7 @@ pub fn run(url: &str, launch: &Launch) -> Result<(), Error> {
 }
 
 /// Whether an executable of this name is on `$PATH`.
-fn on_path(name: &str) -> bool {
+pub(crate) fn on_path(name: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };

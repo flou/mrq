@@ -175,6 +175,11 @@ pub enum Effect {
         project_path: String,
         iid: String,
     },
+    /// Fetch a merge request's diff and show it in the configured viewer.
+    ViewDiff {
+        project_path: String,
+        iid: String,
+    },
     Quit,
 }
 
@@ -729,6 +734,19 @@ pub fn dispatch(state: &mut ViewState, action: Action) -> (bool, Effect) {
         },
         Action::OpenDiffs => match state.selected() {
             Some(mr) => (true, Effect::Open(format!("{}/diffs", mr.web_url))),
+            None => (false, Effect::None),
+        },
+        Action::ViewDiff => match state.selected() {
+            Some(mr) => {
+                state.flash("fetching diff…");
+                (
+                    true,
+                    Effect::ViewDiff {
+                        project_path: mr.project_path,
+                        iid: mr.iid,
+                    },
+                )
+            }
             None => (false, Effect::None),
         },
         Action::OpenPipeline => match state.selected().and_then(|mr| mr.pipeline) {
@@ -2334,6 +2352,22 @@ mod tests {
     }
 
     #[test]
+    fn viewing_the_diff_names_the_merge_request() {
+        let mut state = state_with(rows(1));
+        dispatch(&mut state, Action::Down);
+        let mr = state.selected().unwrap();
+
+        let (_, effect) = dispatch(&mut state, Action::ViewDiff);
+        assert_eq!(
+            effect,
+            Effect::ViewDiff {
+                project_path: mr.project_path,
+                iid: mr.iid,
+            }
+        );
+    }
+
+    #[test]
     fn opening_the_project_trims_the_merge_request_path() {
         let mut state = state_with(rows(1));
         dispatch(&mut state, Action::Down);
@@ -2465,6 +2499,7 @@ mod tests {
             Action::OpenMr,
             Action::OpenProject,
             Action::OpenDiffs,
+            Action::ViewDiff,
             Action::CopyUrl,
             Action::CopyBranch,
         ] {

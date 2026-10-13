@@ -125,6 +125,15 @@ pub enum AppEvent {
         result: Box<Result<Vec<crate::gitlab::discussions::Discussion>, String>>,
     },
 
+    /// A merge request's diff arrived for the terminal viewer. `Err` carries the message
+    /// the status bar shows.
+    ///
+    /// Boxed like the other large payloads (see `the_event_enum_stays_small`).
+    DiffLoaded {
+        iid: String,
+        result: Box<Result<String, String>>,
+    },
+
     /// Shut down: a signal arrived, or the user quit.
     Quit(QuitReason),
 }
@@ -263,6 +272,51 @@ pub fn spawn_input(tasks: &mut Tasks, events: EventSender) {
     }));
 }
 
+/// The terminal input task, kept apart from the rest so it can be stopped while a child
+/// process owns the terminal: crossterm's reader would otherwise race the child for every
+/// keystroke.
+#[derive(Debug)]
+pub struct Input {
+    root: CancellationToken,
+    tasks: Tasks,
+    events: EventSender,
+}
+
+impl Input {
+    /// Start forwarding input. The task also stops when `root` is cancelled.
+    pub fn spawn(root: CancellationToken, events: EventSender) -> Self {
+        let mut tasks = Tasks::under(&root);
+        spawn_input(&mut tasks, events.clone());
+        Self {
+            root,
+            tasks,
+            events,
+        }
+    }
+
+    /// Stop reading the terminal, blocking until the reader has let go of it.
+    ///
+    /// Blocking rather than async because the caller is the loop's synchronous handler,
+    /// and the child it is making room for must not start before the reader is gone.
+    /// Needs the multi-threaded runtime, which is the only one `main` builds.
+    pub fn pause(&mut self) {
+        let tasks = std::mem::replace(&mut self.tasks, Tasks::under(&self.root));
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(tasks.shutdown());
+        });
+    }
+
+    /// Start reading the terminal again after [`Self::pause`].
+    pub fn resume(&mut self) {
+        spawn_input(&mut self.tasks, self.events.clone());
+    }
+
+    /// Stop the reader and wait for it, before the terminal guard drops.
+    pub async fn shutdown(&mut self) {
+        std::mem::take(&mut self.tasks).shutdown().await;
+    }
+}
+
 /// Drive the render and clock ticks.
 ///
 /// One task for both, because they are the same kind of thing and two timers would only
@@ -332,11 +386,21 @@ pub fn spawn_signals(
     };
     let cancel = tasks.token();
     tasks.track(tokio::spawn(async move {
-        tokio::select! {
-            () = cancel.cancelled() => {}
-            signal = signals.terminated() => {
-                tracing::info!(signal = signal.as_str(), "shutting down");
-                let _ = events.send(AppEvent::Quit(QuitReason::Signal(signal)));
+        loop {
+            tokio::select! {
+                () = cancel.cancelled() => break,
+                signal = signals.terminated() => {
+                    // A ctrl-c typed into the diff viewer reaches the whole foreground
+                    // process group; it was meant for the viewer, not for mrq.
+                    if signal == crate::term::signal::Termination::Interrupt
+                        && crate::term::guard::is_suspended()
+                    {
+                        continue;
+                    }
+                    tracing::info!(signal = signal.as_str(), "shutting down");
+                    let _ = events.send(AppEvent::Quit(QuitReason::Signal(signal)));
+                    break;
+                }
             }
         }
     }));

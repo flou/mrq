@@ -84,6 +84,10 @@ pub struct App {
     clipboard_helpers: crate::term::clipboard::Helpers,
     /// The browser launcher helpers detected at startup.
     browser_helpers: crate::term::browser::Helpers,
+    /// The diff viewers detected at startup.
+    pager_helpers: crate::term::pager::Helpers,
+    /// The terminal reader, paused while the diff viewer owns the terminal.
+    input: app_event::Input,
     /// Whether the terminal advertises OSC 8.
     hyperlinks: bool,
     /// The OSC 8 links currently on the terminal.
@@ -313,7 +317,53 @@ impl App {
                 project_path,
                 iid,
             ),
+            Effect::ViewDiff { project_path, iid } => {
+                let events = self.events.clone();
+                let client = self.client.clone();
+                // Untracked, like the comments fetch: one request that holds nothing the
+                // terminal guard needs released.
+                tokio::spawn(async move {
+                    let result = crate::gitlab::diff::fetch(&client, &project_path, &iid)
+                        .await
+                        .map_err(|error| error.to_string());
+                    let _ = events.send(AppEvent::DiffLoaded {
+                        iid,
+                        result: Box::new(result),
+                    });
+                });
+            }
         }
+    }
+
+    /// Hand the terminal to the diff viewer until it exits, then take it back.
+    ///
+    /// Blocks the loop on purpose: nothing may read the keyboard or paint while the viewer
+    /// owns the terminal. Events that arrive meanwhile queue and are handled on return.
+    /// `Err` means the terminal could not be taken back, which ends the session.
+    fn show_diff(&mut self, iid: &str, diff: &str) -> Result<()> {
+        if diff.trim().is_empty() {
+            self.view.flash(format!("!{iid} has no changes"));
+            return Ok(());
+        }
+        let command = crate::term::pager::plan(&self.config.diff, &self.pager_helpers);
+        tracing::info!(%command, iid, bytes = diff.len(), "showing diff");
+
+        self.input.pause();
+        let _ = self.terminal.show_cursor();
+        let suspended = guard::suspend();
+        let outcome = tokio::task::block_in_place(|| crate::term::pager::run(&command, diff));
+        let resumed = guard::resume(suspended);
+        self.input.resume();
+
+        resumed.map_err(|e| Error::Other(format!("could not take back the terminal: {e}")))?;
+        // The viewer painted over everything ratatui believes is on screen.
+        let _ = self.terminal.clear();
+        self.view.flash = None;
+        if let Err(error) = outcome {
+            tracing::warn!(%error, %command, "diff viewer failed");
+            self.view.flash(format!("diff viewer failed: {error}"));
+        }
+        Ok(())
     }
 
     /// Re-read the config file. An invalid one is reported and the running configuration
@@ -914,6 +964,22 @@ impl Application for App {
                 result,
             } => self.view.discussions_loaded(&id, updated_at, *result),
 
+            AppEvent::DiffLoaded { iid, result } => match *result {
+                Ok(diff) => {
+                    if let Err(error) = self.show_diff(&iid, &diff) {
+                        tracing::error!(%error, "terminal lost after the diff viewer");
+                        self.fatal = Some(Box::new(error));
+                        return (Flow::Quit(QuitReason::Fatal), false);
+                    }
+                    true
+                }
+                Err(message) => {
+                    tracing::warn!(%message, iid, "diff fetch failed");
+                    self.view.flash(format!("diff failed: {message}"));
+                    true
+                }
+            },
+
             AppEvent::IdentityRetrying { error, retry_in } => {
                 tracing::warn!(%error, retry_in_secs = retry_in.as_secs(), "identity probe failed, retrying");
                 self.view.flash(format!(
@@ -1169,7 +1235,7 @@ pub async fn run(
     let terminal = Terminal::new(CrosstermBackend::new(std::io::stdout()))
         .map_err(|e| Error::Other(format!("could not initialise the terminal: {e}")))?;
 
-    app_event::spawn_input(&mut tasks, events.clone());
+    let input = app_event::Input::spawn(tasks.token(), events.clone());
     app_event::spawn_ticks(&mut tasks, events.clone());
     app_event::spawn_signals(&mut tasks, events.clone(), signals);
 
@@ -1212,6 +1278,9 @@ pub async fn run(
         xclip = clipboard_helpers.xclip,
         "clipboard"
     );
+
+    let pager_helpers = crate::term::pager::Helpers::detect();
+    tracing::info!(delta = pager_helpers.delta, "diff viewers");
 
     let browser_helpers = crate::term::browser::Helpers::detect();
     tracing::info!(
@@ -1312,6 +1381,8 @@ pub async fn run(
         notifier,
         clipboard_helpers,
         browser_helpers,
+        pager_helpers,
+        input,
         links: crate::ui::table::Links::default(),
         popup_open: false,
         mouse_captured: mouse,
@@ -1333,6 +1404,7 @@ pub async fn run(
     let fatal = app.fatal.take();
     // Already cancelled through the root token; this only waits for the workers to land.
     std::mem::take(&mut app.refresh_tasks).shutdown().await;
+    app.input.shutdown().await;
     drop(app);
     drop(guard);
 

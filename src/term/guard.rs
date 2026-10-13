@@ -306,6 +306,50 @@ fn set_mouse_with(ops: &mut dyn TerminalOps, on: bool) -> io::Result<()> {
     }
 }
 
+/// Hand the terminal to a child process: undo every applied step except the title stack,
+/// which the child has no reason to see popped, and return what was undone for
+/// [`resume`].
+///
+/// `ACTIVE` drops the suspended steps as they are undone, so a signal or panic while the
+/// child runs restores only what is still applied.
+pub fn suspend() -> Steps {
+    suspend_with(&mut CrosstermOps::new(), &ACTIVE)
+}
+
+/// Take the terminal back after [`suspend`], reapplying exactly the steps it undid.
+pub fn resume(suspended: Steps) -> io::Result<()> {
+    resume_with(&mut CrosstermOps::new(), &ACTIVE, suspended)
+}
+
+/// Whether the terminal is currently handed to a child process, so the signal path can
+/// leave a `SIGINT` meant for that child alone.
+pub fn is_suspended() -> bool {
+    SUSPENDED.load(Ordering::SeqCst)
+}
+
+static SUSPENDED: AtomicBool = AtomicBool::new(false);
+
+fn suspend_with(ops: &mut dyn TerminalOps, active: &AtomicU32) -> Steps {
+    let applied = Steps(active.load(Ordering::SeqCst));
+    let suspended = Steps(applied.0 & !Step::TitleStack.bit());
+    SUSPENDED.store(true, Ordering::SeqCst);
+    leave(ops, suspended);
+    active.fetch_and(!suspended.0, Ordering::SeqCst);
+    suspended
+}
+
+fn resume_with(ops: &mut dyn TerminalOps, active: &AtomicU32, suspended: Steps) -> io::Result<()> {
+    let result = enter(ops, suspended, |applied| {
+        active.fetch_or(applied.0, Ordering::SeqCst);
+    });
+    if result.is_err() {
+        // `enter` rolled its own steps back; `ACTIVE` has to agree.
+        active.fetch_and(!suspended.0, Ordering::SeqCst);
+    }
+    SUSPENDED.store(false, Ordering::SeqCst);
+    result.map(|_| ())
+}
+
 /// Install a panic hook that restores the terminal before the previous hook reports.
 ///
 /// Ordering is the whole point: `color_eyre`'s hook writes a multi-line report, and on
@@ -779,5 +823,59 @@ mod tests {
 
         assert_eq!(*calls.borrow(), [(Step::Mouse, true), (Step::Mouse, false)]);
         ACTIVE.store(before, Ordering::SeqCst);
+    }
+
+    /// Suspending undoes everything but the title stack, and resuming reapplies exactly
+    /// that, in order, keeping the applied record in step both ways.
+    #[test]
+    fn suspend_and_resume_round_trip_everything_but_the_title() {
+        let active = AtomicU32::new(
+            Steps::of(&[
+                Step::RawMode,
+                Step::AlternateScreen,
+                Step::Mouse,
+                Step::TitleStack,
+            ])
+            .0,
+        );
+        let (mut ops, calls) = Recorder::new();
+
+        let suspended = suspend_with(&mut ops, &active);
+        assert_eq!(
+            offs(&calls.borrow()),
+            [Step::Mouse, Step::AlternateScreen, Step::RawMode]
+        );
+        assert_eq!(
+            Steps(active.load(Ordering::SeqCst)),
+            Steps::of(&[Step::TitleStack])
+        );
+
+        calls.borrow_mut().clear();
+        resume_with(&mut ops, &active, suspended).unwrap();
+        assert_eq!(
+            ons(&calls.borrow()),
+            [Step::RawMode, Step::AlternateScreen, Step::Mouse]
+        );
+        assert_eq!(
+            Steps(active.load(Ordering::SeqCst)),
+            Steps::of(&[
+                Step::RawMode,
+                Step::AlternateScreen,
+                Step::Mouse,
+                Step::TitleStack,
+            ])
+        );
+    }
+
+    /// A terminal that refuses to come back is not recorded as owned.
+    #[test]
+    fn a_failed_resume_records_nothing() {
+        let active = AtomicU32::new(Steps::of(&[Step::RawMode, Step::AlternateScreen]).0);
+        let (mut ops, _) = Recorder::new();
+        let suspended = suspend_with(&mut ops, &active);
+
+        let (mut failing, _) = Recorder::failing(Step::AlternateScreen);
+        assert!(resume_with(&mut failing, &active, suspended).is_err());
+        assert_eq!(active.load(Ordering::SeqCst), 0);
     }
 }

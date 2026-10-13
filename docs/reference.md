@@ -115,6 +115,12 @@ Merged and closed MRs are always grouped below the others. Ties break on `update
 | --- | --- | --- |
 | `command` | empty | Empty means `open` on macOS and `xdg-open` on Linux. |
 
+## `[diff]`
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `command` | empty | Shell command that receives the diff on stdin (`view_diff`). Run through `sh -c`. Empty means `delta --paging=always` if `delta` is on `$PATH`, otherwise `less -R`. |
+
 ## `[[filter]]`
 
 Each block is a tab.
@@ -175,7 +181,8 @@ Set actions under `[keys]`. Naming an action replaces its keys, `[]` unbinds it,
 | `open_mr` | `o`, `enter` | Open in browser |
 | `open_pipeline` | `p` | Open latest pipeline |
 | `open_project` | `shift-O` | Open project |
-| `open_diffs` | `shift-D` | Open diffs |
+| `open_diffs` | `shift-D` | Open the diffs page in the browser |
+| `view_diff` | `\` | Show the diff in the terminal with the `[diff]` viewer |
 | `copy_url` | `y` | Copy MR URL |
 | `copy_branch` | `shift-Y` | Copy source branch |
 | `show_details` | `d` | Details popup |

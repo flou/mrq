@@ -191,6 +191,7 @@ fn the_shipped_default_config_only_uncomments_the_default_filter() {
             "[sort]",
             "[notifications]",
             "[browser]",
+            "[diff]",
             "[[filter]]",
             "name = \"Assigned\"",
             "scope = \"assigned\"",

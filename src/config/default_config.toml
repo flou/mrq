@@ -138,6 +138,11 @@
 # Empty means `open` on macOS and `xdg-open` on Linux.
 # command = ""
 
+[diff]
+# Receives the merge request's diff on stdin (the \ key). Run through `sh -c`.
+# Empty means `delta --paging=always` when delta is installed, otherwise `less -R`.
+# command = "riff"
+
 # ---- filters ----------------------------------------------------------------------
 #
 # Each [[filter]] is a tab. The order here is the tab order and the 1..9 shortcuts.
@@ -223,6 +228,7 @@ scope = "assigned"
 # open_pipeline   = ["p"]
 # open_project    = ["shift-O"]
 # open_diffs      = ["shift-D"]
+# view_diff       = ['\']
 # copy_url        = ["y"]
 # copy_branch     = ["shift-Y"]
 # show_details    = ["d"]

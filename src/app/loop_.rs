@@ -115,6 +115,7 @@ mod tests {
             AppEvent::IdentityRetrying { .. } => "identity_retrying",
             AppEvent::IdentityFailed { .. } => "identity_failed",
             AppEvent::DiscussionsLoaded { .. } => "discussions",
+            AppEvent::DiffLoaded { .. } => "diff",
             AppEvent::Quit(_) => "quit",
         }
     }

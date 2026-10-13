@@ -38,6 +38,8 @@ pub struct Config {
     pub notifications: Notifications,
     /// The command used to open merge requests, pipelines and projects.
     pub browser: Browser,
+    /// The viewer that shows a merge request's diff in the terminal.
+    pub diff: Diff,
 
     /// The merge request lists, one `[[filter]]` array-of-tables entry per tab. Order defines tab
     /// order and the `1`..`9` shortcuts. At least one is required, and names must be unique.
@@ -233,6 +235,7 @@ impl Default for Config {
             sort: Sort::default(),
             notifications: Notifications::default(),
             browser: Browser::default(),
+            diff: Diff::default(),
             // The default view is the merge requests assigned to me.
             filters: vec![Filter::named("Assigned", Scope::Assigned)],
             keys: BTreeMap::new(),
@@ -829,6 +832,18 @@ pub enum NotifyBackend {
 pub struct Browser {
     /// Command used to open a URL, which is passed as its argument. Empty means `open` on macOS
     /// and `xdg-open` on Linux.
+    pub command: String,
+}
+
+// ------------------------------------------------------------------------------ [diff]
+
+/// How a merge request's diff is shown in the terminal.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Diff {
+    /// Shell command that receives the merge request's unified diff on stdin and takes over the
+    /// terminal until it exits, e.g. `delta`, `riff` or `less -R`. Run through `sh -c`, so pipes
+    /// work. Empty means `delta --paging=always` when `delta` is on `$PATH`, otherwise `less -R`.
     pub command: String,
 }
 

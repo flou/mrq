@@ -11,6 +11,13 @@
         "command": ""
       }
     },
+    "diff": {
+      "description": "The viewer that shows a merge request's diff in the terminal.",
+      "$ref": "#/$defs/Diff",
+      "default": {
+        "command": ""
+      }
+    },
     "filter": {
       "description": "The merge request lists, one `[[filter]]` array-of-tables entry per tab. Order defines tab\norder and the `1`..`9` shortcuts. At least one is required, and names must be unique.",
       "type": "array",
@@ -62,6 +69,7 @@
           "open_pipeline",
           "open_project",
           "open_diffs",
+          "view_diff",
           "copy_url",
           "copy_branch",
           "show_details",
@@ -260,6 +268,18 @@
       "description": "A column key, optionally suffixed `:wide` to show it only in wide mode.",
       "type": "string",
       "pattern": "^((approved|author|repo|title|pipeline)|(id|assigned|approver|reviewer|merged_by|status|age|updated|diff|branch)(:wide)?)$"
+    },
+    "Diff": {
+      "description": "How a merge request's diff is shown in the terminal.",
+      "type": "object",
+      "properties": {
+        "command": {
+          "description": "Shell command that receives the merge request's unified diff on stdin and takes over the\nterminal until it exits, e.g. `delta`, `riff` or `less -R`. Run through `sh -c`, so pipes\nwork. Empty means `delta --paging=always` when `delta` is on `$PATH`, otherwise `less -R`.",
+          "type": "string",
+          "default": ""
+        }
+      },
+      "additionalProperties": false
     },
     "DimDrafts": {
       "description": "Which draft merge requests are greyed out.",

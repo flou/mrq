@@ -175,7 +175,7 @@ mod tests {
                     .trim()
                     .trim_matches(['[', ']'])
                     .split(',')
-                    .map(|s| s.trim().trim_matches('"').to_owned())
+                    .map(|s| s.trim().trim_matches(['"', '\'']).to_owned())
                     .filter(|s| !s.is_empty())
                     .collect();
                 (action.trim().to_owned(), specs)

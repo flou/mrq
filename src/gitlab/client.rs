@@ -250,6 +250,44 @@ impl Client {
         })
     }
 
+    /// GET one REST endpoint, `/api/v4/` followed by `segments`, and return the headers
+    /// and body of a 2xx.
+    ///
+    /// For what GraphQL does not expose, such as a merge request's raw diff. Each segment
+    /// is percent-encoded on its own, so a project path keeps its `/` as `%2F` the way
+    /// the REST API addresses projects.
+    pub async fn rest_get(
+        &self,
+        segments: &[&str],
+        query: &[(&str, &str)],
+    ) -> Result<(reqwest::header::HeaderMap, String)> {
+        let mut url = reqwest::Url::parse(&format!("{}/api/v4", self.inner.instance))
+            .map_err(|e| Error::Other(format!("invalid gitlab.url: {e}")))?;
+        url.path_segments_mut()
+            .map_err(|()| Error::Other("invalid gitlab.url: it cannot carry a path".into()))?
+            .pop_if_empty()
+            .extend(segments);
+        if !query.is_empty() {
+            url.query_pairs_mut().extend_pairs(query);
+        }
+
+        let response = self
+            .inner
+            .http
+            .get(url)
+            .bearer_auth(self.inner.token.expose())
+            .send()
+            .await
+            .map_err(classify_transport)?;
+
+        if !response.status().is_success() {
+            return Err(self.classify_status(&response));
+        }
+        let headers = response.headers().clone();
+        let body = response.text().await.map_err(classify_transport)?;
+        Ok((headers, body))
+    }
+
     fn classify_status(&self, response: &reqwest::Response) -> Error {
         let status = response.status().as_u16();
         let retry_after = parse_retry_after(response);
