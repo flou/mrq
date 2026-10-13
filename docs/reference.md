@@ -43,6 +43,7 @@ Unknown config keys are an error.
 | `timeout_secs` | `20` | Request timeout. |
 | `max_concurrent_requests` | `4` | Parallel requests. |
 | `max_results` | `40` | Merge requests fetched per filter, `1..=500`. A filter's own `max_results` overrides it. |
+| `max_results_closed` | `10` | Merged and closed merge requests fetched together for a filter with `state = "all"`, `1..=500`. Open ones are capped by `max_results` alone. A filter's own `max_results_closed` overrides it. |
 
 ## `[refresh]`
 
@@ -143,6 +144,7 @@ Each block is a tab.
 | `columns` | all | Overrides `[ui].columns`. |
 | `notify` | all | Overrides `[notifications].enabled`. |
 | `max_results` | all | Overrides `[gitlab].max_results`. `1..=500`. |
+| `max_results_closed` | all | Overrides `[gitlab].max_results_closed`. Only used with `state = "all"`. |
 | `path` | `group`, `project` | GitLab full path, e.g. `acme/platform`. No leading or trailing slash. |
 | `include_subgroups` | `group` | Default `true`. |
 | `labels` | `group`, `project`, `instance` | AND-ed. |

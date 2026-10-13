@@ -90,6 +90,11 @@ fn check_gitlab(config: &mut Config, errors: &mut Vec<String>, clamps: &mut Vec<
         errors.push("gitlab.max_concurrent_requests: must be at least 1".into());
     }
     clamp_max_results("gitlab.max_results", &mut config.gitlab.max_results, clamps);
+    clamp_max_results(
+        "gitlab.max_results_closed",
+        &mut config.gitlab.max_results_closed,
+        clamps,
+    );
 }
 
 fn clamp_max_results(key: &str, value: &mut usize, clamps: &mut Vec<Clamped>) {
@@ -258,6 +263,9 @@ fn check_filters(config: &mut Config, errors: &mut Vec<String>, clamps: &mut Vec
 
         if let Some(max_results) = &mut filter.max_results {
             clamp_max_results(&format!("{at}.max_results"), max_results, clamps);
+        }
+        if let Some(max_closed) = &mut filter.max_results_closed {
+            clamp_max_results(&format!("{at}.max_results_closed"), max_closed, clamps);
         }
     }
 }

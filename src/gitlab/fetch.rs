@@ -23,7 +23,7 @@
 
 use jiff::Timestamp;
 
-use crate::config::schema::Filter;
+use crate::config::schema::{Filter, StateFilter};
 use crate::error::{Error, Result};
 use crate::gitlab::client::Client;
 use crate::gitlab::model::MergeRequest;
@@ -46,6 +46,22 @@ pub struct Snapshot {
     /// response is fully representable.
     #[cfg(test)]
     pub(crate) anomalies: Anomalies,
+}
+
+/// How many merge requests one fetch keeps.
+#[derive(Debug, Clone, Copy)]
+pub struct Caps {
+    /// Per query: the whole list, or just the open rows of a `state = all` filter.
+    pub results: usize,
+    /// Merged and closed rows together, for a `state = all` filter.
+    pub closed: usize,
+}
+
+impl Caps {
+    #[cfg(test)]
+    pub(crate) const fn new(results: usize, closed: usize) -> Self {
+        Self { results, closed }
+    }
 }
 
 /// How many requests one refresh of a filter may make.
@@ -93,12 +109,70 @@ impl Default for Degradation {
 /// Fetch one filter, following pagination and degrading the query if the server refuses
 /// it.
 ///
+/// A `state = all` filter is fetched per state: open merge requests up to `max_results`,
+/// merged and closed ones together up to `max_closed`. One `all` query sorted by update time
+/// lets recently merged work crowd older open work out of the cap.
+///
 /// `degradation` is both where the attempt starts and where it ends up: a filter that
 /// needed a smaller page or a reduced fragment last time asks for that shape first.
 ///
 /// A list scope is fetched one scope at a time, sharing `degradation`, and the results are
 /// merged: each merge request once, newest first, capped at `max_results`.
 pub async fn fetch(
+    client: &Client,
+    filter: &Filter,
+    caps: Caps,
+    degradation: &mut Degradation,
+    current_user: &str,
+    instance_url: &str,
+    now: Timestamp,
+) -> Result<Snapshot> {
+    if filter.state != StateFilter::All {
+        return fetch_state(
+            client,
+            filter,
+            caps.results,
+            degradation,
+            current_user,
+            instance_url,
+            now,
+        )
+        .await;
+    }
+
+    let with_state = |state| Filter {
+        state,
+        ..filter.clone()
+    };
+    let mut fetch_as = async |state, cap| {
+        fetch_state(
+            client,
+            &with_state(state),
+            cap,
+            degradation,
+            current_user,
+            instance_url,
+            now,
+        )
+        .await
+    };
+    let open = fetch_as(StateFilter::Opened, caps.results).await?;
+    let merged = fetch_as(StateFilter::Merged, caps.closed).await?;
+    let closed = fetch_as(StateFilter::Closed, caps.closed).await?;
+
+    let mut finished = merged.union(closed);
+    finished
+        .merge_requests
+        .sort_by_key(|mr| std::cmp::Reverse(mr.updated_at));
+    if finished.merge_requests.len() > caps.closed {
+        finished.merge_requests.truncate(caps.closed);
+        finished.truncated = true;
+    }
+    Ok(open.union(finished))
+}
+
+/// [`fetch`] for a filter whose state is a single GitLab state.
+async fn fetch_state(
     client: &Client,
     filter: &Filter,
     max_results: usize,
@@ -415,7 +489,10 @@ mod tests {
         fetch(
             client,
             filter,
-            filter.max_results(&Gitlab::default()),
+            Caps {
+                results: filter.max_results(&Gitlab::default()),
+                closed: filter.max_results_closed(&Gitlab::default()),
+            },
             &mut Degradation::none(),
             "me",
             INSTANCE,
@@ -707,6 +784,41 @@ mod tests {
         assert!(!snapshot.truncated);
     }
 
+    /// One `all` query sorted by update time lets recent merges fill the cap and hide older
+    /// open work, so each state is asked for on its own.
+    #[tokio::test]
+    async fn state_all_fetches_open_merged_and_closed_separately() {
+        let (server, calls, bodies) = serving(vec![
+            page(&["1", "2"], false, None),
+            page(&["3", "4", "5"], true, Some("C1")),
+            page(&["6"], false, None),
+        ])
+        .await;
+        let all = Filter {
+            state: StateFilter::All,
+            max_results: Some(10),
+            max_results_closed: Some(3),
+            ..Filter::named("Mine", Scope::Assigned)
+        };
+
+        let snapshot = fresh(&client_for(&server), &all).await.unwrap();
+
+        let states: Vec<_> = bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|b| b["variables"]["state"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(states, ["opened", "merged", "closed"]);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            snapshot.merge_requests.len(),
+            5,
+            "2 open + 3 of the 4 merged and closed"
+        );
+        assert!(snapshot.truncated, "the merged cap was hit");
+    }
+
     #[tokio::test]
     async fn an_empty_result_is_an_empty_snapshot() {
         let (server, _, _) = serving(vec![page(&[], false, None)]).await;
@@ -808,7 +920,7 @@ mod tests {
         fetch(
             &client,
             &filter(100),
-            100,
+            Caps::new(100, 10),
             &mut degradation,
             "me",
             INSTANCE,
@@ -823,7 +935,7 @@ mod tests {
         fetch(
             &client,
             &filter(100),
-            100,
+            Caps::new(100, 10),
             &mut degradation,
             "me",
             INSTANCE,
@@ -867,7 +979,7 @@ mod tests {
         fetch(
             &client,
             &filter(100),
-            100,
+            Caps::new(100, 10),
             &mut degradation,
             "me",
             INSTANCE,
@@ -878,7 +990,7 @@ mod tests {
         fetch(
             &client,
             &filter(100),
-            100,
+            Caps::new(100, 10),
             &mut degradation,
             "me",
             INSTANCE,
@@ -914,7 +1026,7 @@ mod tests {
         let snapshot = fetch(
             &client_for(&server),
             &filter(100),
-            100,
+            Caps::new(100, 10),
             &mut degradation,
             "me",
             INSTANCE,

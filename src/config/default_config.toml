@@ -23,6 +23,7 @@
 # timeout_secs = 20
 # max_concurrent_requests = 4
 # max_results = 40                  # per filter, 1..=500; a [[filter]] can override it
+# max_results_closed = 10           # merged + closed, for filters with state = "all"; same range
 
 [refresh]
 # Seconds between refresh cycles. The minimum is 30 — below that mrq refuses to start

@@ -29,7 +29,7 @@ use crate::config::schema::{Filter, Gitlab, Scope};
 use crate::config::token::{TokenEnv, resolve};
 use crate::error::Error;
 use crate::gitlab::client::Client;
-use crate::gitlab::fetch::{Degradation, Snapshot, fetch};
+use crate::gitlab::fetch::{Caps, Degradation, Snapshot, fetch};
 use crate::gitlab::model::{MergeStatus, PipelineStatus};
 
 const INSTANCE: &str = "https://gitlab.example.com";
@@ -133,7 +133,7 @@ impl Recording {
         fetch(
             &client_for(&self.server),
             &filter(max_results),
-            max_results,
+            Caps::new(max_results, 10),
             degradation,
             ME,
             INSTANCE,

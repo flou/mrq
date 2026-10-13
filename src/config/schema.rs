@@ -267,6 +267,10 @@ pub struct Gitlab {
     /// Default maximum number of merge requests fetched per filter. A filter's own
     /// `max_results` overrides it. Clamped to `1..=500`, with a warning.
     pub max_results: usize,
+    /// Default maximum number of merged and closed merge requests fetched, together, for a
+    /// filter whose `state` is `all`. Open ones are capped by `max_results` alone, so recent
+    /// merges cannot push them out. Clamped to `1..=500`, with a warning.
+    pub max_results_closed: usize,
 }
 
 impl Default for Gitlab {
@@ -278,6 +282,7 @@ impl Default for Gitlab {
             timeout_secs: 20,
             max_concurrent_requests: 4,
             max_results: 40,
+            max_results_closed: 10,
         }
     }
 }
@@ -909,6 +914,10 @@ pub struct Filter {
     /// fetched for this filter. Clamped to `1..=500`, with a warning.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_results: Option<usize>,
+    /// Per-filter override of `[gitlab].max_results_closed`. Only used when `state` is `all`.
+    /// Clamped to `1..=500`, with a warning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_results_closed: Option<usize>,
 }
 
 impl Default for Filter {
@@ -932,6 +941,7 @@ impl Default for Filter {
             target_branch: None,
             updated_after_days: None,
             max_results: None,
+            max_results_closed: None,
         }
     }
 }
@@ -961,6 +971,12 @@ impl Filter {
                 ..self.clone()
             })
             .collect()
+    }
+
+    /// The maximum number of merged and closed merge requests to fetch for a `state = all`
+    /// filter: this filter's override, else the `[gitlab]` default.
+    pub fn max_results_closed(&self, gitlab: &Gitlab) -> usize {
+        self.max_results_closed.unwrap_or(gitlab.max_results_closed)
     }
 
     /// Whether subgroups are included, defaulting to true for a group scope.
