@@ -1,4 +1,5 @@
-//! The overlays: help, sort menu, filter switcher, skin picker, and the log.
+//! The overlays: help, sort menu, filter switcher, skin picker, the log and the
+//! activity feed.
 //!
 //! # The help popup is generated
 //!
@@ -101,6 +102,7 @@ const fn title(kind: Popup) -> &'static str {
         Popup::Log => " Log ",
         Popup::Details => " Details ",
         Popup::Discussions => " Comments ",
+        Popup::Activity => " Activity ",
     }
 }
 
@@ -125,6 +127,7 @@ pub fn build<'a>(
         Popup::Filter => filter_lines(state, popup, theme, now, inner_width),
         Popup::Skin => skin_lines(popup, theme, inner_width),
         Popup::Log => log_lines(popup, theme, inner_width),
+        Popup::Activity => activity_lines(popup, theme, now, inner_width),
         Popup::Details | Popup::Discussions => details_lines(popup, theme, inner_width),
     };
 
@@ -139,7 +142,9 @@ pub fn build<'a>(
         Popup::Help | Popup::Log | Popup::Details | Popup::Discussions => {
             scroll_from(lines, popup.cursor, inner_height)
         }
-        Popup::Sort | Popup::Filter | Popup::Skin => scroll_to(lines, popup.cursor, inner_height),
+        Popup::Sort | Popup::Filter | Popup::Skin | Popup::Activity => {
+            scroll_to(lines, popup.cursor, inner_height)
+        }
     };
     Some((Clear, Paragraph::new(scrolled).block(block)))
 }
@@ -386,6 +391,84 @@ fn log_lines<'a>(popup: &PopupState, theme: &Theme, width: usize) -> Vec<Line<'a
         .collect()
 }
 
+/// The activity feed: one line per entry, newest first, as it was when the popup opened.
+///
+/// `age  kind  what happened  project!iid title`. The kind carries the colour, so a
+/// failed pipeline or a merge stands out in a long list without reading every line.
+fn activity_lines<'a>(
+    popup: &PopupState,
+    theme: &Theme,
+    now: Timestamp,
+    width: usize,
+) -> Vec<Line<'a>> {
+    use crate::app::activity::EntryKind;
+    use crate::gitlab::model::{MrState, PipelineStatus};
+    use crate::ui::markdown::Segment;
+
+    if popup.activity.is_empty() {
+        return vec![row(
+            "no activity yet".to_owned(),
+            Role::Dim,
+            theme,
+            false,
+            width,
+        )];
+    }
+
+    popup
+        .activity
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let role = match &entry.kind {
+                EntryKind::New => Role::Fresh,
+                EntryKind::Left => Role::Dim,
+                EntryKind::Moved { .. } | EntryKind::Discussion { .. } => Role::Accent,
+                EntryKind::Approval { .. } => Role::Success,
+                EntryKind::MergedOrClosed {
+                    state: MrState::Merged,
+                } => Role::Success,
+                EntryKind::MergedOrClosed { .. } => Role::Dim,
+                EntryKind::Pipeline { to, .. } => match to {
+                    Some(PipelineStatus::Success) => Role::Success,
+                    Some(PipelineStatus::Failed) => Role::Failure,
+                    // In-progress statuses are never recorded; only outcomes reach here.
+                    _ => Role::Dim,
+                },
+            };
+            let age = crate::ui::table::relative_time(entry.at, now);
+            let segments = [
+                Segment {
+                    role: Role::Dim,
+                    text: format!("{age:>4}  "),
+                },
+                Segment {
+                    role,
+                    text: format!("{:<10}  ", entry.kind.label()),
+                },
+                Segment {
+                    role: Role::Normal,
+                    text: format!("{}  ", theme.ascii_safe(&entry.summary())),
+                },
+                Segment {
+                    role: Role::Dim,
+                    text: format!("{}!{} ", entry.project_name, entry.iid),
+                },
+                Segment {
+                    role: Role::Normal,
+                    text: theme.ascii_safe(&entry.title).into_owned(),
+                },
+            ];
+
+            if index == popup.cursor {
+                let text: String = segments.iter().map(|s| s.text.as_str()).collect();
+                return row(text, Role::Normal, theme, true, width);
+            }
+            styled_row(&segments, theme, width)
+        })
+        .collect()
+}
+
 /// The details and comments popups: the styled lines `action::detail_lines` or
 /// `discussions::lines` built when the popup opened (or last changed width).
 fn details_lines<'a>(popup: &PopupState, theme: &Theme, width: usize) -> Vec<Line<'a>> {
@@ -475,6 +558,7 @@ mod tests {
             popup_width: action::DEFAULT_POPUP_WIDTH,
             popup_height: action::DEFAULT_POPUP_HEIGHT,
             discussions: Default::default(),
+            activity: crate::app::activity::Activity::ephemeral(),
         }
     }
 

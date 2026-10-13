@@ -81,6 +81,7 @@
           "reload_config",
           "help",
           "log_menu",
+          "activity_menu",
           "quit"
         ]
       }

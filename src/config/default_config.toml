@@ -235,3 +235,4 @@ scope = "assigned"
 # clear_search    = ["esc"]
 # help            = ["?", "f1"]
 # log_menu        = ["shift-L"]
+# activity_menu   = ["shift-A"]

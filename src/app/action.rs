@@ -17,6 +17,7 @@
 
 use std::time::{Duration, Instant};
 
+use crate::app::activity::{Activity, Entry, EntryKind};
 use crate::app::discussions::{self, DiscussionsCache, DiscussionsView};
 use crate::app::state::Tabs;
 use crate::config::keymap::{Action, Keymap};
@@ -40,6 +41,7 @@ pub enum Popup {
     Log,
     Details,
     Discussions,
+    Activity,
 }
 
 impl Popup {
@@ -53,6 +55,7 @@ impl Popup {
             Self::Log => Action::LogMenu,
             Self::Details => Action::ShowDetails,
             Self::Discussions => Action::ShowDiscussions,
+            Self::Activity => Action::ActivityMenu,
         }
     }
 }
@@ -94,6 +97,10 @@ pub struct PopupState {
     /// What the comments popup is showing; unused by every other popup. The merge
     /// request it belongs to is `source`.
     pub discussions: DiscussionsView,
+    /// The activity feed as it was when the popup opened, newest first. Snapshotted for
+    /// the same reason as `lines`: a refresh landing while the popup is open would shift
+    /// every entry under the cursor.
+    pub activity: Vec<Entry>,
 }
 
 impl PopupState {
@@ -107,6 +114,7 @@ impl PopupState {
             source: None,
             previous_skin: None,
             discussions: DiscussionsView::Loading,
+            activity: Vec::new(),
         }
     }
 }
@@ -216,6 +224,9 @@ pub struct ViewState {
     pub popup_height: usize,
     /// Discussions fetched for the comments popup, so reopening it is instant.
     pub discussions: DiscussionsCache,
+    /// Every change seen across the filters, for the activity popup and the status bar's
+    /// unread count. `App` records into it; opening the popup marks it read.
+    pub activity: Activity,
 }
 
 /// The columns the sort menu offers, in menu order.
@@ -523,6 +534,43 @@ impl ViewState {
         true
     }
 
+    /// Go to an activity entry: its tab, and its merge request if the tab still shows it.
+    ///
+    /// The tab is found by name, which is how entries are stored. Anything that cannot
+    /// be found says so in the status bar rather than leaving the user wondering whether
+    /// Enter did anything.
+    fn jump_to(&mut self, entry: &Entry) {
+        let Some(index) = self
+            .tabs
+            .iter()
+            .position(|tab| tab.name == entry.filter_name)
+        else {
+            self.flash(format!("filter {} no longer exists", entry.filter_name));
+            return;
+        };
+        self.tabs.activate(index);
+
+        let rows = self.visible_rows();
+        let Some(position) = rows.iter().position(|mr| mr.id == entry.mr_id) else {
+            let hidden = matches!(entry.kind, EntryKind::Left)
+                || !self
+                    .tabs
+                    .get(index)
+                    .is_some_and(|tab| tab.all().iter().any(|mr| mr.id == entry.mr_id));
+            let reference = format!("{}!{}", entry.project_name, entry.iid);
+            self.flash(if hidden {
+                format!("{reference} is no longer in {}", entry.filter_name)
+            } else {
+                format!("{reference} is hidden by the search or drafts toggle")
+            });
+            return;
+        };
+        let len = rows.len();
+
+        self.select_row(entry.mr_id.clone());
+        self.set_scroll(position, len);
+    }
+
     fn jump(&mut self, to_end: bool) -> bool {
         let rows = self.visible_rows();
         let Some(target) = (if to_end { rows.last() } else { rows.first() }) else {
@@ -779,6 +827,13 @@ pub fn dispatch(state: &mut ViewState, action: Action) -> (bool, Effect) {
             // the top visible line, so that is the last scroll position, not the last
             // line index.
             popup.cursor = scroll_positions(popup.lines.len(), state.popup_height) - 1;
+            state.mode = Mode::Popup(popup);
+            (true, Effect::None)
+        }
+        Action::ActivityMenu => {
+            let mut popup = PopupState::new(Popup::Activity);
+            popup.activity = state.activity.newest_first();
+            state.activity.mark_read(jiff::Timestamp::now());
             state.mode = Mode::Popup(popup);
             (true, Effect::None)
         }
@@ -1155,7 +1210,7 @@ fn popup_key(
         KeyCode::Char('g')
             if matches!(
                 popup.kind,
-                Popup::Log | Popup::Help | Popup::Details | Popup::Discussions
+                Popup::Log | Popup::Help | Popup::Details | Popup::Discussions | Popup::Activity
             ) =>
         {
             popup.cursor = 0;
@@ -1163,7 +1218,7 @@ fn popup_key(
         KeyCode::Char('G')
             if matches!(
                 popup.kind,
-                Popup::Log | Popup::Help | Popup::Details | Popup::Discussions
+                Popup::Log | Popup::Help | Popup::Details | Popup::Discussions | Popup::Activity
             ) =>
         {
             popup.cursor = rows.saturating_sub(1);
@@ -1203,7 +1258,7 @@ fn popup_key(
                     popup.cursor = index;
                 }
             }
-            Popup::Help | Popup::Log | Popup::Details | Popup::Discussions => {
+            Popup::Help | Popup::Log | Popup::Details | Popup::Discussions | Popup::Activity => {
                 return KeyOutcome::Handled { redraw: false };
             }
         },
@@ -1235,6 +1290,7 @@ fn popup_rows(state: &ViewState, keymap: &Keymap, popup: &PopupState) -> usize {
         Popup::Sort => SORTABLE.len(),
         Popup::Filter => matching_filters(state, &popup.query).len(),
         Popup::Skin => skins::BUILTIN_NAMES.len(),
+        Popup::Activity => popup.activity.len(),
         Popup::Log => scroll_positions(popup.lines.len(), state.popup_height),
         Popup::Details | Popup::Discussions => {
             scroll_positions(popup.styled.len(), state.popup_height)
@@ -1300,7 +1356,7 @@ pub fn resize_popup(state: &mut ViewState, keymap: &Keymap, width: usize, height
                 .cursor
                 .min(scroll_positions(popup.styled.len(), height) - 1);
         }
-        Popup::Sort | Popup::Filter | Popup::Skin => {}
+        Popup::Sort | Popup::Filter | Popup::Skin | Popup::Activity => {}
     }
 }
 
@@ -1515,6 +1571,11 @@ fn apply_popup(state: &mut ViewState, kind: Popup, popup: &PopupState) -> KeyOut
         }
         // Already applied, one preview at a time; Enter is what stops Esc undoing it.
         Popup::Skin => state.flash(format!("skin: {}", state.theme.skin())),
+        Popup::Activity => {
+            if let Some(entry) = popup.activity.get(popup.cursor) {
+                state.jump_to(entry);
+            }
+        }
         // Nothing to apply; Enter just closes them.
         Popup::Help | Popup::Log | Popup::Details | Popup::Discussions => {}
     }
@@ -1742,6 +1803,7 @@ mod tests {
             drafts_last: false,
             flash: None,
             log: LogBuffer::new(),
+            activity: Activity::ephemeral(),
             viewport: HALF_PAGE_VIEWPORT,
             popup_width: DEFAULT_POPUP_WIDTH,
             popup_height: DEFAULT_POPUP_HEIGHT,
@@ -3522,6 +3584,127 @@ mod tests {
         assert!(!matches_search(&m, "redis"), "branches are not searched");
         assert!(matches_search(&m, ""));
     }
+
+    // ------------------------------------------------------------------ activity feed
+
+    fn activity_event(
+        filter: &str,
+        id: &str,
+        trigger: crate::app::diff::Trigger,
+    ) -> crate::app::diff::Event {
+        crate::app::diff::Event {
+            trigger,
+            filter: 0,
+            filter_name: filter.to_owned(),
+            id: id.to_owned(),
+            iid: "7".to_owned(),
+            project_name: "web".to_owned(),
+            title: "Fix it".to_owned(),
+        }
+    }
+
+    fn open_activity(state: &mut ViewState) {
+        handle_key(
+            state,
+            &keymap(),
+            KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT),
+        );
+    }
+
+    #[test]
+    fn shift_a_opens_the_feed_newest_first_and_marks_it_read() {
+        use crate::app::diff::Trigger;
+        let mut state = state_with(rows(2));
+        state.activity.record(
+            &[activity_event("Assigned", "id-0", Trigger::NewMergeRequest)],
+            jiff::Timestamp::now() - jiff::SignedDuration::from_mins(2),
+        );
+        state.activity.record(
+            &[activity_event("Assigned", "id-1", Trigger::NewMergeRequest)],
+            jiff::Timestamp::now() - jiff::SignedDuration::from_mins(1),
+        );
+        assert_eq!(state.activity.unread(), 2);
+
+        open_activity(&mut state);
+        let popup = state.mode.popup_state().unwrap();
+        assert_eq!(popup.kind, Popup::Activity);
+        assert_eq!(popup.activity[0].mr_id, "id-1");
+        assert_eq!(state.activity.unread(), 0);
+
+        open_activity(&mut state);
+        assert!(state.mode.is_normal(), "the same key closes it");
+    }
+
+    #[test]
+    fn the_open_feed_does_not_shift_when_a_refresh_lands() {
+        use crate::app::diff::Trigger;
+        let mut state = state_with(rows(1));
+        state.activity.record(
+            &[activity_event("Assigned", "id-0", Trigger::NewMergeRequest)],
+            jiff::Timestamp::now(),
+        );
+        open_activity(&mut state);
+        state.activity.record(
+            &[activity_event("Assigned", "id-9", Trigger::NewMergeRequest)],
+            jiff::Timestamp::now(),
+        );
+        assert_eq!(state.mode.popup_state().unwrap().activity.len(), 1);
+    }
+
+    #[test]
+    fn enter_jumps_to_the_entrys_tab_and_merge_request() {
+        use crate::app::diff::Trigger;
+        let mut state = state_with(rows(3));
+        state.tabs.activate(1);
+        state.activity.record(
+            &[activity_event("Assigned", "id-2", Trigger::NewMergeRequest)],
+            jiff::Timestamp::now(),
+        );
+
+        open_activity(&mut state);
+        handle_key(&mut state, &keymap(), key(KeyCode::Enter));
+
+        assert!(state.mode.is_normal());
+        assert_eq!(state.tabs.active_index(), 0);
+        assert_eq!(state.selected().unwrap().id, "id-2");
+    }
+
+    #[test]
+    fn enter_on_a_merge_request_that_is_gone_says_so() {
+        use crate::app::diff::Trigger;
+        let mut state = state_with(rows(1));
+        state.activity.record(
+            &[activity_event("Assigned", "id-gone", Trigger::LeftFilter)],
+            jiff::Timestamp::now(),
+        );
+
+        open_activity(&mut state);
+        handle_key(&mut state, &keymap(), key(KeyCode::Enter));
+
+        assert_eq!(state.tabs.active_index(), 0);
+        assert_eq!(
+            state.live_flash(Instant::now()),
+            Some("web!7 is no longer in Assigned")
+        );
+    }
+
+    #[test]
+    fn enter_on_a_filter_that_is_gone_says_so() {
+        use crate::app::diff::Trigger;
+        let mut state = state_with(rows(1));
+        state.activity.record(
+            &[activity_event("Renamed", "id-0", Trigger::NewMergeRequest)],
+            jiff::Timestamp::now(),
+        );
+
+        open_activity(&mut state);
+        handle_key(&mut state, &keymap(), key(KeyCode::Enter));
+
+        assert_eq!(
+            state.live_flash(Instant::now()),
+            Some("filter Renamed no longer exists")
+        );
+    }
 }
 
 /// The performance budget for cursor movement, pinned against regression.
@@ -3570,6 +3753,7 @@ mod perf {
             drafts_last: true,
             flash: None,
             log: LogBuffer::new(),
+            activity: Activity::ephemeral(),
             viewport: HALF_PAGE_VIEWPORT,
             popup_width: DEFAULT_POPUP_WIDTH,
             popup_height: DEFAULT_POPUP_HEIGHT,

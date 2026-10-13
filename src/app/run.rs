@@ -146,6 +146,12 @@ impl App {
                 .keys_for(crate::config::keymap::Action::Help)
                 .first()
                 .map(|key| key.to_spec()),
+            unread_activity: self.view.activity.unread(),
+            activity_key: self
+                .keymap
+                .keys_for(crate::config::keymap::Action::ActivityMenu)
+                .first()
+                .map(|key| key.to_spec()),
         }
     }
 
@@ -169,23 +175,37 @@ impl App {
             .store(paused, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// The notification triggers for one filter's incoming snapshot.
+    /// Every change in one filter's incoming snapshot, and the subset to notify about.
     ///
     /// Runs against the tab's *current* rows, so it has to be called before they are
     /// replaced. A tab that has not fetched this session — a cold start, or a warm one
     /// off the cache — has no baseline at all rather than an empty one: an empty previous
     /// snapshot would read every row as an arrival and fire one notification per merge
     /// request at startup.
+    ///
+    /// The first list is the activity feed's and ignores the notification config; the
+    /// second is what that config lets through.
     fn diff_for(
         &self,
         filter: app_event::FilterId,
-        incoming: &[crate::gitlab::model::MergeRequest],
-    ) -> Vec<crate::app::diff::Event> {
-        use crate::app::diff::{baseline_for, diff};
+        snapshot: &crate::gitlab::fetch::Snapshot,
+    ) -> (Vec<crate::app::diff::Event>, Vec<crate::app::diff::Event>) {
+        use crate::app::diff::{baseline_for, diff_all, notifiable};
 
         let Some(tab) = self.view.tabs.get(filter) else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
+
+        // A capped or degraded page is missing rows that are still there, on either
+        // side of the comparison, and would report them as having left.
+        let complete = !snapshot.truncated && !snapshot.partial && !tab.truncated && !tab.partial;
+        let all = diff_all(
+            filter,
+            &tab.name,
+            baseline_for(tab),
+            &snapshot.merge_requests,
+            complete,
+        );
 
         // The per-filter override wins over the global default, which is what makes a
         // noisy filter's notifications turn-off-able without silencing every other tab.
@@ -195,17 +215,12 @@ impl App {
             .get(filter)
             .and_then(|f| f.notify)
             .unwrap_or(self.config.notifications.enabled);
-        if !notify_enabled {
-            return Vec::new();
-        }
-
-        diff(
-            filter,
-            &tab.name,
-            baseline_for(tab),
-            incoming,
-            &self.config.notifications,
-        )
+        let notify = if notify_enabled {
+            notifiable(&all, &self.config.notifications)
+        } else {
+            Vec::new()
+        };
+        (all, notify)
     }
 
     /// Deliver one notification through the resolved backend.
@@ -851,8 +866,9 @@ impl Application for App {
                 self.set_paused(false);
                 // Diffed before the snapshot is applied: afterwards the rows it has to be
                 // compared against are gone.
-                let events = self.diff_for(filter, &snapshot.merge_requests);
+                let (activity, events) = self.diff_for(filter, &snapshot);
                 self.view.apply_snapshot(filter, *snapshot, Instant::now());
+                self.view.activity.record(&activity, jiff::Timestamp::now());
 
                 for notification in
                     self.notifier
@@ -1203,15 +1219,25 @@ pub async fn run(
         "browser launchers"
     );
 
-    // The dedup store lives in the state dir; a session without one still dedups within
-    // itself and simply forgets on exit.
-    let seen = match loaded.paths.ensure_state_dir() {
-        Ok(dir) => crate::app::notify::Seen::load(dir, jiff::Timestamp::now()),
+    // The dedup store and the activity feed live in the state dir; a session without one
+    // still dedups and records within itself and simply forgets on exit.
+    let (seen, activity) = match loaded.paths.ensure_state_dir() {
+        Ok(dir) => {
+            let now = jiff::Timestamp::now();
+            (
+                crate::app::notify::Seen::load(dir, now),
+                crate::app::activity::Activity::load(dir, now),
+            )
+        }
         Err(error) => {
             tracing::warn!(%error, "no state directory; notifications may repeat after a restart");
-            crate::app::notify::Seen::ephemeral()
+            (
+                crate::app::notify::Seen::ephemeral(),
+                crate::app::activity::Activity::ephemeral(),
+            )
         }
     };
+    tracing::info!(entries = activity.len(), "activity feed");
     let notifier = crate::app::notify::Notifier::new(
         crate::app::notify::Gate {
             only_when_unfocused: config.notifications.only_when_unfocused,
@@ -1257,6 +1283,7 @@ pub async fn run(
         popup_width: action::DEFAULT_POPUP_WIDTH,
         popup_height: action::DEFAULT_POPUP_HEIGHT,
         discussions: crate::app::discussions::DiscussionsCache::default(),
+        activity,
     };
     view.select_initial_rows();
 

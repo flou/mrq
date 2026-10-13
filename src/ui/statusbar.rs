@@ -140,6 +140,10 @@ pub struct Status {
     /// Read from the keymap rather than hardcoded, so rebinding or unbinding `help`
     /// doesn't leave the hint pointing at a key that no longer opens it.
     pub help_key: Option<String>,
+    /// Activity-feed entries added since the feed was last opened, and the first key
+    /// bound to open it.
+    pub unread_activity: usize,
+    pub activity_key: Option<String>,
 }
 
 /// A segment and the role it is drawn in.
@@ -235,6 +239,18 @@ fn segments(status: &Status, theme: &Theme) -> Vec<Segment> {
             role: Role::Accent,
             elastic: true,
         });
+    }
+
+    // Says how to look, not only that there is something to look at: the feed is a
+    // popup the user has to know exists.
+    if status.unread_activity > 0 {
+        out.push(fixed(
+            match &status.activity_key {
+                Some(key) => format!("[{key}] {} new", status.unread_activity),
+                None => format!("{} new", status.unread_activity),
+            },
+            Role::Fresh,
+        ));
     }
 
     if let Some(key) = &status.help_key {
@@ -414,6 +430,8 @@ mod tests {
             flash: None,
             spinner: 0,
             help_key: Some("?".to_owned()),
+            unread_activity: 0,
+            activity_key: None,
         }
     }
 
@@ -444,6 +462,18 @@ mod tests {
         assert!(line.contains("next refresh in 3m"), "{line}");
         assert!(line.contains("/dark"), "{line}");
         assert!(line.contains("[?] help"), "{line}");
+    }
+
+    /// Unread activity is counted, with the key that opens the feed, and says nothing
+    /// when there is none.
+    #[test]
+    fn unread_activity_names_its_key() {
+        let mut status = status();
+        assert!(!rendered(&status, 200).contains(" new"));
+
+        status.unread_activity = 3;
+        status.activity_key = Some("shift-A".to_owned());
+        assert!(rendered(&status, 200).contains("[shift-A] 3 new"));
     }
 
     /// The hint follows the keymap: a rebound `help` renders its own key, and an

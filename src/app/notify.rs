@@ -178,20 +178,26 @@ impl Seen {
             }
         };
 
-        // Temp-and-rename so a crash mid-write cannot leave a corrupt file that the next
-        // start has to throw away. The pid makes the name unique per process: two `mrq`
-        // instances saving at once must not share a temp file, or one's `write` can land
-        // between another's write and its rename, corrupting both — the rename itself is
-        // atomic, but the content underneath a shared name would not be.
-        let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
-        let result = std::fs::write(&tmp, &json).and_then(|()| std::fs::rename(&tmp, &path));
-        if let Err(error) = &result {
+        if let Err(error) = write_atomic(&path, &json) {
             tracing::warn!(path = %path.display(), %error, "could not save the notification dedup store");
         }
-        if result.is_err() {
-            let _ = std::fs::remove_file(&tmp);
-        }
     }
+}
+
+/// Replace `path` with `bytes` without ever leaving a half-written file behind.
+///
+/// Temp-and-rename so a crash mid-write cannot leave a corrupt file that the next
+/// start has to throw away. The pid makes the name unique per process: two `mrq`
+/// instances saving at once must not share a temp file, or one's `write` can land
+/// between another's write and its rename, corrupting both — the rename itself is
+/// atomic, but the content underneath a shared name would not be.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
+    let result = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// Drop what is too old, then what is over the cap, oldest first.
@@ -319,6 +325,7 @@ fn summarise(events: &[&Event]) -> String {
         Trigger::Discussion { .. } => format!("{count} merge requests with new discussions"),
         Trigger::Pipeline { .. } => format!("{count} pipeline changes"),
         Trigger::MergedOrClosed { .. } => format!("{count} merged or closed"),
+        Trigger::LeftFilter => format!("{count} left the filter"),
     }
 }
 
@@ -345,6 +352,7 @@ fn describe(event: &Event) -> String {
             None => format!("pipeline removed on {mr}"),
         },
         Trigger::MergedOrClosed { state } => format!("{mr} was {}", state.label()),
+        Trigger::LeftFilter => format!("{mr} left the filter"),
     }
 }
 

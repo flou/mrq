@@ -114,6 +114,10 @@ backend = "command"
 command = "notify-send {title} {body}"
 ```
 
+## Review what changed while you were away
+
+Press `shift-A` to open the activity feed: new merge requests, ones that moved between filters or left them, approvals, discussions, pipeline changes and merges, newest first. Press `enter` on an entry to jump to its filter and select the merge request. The feed is independent of `[notifications]`, so turning a notification off does not hide the change here.
+
 ## Change the colours
 
 Press `Ctrl-T` to try a skin for the session. To persist one:

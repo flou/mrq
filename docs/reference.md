@@ -28,7 +28,7 @@ mrq <subcommand>
 | --- | --- |
 | Config | `--config`, then `$MRQ_CONFIG`, then `$XDG_CONFIG_HOME/mrq/config.toml`, then `~/.config/mrq/config.toml`. With none present, built-in defaults apply. |
 | Cache | `$XDG_CACHE_HOME/mrq/<filter>.json`, falling back to `~/.cache/mrq`. Entries older than 7 days are ignored. |
-| State | `$XDG_STATE_HOME/mrq`, falling back to `~/.local/state/mrq`. Holds the log and `notified.json`. |
+| State | `$XDG_STATE_HOME/mrq`, falling back to `~/.local/state/mrq`. Holds the log, `notified.json` and the activity feed `activity.json`. |
 | Token | `$MRQ_TOKEN`, `$GITLAB_TOKEN`, `gitlab.token_command`, `gitlab.token`, in that order. |
 
 Unknown config keys are an error.
@@ -194,6 +194,7 @@ Set actions under `[keys]`. Naming an action replaces its keys, `[]` unbinds it,
 | `reload_config` | `shift-R` | Reload config |
 | `help` | `?`, `f1` | Key help |
 | `log_menu` | `shift-L` | Recent log lines |
+| `activity_menu` | `shift-A` | Recent activity across filters |
 | `quit` | `q`, `ctrl-c` | Quit |
 
 `1`..`9` jump to the matching tab. `Esc` closes any popup.

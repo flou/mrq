@@ -55,6 +55,7 @@ pub enum Action {
     ClearSearch,
     Help,
     LogMenu,
+    ActivityMenu,
 }
 
 /// Grouping for the help popup.
@@ -89,7 +90,7 @@ impl Category {
 
 impl Action {
     /// Every action, in help-popup order.
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 33] = [
         Self::Down,
         Self::Up,
         Self::PageDown,
@@ -121,6 +122,7 @@ impl Action {
         Self::ReloadConfig,
         Self::Help,
         Self::LogMenu,
+        Self::ActivityMenu,
         Self::Quit,
     ];
 
@@ -159,6 +161,7 @@ impl Action {
             Self::ClearSearch => "clear_search",
             Self::Help => "help",
             Self::LogMenu => "log_menu",
+            Self::ActivityMenu => "activity_menu",
         }
     }
 
@@ -201,6 +204,7 @@ impl Action {
             Self::ClearSearch => "Clear search",
             Self::Help => "Show this help",
             Self::LogMenu => "Show recent log lines",
+            Self::ActivityMenu => "Show recent activity across filters",
         }
     }
 
@@ -237,7 +241,8 @@ impl Action {
             | Self::RefreshVisible
             | Self::ReloadConfig
             | Self::Help
-            | Self::LogMenu => Category::Application,
+            | Self::LogMenu
+            | Self::ActivityMenu => Category::Application,
         }
     }
 }
@@ -518,6 +523,7 @@ pub const DEFAULT_BINDINGS: &[(Action, &[&str])] = &[
     (Action::ClearSearch, &["esc"]),
     (Action::Help, &["?", "f1"]),
     (Action::LogMenu, &["shift-L"]),
+    (Action::ActivityMenu, &["shift-A"]),
 ];
 
 /// Build the keymap from the defaults merged with a user `[keys]` table.

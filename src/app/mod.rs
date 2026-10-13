@@ -15,6 +15,7 @@
 //! - `filter`    — incremental search and draft visibility
 //! - `diff`      — snapshot diffing and the notification trigger rules
 //! - `notify`    — coalescing, focus gating and cross-restart dedup
+//! - `activity`  — the persisted feed of every change, behind the activity popup
 //!
 //! Rendering is redraw-on-change: key input paints immediately, and background changes
 //! coalesce on the 100 ms render tick, so an idle `mrq` costs no CPU.
@@ -25,6 +26,7 @@ pub mod event;
 
 pub mod state;
 
+pub mod activity;
 pub mod cache;
 pub mod diff;
 pub mod discussions;

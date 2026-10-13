@@ -145,8 +145,7 @@ impl PipelineStatus {
     }
 
     /// Whether the pipeline is still going to change on its own.
-    #[cfg(test)]
-    const fn is_active(&self) -> bool {
+    pub const fn is_active(&self) -> bool {
         matches!(
             self,
             Self::Created

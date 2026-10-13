@@ -52,6 +52,11 @@ pub enum Trigger {
 
     /// The MR left the opened state.
     MergedOrClosed { state: MrState },
+
+    /// An id present before and absent now: merged, closed, or no longer matching the
+    /// filter. Never notified — it is the activity feed's, which pairs it with an
+    /// arrival elsewhere to say the merge request moved.
+    LeftFilter,
 }
 
 impl Trigger {
@@ -66,6 +71,7 @@ impl Trigger {
             Self::Discussion { .. } => "discussion",
             Self::Pipeline { .. } => "pipeline",
             Self::MergedOrClosed { .. } => "merged_or_closed",
+            Self::LeftFilter => "left_filter",
         }
     }
 }
@@ -128,6 +134,10 @@ pub fn baseline_for(tab: &crate::app::state::Tab) -> Baseline<'_> {
 ///
 /// Events come back in current-snapshot order, and in a fixed order per merge request, so
 /// a coalesced message reads the same way twice.
+///
+/// The app calls [`diff_all`] and [`notifiable`] separately, because the activity feed
+/// wants the unfiltered list too; this composition is what the trigger-rule tests pin.
+#[cfg(test)]
 pub fn diff(
     filter: FilterId,
     filter_name: &str,
@@ -135,9 +145,29 @@ pub fn diff(
     current: &[MergeRequest],
     config: &Notifications,
 ) -> Vec<Event> {
-    if !config.enabled {
-        return Vec::new();
-    }
+    notifiable(
+        &diff_all(filter, filter_name, baseline, current, false),
+        config,
+    )
+}
+
+/// Every change between two snapshots of one filter, with no notification config applied.
+///
+/// This is what the activity feed records: the `on_*` toggles decide what is worth an
+/// interruption, not what happened. Approvals and discussions stay scoped to
+/// `authored_by_me` all the same — on someone else's merge request they are the normal
+/// traffic of a busy instance, not news.
+///
+/// `complete` says whether both snapshots are the whole result set. A truncated or
+/// partial page drops rows that are still there, so [`Trigger::LeftFilter`] is only
+/// reported when it is set; otherwise one capped fetch would read as a mass exodus.
+pub fn diff_all(
+    filter: FilterId,
+    filter_name: &str,
+    baseline: Baseline<'_>,
+    current: &[MergeRequest],
+    complete: bool,
+) -> Vec<Event> {
     let Baseline::Previous(previous) = baseline else {
         return Vec::new();
     };
@@ -146,73 +176,87 @@ pub fn diff(
         previous.iter().map(|mr| (mr.id.as_str(), mr)).collect();
 
     let mut events = Vec::new();
-    for mr in current {
-        let mut push = |trigger| {
-            events.push(Event {
-                trigger,
-                filter,
-                filter_name: filter_name.to_owned(),
-                id: mr.id.clone(),
-                iid: mr.iid.clone(),
-                project_name: mr.project_name.clone(),
-                title: mr.title.clone(),
-            });
-        };
+    let mut push = |mr: &MergeRequest, trigger| {
+        events.push(Event {
+            trigger,
+            filter,
+            filter_name: filter_name.to_owned(),
+            id: mr.id.clone(),
+            iid: mr.iid.clone(),
+            project_name: mr.project_name.clone(),
+            title: mr.title.clone(),
+        });
+    };
 
+    for mr in current {
         let Some(before) = before.get(mr.id.as_str()) else {
             // New to this filter. Deliberately the only event it can produce: the
             // approvals and discussions it already carries are not news to anyone, and
             // announcing them alongside would make one arrival three notifications.
-            if config.on_new_mr {
-                push(Trigger::NewMergeRequest);
-            }
+            push(mr, Trigger::NewMergeRequest);
             continue;
         };
 
-        // The notification rules scope both of these to `authored_by_me`. Approvals and discussions on
-        // other people's merge requests are the normal traffic of a busy instance.
         if mr.authored_by_me() {
-            if config.on_approval {
-                let gained: Vec<String> = mr
-                    .approved_by
-                    .iter()
-                    .filter(|user| !before.approved_by.contains(*user))
-                    .cloned()
-                    .collect();
-                if !gained.is_empty() {
-                    push(Trigger::Approval { by: gained });
-                }
+            let gained: Vec<String> = mr
+                .approved_by
+                .iter()
+                .filter(|user| !before.approved_by.contains(*user))
+                .cloned()
+                .collect();
+            if !gained.is_empty() {
+                push(mr, Trigger::Approval { by: gained });
             }
 
-            if config.on_new_discussion {
-                // Only an increase. A discussion being *resolved* is progress, and
-                // notifying about it would punish the thing the user wants.
-                let added = mr
-                    .unresolved_discussions
-                    .saturating_sub(before.unresolved_discussions);
-                if added > 0 {
-                    push(Trigger::Discussion { added });
-                }
+            // Only an increase. A discussion being *resolved* is progress, and
+            // notifying about it would punish the thing the user wants.
+            let added = mr
+                .unresolved_discussions
+                .saturating_sub(before.unresolved_discussions);
+            if added > 0 {
+                push(mr, Trigger::Discussion { added });
             }
         }
 
-        if config.on_pipeline_change {
-            let from = before.pipeline.as_ref().map(|p| p.status.clone());
-            let to = mr.pipeline.as_ref().map(|p| p.status.clone());
-            if from != to {
-                push(Trigger::Pipeline { from, to });
-            }
+        let from = before.pipeline.as_ref().map(|p| p.status.clone());
+        let to = mr.pipeline.as_ref().map(|p| p.status.clone());
+        if from != to {
+            push(mr, Trigger::Pipeline { from, to });
         }
 
-        if config.on_merged_or_closed
-            && mr.state != before.state
-            && matches!(mr.state, MrState::Merged | MrState::Closed)
-        {
-            push(Trigger::MergedOrClosed { state: mr.state });
+        if mr.state != before.state && matches!(mr.state, MrState::Merged | MrState::Closed) {
+            push(mr, Trigger::MergedOrClosed { state: mr.state });
+        }
+    }
+
+    if complete {
+        let now: std::collections::HashSet<&str> =
+            current.iter().map(|mr| mr.id.as_str()).collect();
+        for mr in previous.iter().filter(|mr| !now.contains(mr.id.as_str())) {
+            push(mr, Trigger::LeftFilter);
         }
     }
 
     events
+}
+
+/// The subset of [`diff_all`]'s events the notification config asks to be told about.
+pub fn notifiable(events: &[Event], config: &Notifications) -> Vec<Event> {
+    if !config.enabled {
+        return Vec::new();
+    }
+    events
+        .iter()
+        .filter(|event| match event.trigger {
+            Trigger::NewMergeRequest => config.on_new_mr,
+            Trigger::Approval { .. } => config.on_approval,
+            Trigger::Discussion { .. } => config.on_new_discussion,
+            Trigger::Pipeline { .. } => config.on_pipeline_change,
+            Trigger::MergedOrClosed { .. } => config.on_merged_or_closed,
+            Trigger::LeftFilter => false,
+        })
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
@@ -316,6 +360,80 @@ mod tests {
             Baseline::Previous(rows) => assert_eq!(rows.len(), 1),
             Baseline::Silent => panic!("a fetched tab has a baseline"),
         }
+    }
+
+    // ------------------------------------------------------------- the activity feed
+
+    #[test]
+    fn a_merge_request_missing_from_a_complete_snapshot_left_the_filter() {
+        let previous = vec![theirs("a"), theirs("b")];
+        let current = vec![theirs("a")];
+
+        let events = diff_all(
+            0,
+            "Reviewing",
+            Baseline::Previous(&previous),
+            &current,
+            true,
+        );
+        assert_eq!(triggers(&events), vec![&Trigger::LeftFilter]);
+        assert_eq!(events[0].id, "b");
+    }
+
+    /// A capped or partial page is missing rows that still exist; reporting them as gone
+    /// would fill the feed with departures that never happened.
+    #[test]
+    fn an_incomplete_snapshot_reports_no_departures() {
+        let previous = vec![theirs("a"), theirs("b")];
+        let current = vec![theirs("a")];
+
+        let events = diff_all(
+            0,
+            "Reviewing",
+            Baseline::Previous(&previous),
+            &current,
+            false,
+        );
+        assert!(events.is_empty(), "{events:?}");
+    }
+
+    #[test]
+    fn the_feed_sees_changes_the_notification_config_turns_off() {
+        let mut before = theirs("a");
+        before.pipeline = pipeline(PipelineStatus::Running);
+        let mut after = theirs("a");
+        after.pipeline = pipeline(PipelineStatus::Failed);
+
+        let events = diff_all(
+            0,
+            "Reviewing",
+            Baseline::Previous(std::slice::from_ref(&before)),
+            std::slice::from_ref(&after),
+            true,
+        );
+        assert_eq!(events.len(), 1);
+
+        let config = Notifications::default();
+        assert!(!config.on_pipeline_change);
+        assert!(notifiable(&events, &config).is_empty());
+    }
+
+    #[test]
+    fn departures_are_never_notified() {
+        let events = diff_all(
+            0,
+            "Reviewing",
+            Baseline::Previous(&[theirs("a")]),
+            &[],
+            true,
+        );
+        assert_eq!(events.len(), 1);
+        assert!(notifiable(&events, &all_on()).is_empty());
+    }
+
+    #[test]
+    fn the_feed_is_silent_without_a_baseline_too() {
+        assert!(diff_all(0, "Reviewing", Baseline::Silent, &[theirs("a")], true).is_empty());
     }
 
     // ------------------------------------------------------------------- suppressions

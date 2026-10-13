@@ -120,6 +120,7 @@ impl World {
             popup_width: DEFAULT_POPUP_WIDTH,
             popup_height: DEFAULT_POPUP_HEIGHT,
             discussions: Default::default(),
+            activity: crate::app::activity::Activity::ephemeral(),
         };
 
         let all = rows();
@@ -145,6 +146,17 @@ impl World {
             source: None,
             previous_skin: None,
             discussions: DiscussionsView::Loading,
+            activity: vec![crate::app::activity::Entry {
+                at: "2026-09-11T11:58:00Z".parse().expect("a timestamp"),
+                filter_name: "Assigned".to_owned(),
+                kind: crate::app::activity::EntryKind::Moved {
+                    from: "Reviewing".to_owned(),
+                },
+                mr_id: "gid://gitlab/MergeRequest/2".to_owned(),
+                iid: "2".to_owned(),
+                project_name: "web".to_owned(),
+                title: "Add dark mode".to_owned(),
+            }],
         });
         self
     }
@@ -177,6 +189,12 @@ impl World {
             help_key: self
                 .keymap
                 .keys_for(crate::config::keymap::Action::Help)
+                .first()
+                .map(|key| key.to_spec()),
+            unread_activity: self.view.activity.unread(),
+            activity_key: self
+                .keymap
+                .keys_for(crate::config::keymap::Action::ActivityMenu)
                 .first()
                 .map(|key| key.to_spec()),
         }
@@ -243,6 +261,7 @@ fn the_frame_renders_at_every_size_skin_and_mode() {
             Some(Popup::Filter),
             Some(Popup::Skin),
             Some(Popup::Log),
+            Some(Popup::Activity),
         ] {
             let world = match mode {
                 Some(kind) => World::new(skin, ascii).with_popup(kind),

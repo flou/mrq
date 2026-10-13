@@ -35,6 +35,16 @@ Notifications are deduplicated by merge request and kind, so a merge request mat
 
 `on_merged_or_closed` needs a filter that includes merged or closed states. With the default `opened`, a merged merge request simply disappears from the results, so mrq could never tell it merged. mrq rejects that combination at startup instead.
 
+## The activity feed
+
+Notifications decide what is worth interrupting you for; the activity feed (`shift-A`) records everything they were chosen from. Every change mrq sees lands there whatever the `[notifications]` toggles say, including pipeline changes, merges and merge requests that left a filter. Dedup and focus gating do not apply. The one exception is a pipeline moving into an in-progress status (created, pending, preparing, waiting for a resource or running): only where it ends up is recorded, so a single run does not flood the feed.
+
+A merge request that leaves one filter and shows up in another within 15 minutes is shown once, as a move. The two filters refresh on their own timers, so mrq pairs the departure with the arrival in either order. When filters overlap, a change seen through more than one of them (the same approval, say) is recorded once.
+
+A filter that hit `max_results`, or whose fetch came back partial, is missing rows that still exist. Nothing is reported as having left that filter until a complete fetch arrives. Like notifications, the first fetch after startup records nothing.
+
+The feed is kept in `activity.json` in the state directory, for a week and at most 500 entries. The status bar counts entries added since you last opened it.
+
 ## Why unknown keys are errors
 
 A typo in a config should show itself at startup, not look like a bug later. For the same reason, conflicting key bindings and invalid combinations are fatal.
