@@ -86,6 +86,15 @@ impl Fragment {
         next
     }
 
+    /// The selection that drops everything either of `self` and `other` drops.
+    #[must_use]
+    pub fn combined(&self, other: &Self) -> Self {
+        Self {
+            excluded: self.excluded.union(&other.excluded).cloned().collect(),
+            minimal: self.minimal || other.minimal,
+        }
+    }
+
     pub fn excludes(&self, field: &str) -> bool {
         self.excluded.contains(field)
     }

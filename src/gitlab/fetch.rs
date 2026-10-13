@@ -100,6 +100,17 @@ impl Degradation {
     }
 }
 
+impl Degradation {
+    /// The shape that satisfies both: concurrent fetches each walk their own copy down the
+    /// ladder, and the caller keeps the lowest rung any of them reached.
+    fn combined(&self, other: &Self) -> Self {
+        Self {
+            page_size: self.page_size.min(other.page_size),
+            fragment: self.fragment.combined(&other.fragment),
+        }
+    }
+}
+
 impl Default for Degradation {
     fn default() -> Self {
         Self::none()
@@ -140,25 +151,39 @@ pub async fn fetch(
         .await;
     }
 
-    let with_state = |state| Filter {
-        state,
-        ..filter.clone()
+    // The three states are independent queries, so they run concurrently, each on its own
+    // copy of the ladder. All three are awaited even if one fails: the rungs they found are
+    // a property of the instance and must survive into the next refresh.
+    let fetch_as = |state, cap| {
+        let filter = Filter {
+            state,
+            ..filter.clone()
+        };
+        let mut own = degradation.clone();
+        async move {
+            let result = fetch_state(
+                client,
+                &filter,
+                cap,
+                &mut own,
+                current_user,
+                instance_url,
+                now,
+            )
+            .await;
+            (result, own)
+        }
     };
-    let mut fetch_as = async |state, cap| {
-        fetch_state(
-            client,
-            &with_state(state),
-            cap,
-            degradation,
-            current_user,
-            instance_url,
-            now,
-        )
-        .await
-    };
-    let open = fetch_as(StateFilter::Opened, caps.results).await?;
-    let merged = fetch_as(StateFilter::Merged, caps.closed).await?;
-    let closed = fetch_as(StateFilter::Closed, caps.closed).await?;
+    let ((open, d_open), (merged, d_merged), (closed, d_closed)) = tokio::join!(
+        fetch_as(StateFilter::Opened, caps.results),
+        fetch_as(StateFilter::Merged, caps.closed),
+        fetch_as(StateFilter::Closed, caps.closed),
+    );
+    *degradation = degradation
+        .combined(&d_open)
+        .combined(&d_merged)
+        .combined(&d_closed);
+    let (open, merged, closed) = (open?, merged?, closed?);
 
     let mut finished = merged.union(closed);
     finished
@@ -168,7 +193,9 @@ pub async fn fetch(
         finished.merge_requests.truncate(caps.closed);
         finished.truncated = true;
     }
-    Ok(open.union(finished))
+    let mut snapshot = open.union(finished);
+    snapshot.fragment = degradation.fragment.clone();
+    Ok(snapshot)
 }
 
 /// [`fetch`] for a filter whose state is a single GitLab state.
@@ -788,12 +815,25 @@ mod tests {
     /// open work, so each state is asked for on its own.
     #[tokio::test]
     async fn state_all_fetches_open_merged_and_closed_separately() {
-        let (server, calls, bodies) = serving(vec![
-            page(&["1", "2"], false, None),
-            page(&["3", "4", "5"], true, Some("C1")),
-            page(&["6"], false, None),
-        ])
-        .await;
+        let server = MockServer::start().await;
+        for (state, ids, has_next) in [
+            ("opened", &["1", "2"][..], false),
+            ("merged", &["3", "4", "5"][..], true),
+            ("closed", &["6"][..], false),
+        ] {
+            Mock::given(method("POST"))
+                .and(wiremock::matchers::body_partial_json(
+                    json!({"variables": {"state": state}}),
+                ))
+                .respond_with(ResponseTemplate::new(200).set_body_json(page(
+                    ids,
+                    has_next,
+                    Some("C"),
+                )))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
         let all = Filter {
             state: StateFilter::All,
             max_results: Some(10),
@@ -803,20 +843,29 @@ mod tests {
 
         let snapshot = fresh(&client_for(&server), &all).await.unwrap();
 
-        let states: Vec<_> = bodies
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|b| b["variables"]["state"].as_str().unwrap().to_owned())
-            .collect();
-        assert_eq!(states, ["opened", "merged", "closed"]);
-        assert_eq!(calls.load(Ordering::SeqCst), 3);
         assert_eq!(
             snapshot.merge_requests.len(),
             5,
             "2 open + 3 of the 4 merged and closed"
         );
         assert!(snapshot.truncated, "the merged cap was hit");
+    }
+
+    /// The three states walk the ladder independently; the caller must keep the lowest rung
+    /// any of them reached, or the next refresh rediscovers it.
+    #[test]
+    fn combining_degradations_keeps_the_most_degraded_rung() {
+        let mut a = Degradation::none();
+        a.fragment = a.fragment.excluding(["reviewers"]);
+        let mut b = Degradation::none();
+        b.page_size = FALLBACK_PAGE_SIZES[1];
+        b.fragment = Fragment::minimal();
+
+        let c = a.combined(&b);
+
+        assert_eq!(c.page_size, FALLBACK_PAGE_SIZES[1]);
+        assert!(c.fragment.is_minimal());
+        assert!(c.fragment.excludes("reviewers"));
     }
 
     #[tokio::test]
