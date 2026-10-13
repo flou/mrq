@@ -19,12 +19,13 @@ use jiff::Timestamp;
 use ratatui::backend::Backend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Padding, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::action::{
-    self, HelpLine, Popup, PopupState, SORTABLE, ViewState, matching_filters,
+    self, HelpLine, LegendSample, Popup, PopupState, SORTABLE, ViewState, matching_filters,
 };
 use crate::config::keymap::Keymap;
 use crate::ui::skins;
@@ -95,7 +96,7 @@ pub fn content_height(popup_area: Rect) -> usize {
 /// The title each popup carries, so the user knows what they opened.
 const fn title(kind: Popup) -> &'static str {
     match kind {
-        Popup::Help => " Keys ",
+        Popup::Help => " Help ",
         Popup::Sort => " Sort by ",
         Popup::Filter => " Filters ",
         Popup::Skin => " Skin ",
@@ -203,24 +204,17 @@ fn row<'a>(text: String, role: Role, theme: &Theme, selected: bool, width: usize
 /// The help popup, rendered from the structure `action::help_lines` generated.
 fn help_lines<'a>(keymap: &Keymap, theme: &Theme, width: usize) -> Vec<Line<'a>> {
     let entries = action::help_lines(keymap);
-    if entries.is_empty() {
-        return vec![row(
-            "every key is unbound".to_owned(),
-            Role::Dim,
-            theme,
-            false,
-            width,
-        )];
-    }
 
     // Measured rather than fixed: this is generated from the *resolved* keymap, so the
     // widest key list is whatever the user bound, and a constant is a width someone's
-    // binding will exceed — pushing that row's description out of the column.
-    let key_column = entries
+    // binding will exceed — pushing that row's description out of the column. Legend
+    // samples share the column, so every description in the popup lines up.
+    let column = entries
         .iter()
         .filter_map(|entry| match entry {
             HelpLine::Binding { keys, .. } => Some(keys.width()),
-            HelpLine::Blank | HelpLine::Heading(_) => None,
+            HelpLine::Legend { sample, .. } => Some(legend_sample(sample, theme).0.width()),
+            HelpLine::Blank | HelpLine::Separator | HelpLine::Heading(_) => None,
         })
         .max()
         .unwrap_or(0);
@@ -229,9 +223,13 @@ fn help_lines<'a>(keymap: &Keymap, theme: &Theme, width: usize) -> Vec<Line<'a>>
         .into_iter()
         .map(|entry| match entry {
             HelpLine::Blank => Line::default(),
+            HelpLine::Separator => Line::from(Span::styled(
+                theme.rule().repeat(width),
+                theme.style(Role::Border),
+            )),
             HelpLine::Heading(title) => row(title.to_owned(), Role::Header, theme, false, width),
             HelpLine::Binding { keys, description } => {
-                let padding = " ".repeat(key_column.saturating_sub(keys.width()));
+                let padding = " ".repeat(column.saturating_sub(keys.width()));
                 row(
                     format!("  {keys}{padding} {description}"),
                     Role::Normal,
@@ -240,8 +238,58 @@ fn help_lines<'a>(keymap: &Keymap, theme: &Theme, width: usize) -> Vec<Line<'a>>
                     width,
                 )
             }
+            HelpLine::Legend {
+                sample,
+                description,
+            } => {
+                let (glyph, style) = legend_sample(&sample, theme);
+                let padding = " ".repeat(column.saturating_sub(glyph.width()) + 1);
+                let used = 2 + column + 1;
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(truncate(glyph, width.saturating_sub(2), ""), style),
+                    Span::raw(padding),
+                    Span::styled(
+                        truncate(description, width.saturating_sub(used), theme.ellipsis()),
+                        theme.style(Role::Normal),
+                    ),
+                ])
+            }
         })
         .collect()
+}
+
+/// What a legend line shows for `sample`, drawn exactly as the list draws it: through
+/// the same theme methods, so the legend follows the ascii theme and the skin.
+fn legend_sample(sample: &LegendSample, theme: &Theme) -> (&'static str, Style) {
+    match sample {
+        LegendSample::State(state, draft) => {
+            let (mark, role) = theme.state_mark(*state, *draft);
+            (mark.trim_end(), theme.style(role))
+        }
+        LegendSample::Discussion => (
+            theme.discussion_mark().trim_end(),
+            theme.style(Role::Normal),
+        ),
+        LegendSample::Pipeline(status) => {
+            let (glyph, role) = theme.pipeline(Some(status));
+            (glyph, theme.style(role))
+        }
+        LegendSample::Approved => (theme.approved_mark(), theme.emphasise(Role::Success)),
+        LegendSample::New => (theme.new_marker(), theme.style(Role::Fresh)),
+        LegendSample::Attention(attention) => (
+            theme.attention_marker(*attention),
+            theme.style(theme.attention_role(*attention)),
+        ),
+        LegendSample::FreshTitle => ("title", theme.style(Role::Fresh)),
+        LegendSample::BlockedTitle => ("title", theme.style(Role::Warning)),
+        LegendSample::ClosedTitle => ("title", theme.struck(Role::Normal)),
+        LegendSample::You => ("name", theme.style(Role::Success)),
+        LegendSample::CannotMerge => ("name", theme.style(Role::Warning)),
+        LegendSample::Dimmed => ("row", theme.style(Role::Dim)),
+        LegendSample::DiffAdded => ("+12", theme.style(Role::Added)),
+        LegendSample::DiffRemoved => ("-3", theme.style(Role::Removed)),
+    }
 }
 
 /// The sort menu: every sortable column, the current one marked.
@@ -620,18 +668,20 @@ mod tests {
         let wide = crate::config::keymap::resolve(&bindings).unwrap();
 
         for keymap in [keymap(), wide] {
+            // In display cells, not bytes: legend glyphs are multi-byte.
             let descriptions: Vec<usize> = action::help_lines(&keymap)
                 .iter()
                 .zip(help_lines(&keymap, &theme(), 200))
                 .filter_map(|(entry, line)| match entry {
-                    HelpLine::Binding { description, .. } => {
+                    HelpLine::Binding { description, .. }
+                    | HelpLine::Legend { description, .. } => {
                         let text = line.to_string();
-                        Some(
-                            text.find(description)
-                                .unwrap_or_else(|| panic!("`{description}` missing from `{text}`")),
-                        )
+                        let start = text
+                            .rfind(description)
+                            .unwrap_or_else(|| panic!("`{description}` missing from `{text}`"));
+                        Some(text[..start].width())
                     }
-                    HelpLine::Blank | HelpLine::Heading(_) => None,
+                    HelpLine::Blank | HelpLine::Separator | HelpLine::Heading(_) => None,
                 })
                 .collect();
 
@@ -679,6 +729,49 @@ mod tests {
             Category::Application,
         ] {
             assert!(joined.contains(category.title()), "{joined}");
+        }
+    }
+
+    fn joined_help(theme: &Theme) -> String {
+        help_lines(&keymap(), theme, 200)
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The list's glyphs mean nothing to someone who has not read the source; the help
+    /// explains each one, drawn as the list draws it.
+    #[test]
+    fn the_help_popup_explains_the_list_glyphs() {
+        let joined = joined_help(&theme());
+        for expected in ["Title marks", "Pipeline", "Markers", "Colours"] {
+            assert!(joined.contains(expected), "{joined}");
+        }
+        for glyph in ["✓  ", "✗  ", "✎  ", "💬 ", "✘  ", "◌  "] {
+            assert!(
+                joined.contains(&format!("  {glyph}")),
+                "`{glyph}` missing: {joined}"
+            );
+        }
+    }
+
+    /// On the ascii theme the legend shows the ascii glyphs the list actually uses.
+    #[test]
+    fn the_help_legend_follows_the_ascii_theme() {
+        let caps = Capabilities {
+            color: ColorDepth::TrueColor,
+            hyperlinks: false,
+            notify: NotifyEscape::None,
+            focus_events: true,
+            multiplexed: false,
+            over_ssh: false,
+        };
+        let joined = joined_help(&Theme::builtin("catppuccin-mocha", true, &caps));
+        let legend = &joined[joined.find("Title marks").unwrap()..];
+        assert!(legend.is_ascii(), "{legend}");
+        for glyph in ["  M ", "  C ", "  D ", "  x "] {
+            assert!(legend.contains(glyph), "`{glyph}` missing: {legend}");
         }
     }
 

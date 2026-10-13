@@ -376,6 +376,11 @@ impl Theme {
         if self.ascii { " | " } else { " · " }
     }
 
+    /// One cell of a horizontal rule across a popup.
+    pub const fn rule(&self) -> &'static str {
+        if self.ascii { "-" } else { "─" }
+    }
+
     /// The divider between two tabs.
     pub const fn tab_divider(&self) -> &'static str {
         if self.ascii { "|" } else { "│" }

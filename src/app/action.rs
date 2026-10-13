@@ -19,12 +19,12 @@ use std::time::{Duration, Instant};
 
 use crate::app::activity::{Activity, Entry, EntryKind};
 use crate::app::discussions::{self, DiscussionsCache, DiscussionsView};
-use crate::app::state::Tabs;
+use crate::app::state::{Attention, Tabs};
 use crate::config::keymap::{Action, Keymap};
 use crate::config::schema::Column;
 use crate::gitlab::discussions::Discussion;
 use crate::gitlab::fetch::Snapshot;
-use crate::gitlab::model::{MergeRequest, MergeStatus};
+use crate::gitlab::model::{MergeRequest, MergeStatus, MrState, PipelineStatus};
 use crate::logging::LogBuffer;
 use crate::ui::markdown;
 use crate::ui::skins;
@@ -1368,11 +1368,39 @@ pub fn resize_popup(state: &mut ViewState, keymap: &Keymap, width: usize, height
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HelpLine {
     Blank,
+    /// A rule across the popup, between the key bindings and the legend.
+    Separator,
     Heading(&'static str),
     Binding {
         keys: String,
         description: &'static str,
     },
+    /// A glyph or colour the list uses, and what it means.
+    Legend {
+        sample: LegendSample,
+        description: &'static str,
+    },
+}
+
+/// What a legend line shows, by meaning rather than by glyph: the glyph and its colour
+/// depend on the theme (ascii, skin, colour depth), and the help's line count must not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LegendSample {
+    /// The title prefix for a merge request in this state (and draft flag).
+    State(MrState, bool),
+    Discussion,
+    Pipeline(PipelineStatus),
+    Approved,
+    New,
+    Attention(Attention),
+    FreshTitle,
+    BlockedTitle,
+    ClosedTitle,
+    You,
+    CannotMerge,
+    Dimmed,
+    DiffAdded,
+    DiffRemoved,
 }
 
 /// The help popup's content, generated from the resolved keymap.
@@ -1402,6 +1430,98 @@ pub fn help_lines(keymap: &Keymap) -> Vec<HelpLine> {
                 description: action.description(),
             });
         }
+    }
+
+    if !lines.is_empty() {
+        lines.extend([HelpLine::Blank, HelpLine::Separator, HelpLine::Blank]);
+    }
+    lines.extend(legend_lines());
+    lines
+}
+
+/// The legend after the key bindings: every glyph and colour the list uses.
+///
+/// Present even when every key is unbound — the list still draws them.
+fn legend_lines() -> Vec<HelpLine> {
+    use LegendSample as S;
+
+    let groups: [(&'static str, Vec<(LegendSample, &'static str)>); 4] = [
+        (
+            "Title marks",
+            vec![
+                (S::State(MrState::Merged, false), "merged"),
+                (S::State(MrState::Closed, false), "closed"),
+                (S::State(MrState::Locked, false), "locked"),
+                (S::State(MrState::Opened, true), "draft"),
+                (S::Discussion, "unresolved discussions"),
+            ],
+        ),
+        (
+            "Pipeline",
+            vec![
+                (S::Pipeline(PipelineStatus::Success), "passed"),
+                (S::Pipeline(PipelineStatus::Failed), "failed"),
+                (S::Pipeline(PipelineStatus::Running), "running"),
+                (
+                    S::Pipeline(PipelineStatus::Pending),
+                    "pending, created or preparing",
+                ),
+                (S::Pipeline(PipelineStatus::Canceled), "canceled"),
+                (S::Pipeline(PipelineStatus::Skipped), "skipped"),
+                (S::Pipeline(PipelineStatus::Manual), "manual or scheduled"),
+                (
+                    S::Pipeline(PipelineStatus::Unknown(String::new())),
+                    "unknown status",
+                ),
+            ],
+        ),
+        (
+            "Markers",
+            vec![
+                (S::Approved, "approved"),
+                (S::New, "new since the last refresh"),
+                (
+                    S::Attention(Attention::Degraded),
+                    "tab: some fields unavailable on this instance",
+                ),
+                (
+                    S::Attention(Attention::Problem),
+                    "tab: last refresh failed, list may be wrong",
+                ),
+            ],
+        ),
+        (
+            "Colours",
+            vec![
+                (S::FreshTitle, "new since the last refresh"),
+                (S::BlockedTitle, "has conflicts or cannot be merged"),
+                (S::ClosedTitle, "closed"),
+                (S::You, "you (assignee, approver, reviewer, merger)"),
+                (S::CannotMerge, "author or assignee who cannot merge it"),
+                (
+                    S::Dimmed,
+                    "greyed-out draft, or merged/closed among open ones",
+                ),
+                (S::DiffAdded, "lines added"),
+                (S::DiffRemoved, "lines removed"),
+            ],
+        ),
+    ];
+
+    let mut lines = Vec::new();
+    for (title, entries) in groups {
+        if !lines.is_empty() {
+            lines.push(HelpLine::Blank);
+        }
+        lines.push(HelpLine::Heading(title));
+        lines.extend(
+            entries
+                .into_iter()
+                .map(|(sample, description)| HelpLine::Legend {
+                    sample,
+                    description,
+                }),
+        );
     }
     lines
 }

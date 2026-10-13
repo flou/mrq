@@ -193,7 +193,7 @@ Set actions under `[keys]`. Naming an action replaces its keys, `[]` unbinds it,
 | `refresh` | `ctrl-r` | Refresh all filters |
 | `refresh_visible` | `r` | Refresh current filter |
 | `reload_config` | `shift-R` | Reload config |
-| `help` | `?`, `f1` | Key help |
+| `help` | `?`, `f1` | Key help, then a legend of the list's glyphs and colours |
 | `log_menu` | `shift-L` | Recent log lines |
 | `activity_menu` | `shift-A` | Recent activity across filters |
 | `quit` | `q`, `ctrl-c` | Quit |
