@@ -49,7 +49,7 @@ use ratatui::widgets::{Block, Borders};
 use crate::app::action::ViewState;
 use crate::app::state::Tab;
 use crate::config::keymap::Keymap;
-use crate::config::schema::Column;
+use crate::config::schema::{Column, DimDrafts};
 use crate::gitlab::model::MergeRequest;
 use crate::ui::statusbar::Status;
 use crate::ui::theme::{Role, Theme};
@@ -79,6 +79,8 @@ pub struct Scene<'a> {
     /// `[ui].assigned_display` / `approver_display` / `reviewer_display`: how each
     /// people-naming column renders who is there.
     pub people_display: table::PeopleDisplayModes,
+    /// `[ui].dim_drafts`: which drafts are greyed out.
+    pub dim_drafts: DimDrafts,
 }
 
 /// The panel title: which filter the rows below belong to, and how many there are.
@@ -139,6 +141,7 @@ pub fn render(frame: &mut Frame, scene: &Scene<'_>) -> Vec<table::LinkSpan> {
         scene.theme,
         scene.now,
         scene.people_display,
+        scene.dim_drafts,
     );
     frame.render_widget(widget, table_area);
 

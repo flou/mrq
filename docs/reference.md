@@ -59,6 +59,7 @@ Unknown config keys are an error.
 | --- | --- | --- |
 | `ascii` | `false` | Use ASCII instead of Unicode glyphs. |
 | `show_drafts` | `false` | Show draft merge requests. |
+| `dim_drafts` | `all` | Which drafts are greyed out: `all`, `mine`, `theirs` or `none`. |
 | `relative_times` | `true` | Show times as relative. |
 | `assigned_display` | `yes_no` | `yes_no`, `username` or `trigram`. |
 | `approver_display` | `username` | Same values. |

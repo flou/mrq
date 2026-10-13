@@ -325,6 +325,9 @@ pub struct Ui {
     /// Show draft merge requests. A `[[filter]]` can override it with its own `show_drafts`;
     /// toggled at runtime by the `toggle_drafts` key.
     pub show_drafts: bool,
+    /// Which draft merge requests are greyed out: `all`, `mine` (authored by you), `theirs`
+    /// (authored by someone else) or `none`.
+    pub dim_drafts: DimDrafts,
     /// Show the AGE and UPDATED columns as relative durations (`3h`, `5d`) instead of dates.
     pub relative_times: bool,
     /// Capture the mouse. Off by default so the terminal keeps its native text selection and
@@ -391,11 +394,41 @@ impl LinkTarget {
     }
 }
 
+/// Which draft merge requests are greyed out.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum DimDrafts {
+    /// Every draft.
+    #[default]
+    All,
+    /// Drafts you authored.
+    Mine,
+    /// Drafts someone else authored.
+    Theirs,
+    /// No draft.
+    None,
+}
+
+impl DimDrafts {
+    /// Whether a draft is greyed out, given whether you authored it.
+    pub const fn dims(self, mine: bool) -> bool {
+        match self {
+            Self::All => true,
+            Self::Mine => mine,
+            Self::Theirs => !mine,
+            Self::None => false,
+        }
+    }
+}
+
 impl Default for Ui {
     fn default() -> Self {
         Self {
             ascii: false,
             show_drafts: false,
+            dim_drafts: DimDrafts::All,
             relative_times: true,
             mouse: false,
             set_terminal_title: true,
