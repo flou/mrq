@@ -14,6 +14,9 @@ use crate::gitlab::client::Client;
 /// request beyond this is not one anybody reads in a pager.
 const MAX_PAGES: u32 = 50;
 
+/// Files per page of `diffs`, the most GitLab allows.
+const PER_PAGE: u32 = 100;
+
 /// Fetch the unified diff of one merge request.
 pub async fn fetch(client: &Client, project_path: &str, iid: &str) -> Result<String> {
     let raw = client
@@ -22,13 +25,23 @@ pub async fn fetch(client: &Client, project_path: &str, iid: &str) -> Result<Str
             &[],
         )
         .await;
-    match raw {
+    let result = match raw {
         Ok((_, body)) => Ok(body),
         // Also what a missing merge request returns; the fallback then fails the same
         // way, which is the error worth reporting.
         Err(Error::Http { status: 404 }) => rebuild(client, project_path, iid).await,
         Err(error) => Err(error),
-    }
+    };
+    result.map_err(|error| match error {
+        Error::Http { status: 403 } => {
+            Error::Other(format!("no access to the repository of {project_path}"))
+        }
+        Error::Http { status: 404 } => Error::Other(format!(
+            "!{iid} of {project_path} not found, or this GitLab is too old to serve diffs \
+             (15.7 or later is needed)"
+        )),
+        other => other,
+    })
 }
 
 /// One file of the `diffs` endpoint.
@@ -48,10 +61,16 @@ struct FileDiff {
     deleted_file: bool,
     #[serde(default)]
     diff: String,
+    #[serde(default)]
+    too_large: bool,
+    #[serde(default)]
+    collapsed: bool,
 }
 
 /// Rebuild a `git diff` from the per-file hunks of the `diffs` endpoint.
 async fn rebuild(client: &Client, project_path: &str, iid: &str) -> Result<String> {
+    use std::fmt::Write as _;
+
     let mut out = String::new();
     let mut page = 1;
     loop {
@@ -59,7 +78,7 @@ async fn rebuild(client: &Client, project_path: &str, iid: &str) -> Result<Strin
         let (headers, body) = client
             .rest_get(
                 &["projects", project_path, "merge_requests", iid, "diffs"],
-                &[("per_page", "100"), ("page", &page_param)],
+                &[("per_page", &PER_PAGE.to_string()), ("page", &page_param)],
             )
             .await?;
         let files: Vec<FileDiff> = serde_json::from_str(&body)
@@ -74,6 +93,16 @@ async fn rebuild(client: &Client, project_path: &str, iid: &str) -> Result<Strin
             .and_then(|v| v.trim().parse::<u32>().ok());
         match next {
             Some(next) if next > page && next <= MAX_PAGES => page = next,
+            Some(next) if next > page => {
+                // Said in the diff itself, where the reader will notice the end.
+                let _ = writeln!(
+                    out,
+                    "# mrq: stopped after {} files; open the merge request in the browser \
+                     for the rest",
+                    MAX_PAGES * PER_PAGE
+                );
+                break;
+            }
             _ => break,
         }
     }
@@ -100,8 +129,19 @@ fn render(out: &mut String, file: &FileDiff) {
         );
     }
     // A binary, collapsed or pure-rename file has no hunks, and git prints no `---`/`+++`
-    // pair for it either.
+    // pair for it either. One GitLab left out is said so, or it reads as a pure rename.
     if file.diff.is_empty() {
+        if file.too_large || file.collapsed {
+            let reason = if file.too_large {
+                "too large"
+            } else {
+                "collapsed"
+            };
+            let _ = writeln!(
+                out,
+                "# mrq: GitLab left out the changes to this file ({reason})"
+            );
+        }
         return;
     }
     let old = if file.new_file {
@@ -248,7 +288,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_missing_merge_request_reports_the_not_found() {
+    async fn a_missing_merge_request_or_an_old_instance_is_explained() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .respond_with(ResponseTemplate::new(404))
@@ -257,7 +297,83 @@ mod tests {
 
         let error = fetch(&client_for(&server), "group/sub/project", "7")
             .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("!7 of group/sub/project not found"),
+            "{error}"
+        );
+        assert!(error.contains("15.7"), "{error}");
+    }
+
+    /// A REST 403 is about the project, not the token GraphQL keeps using.
+    #[tokio::test]
+    async fn a_forbidden_project_is_not_blamed_on_the_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let error = fetch(&client_for(&server), "group/sub/project", "7")
+            .await
             .unwrap_err();
-        assert!(matches!(error, Error::Http { status: 404 }));
+        assert!(!matches!(error, Error::Unauthorized { .. }), "{error:?}");
+        assert!(
+            error.to_string().contains("no access to the repository"),
+            "{error}"
+        );
+    }
+
+    fn file(path: &str) -> serde_json::Value {
+        json!({"old_path": path, "new_path": path, "diff": "@@ -1 +1 @@\n-a\n+b\n"})
+    }
+
+    /// Past the page cap the rebuilt diff says where it stopped.
+    #[tokio::test]
+    async fn the_page_cap_is_marked_in_the_diff() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(RAW))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        for page in 1..=MAX_PAGES {
+            Mock::given(method("GET"))
+                .and(path(DIFFS))
+                .and(query_param("page", page.to_string()))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .insert_header("x-next-page", (page + 1).to_string())
+                        .set_body_json(json!([file(&format!("f{page}"))])),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+
+        let diff = fetch(&client_for(&server), "group/sub/project", "7")
+            .await
+            .unwrap();
+        assert!(diff.contains(&format!("b/f{MAX_PAGES}")));
+        assert!(
+            diff.ends_with("# mrq: stopped after 5000 files; open the merge request in the browser for the rest\n"),
+            "{diff}"
+        );
+    }
+
+    #[test]
+    fn a_file_gitlab_left_out_is_marked_rather_than_passed_off_as_a_rename() {
+        let mut out = String::new();
+        let too_large: FileDiff = serde_json::from_value(json!({
+            "old_path": "big.json", "new_path": "big.json", "diff": "", "too_large": true
+        }))
+        .unwrap();
+        render(&mut out, &too_large);
+        assert_eq!(
+            out,
+            "diff --git a/big.json b/big.json\n\
+             # mrq: GitLab left out the changes to this file (too large)\n"
+        );
     }
 }

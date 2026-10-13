@@ -88,6 +88,9 @@ pub struct App {
     pager_helpers: crate::term::pager::Helpers,
     /// The terminal reader, paused while the diff viewer owns the terminal.
     input: app_event::Input,
+    /// The merge request whose diff is being fetched, as `(project_path, iid)`. One at a
+    /// time: a held key would otherwise queue a viewer per repeat, each to be quit in turn.
+    diff_pending: Option<(String, String)>,
     /// Whether the terminal advertises OSC 8.
     hyperlinks: bool,
     /// The OSC 8 links currently on the terminal.
@@ -318,6 +321,12 @@ impl App {
                 iid,
             ),
             Effect::ViewDiff { project_path, iid } => {
+                if let Some((_, pending)) = &self.diff_pending {
+                    self.view
+                        .flash(format!("still fetching the diff of !{pending}"));
+                    return;
+                }
+                self.diff_pending = Some((project_path.clone(), iid.clone()));
                 let events = self.events.clone();
                 let client = self.client.clone();
                 // Untracked, like the comments fetch: one request that holds nothing the
@@ -327,6 +336,7 @@ impl App {
                         .await
                         .map_err(|error| error.to_string());
                     let _ = events.send(AppEvent::DiffLoaded {
+                        project_path,
                         iid,
                         result: Box::new(result),
                     });
@@ -356,8 +366,10 @@ impl App {
         self.input.resume();
 
         resumed.map_err(|e| Error::Other(format!("could not take back the terminal: {e}")))?;
-        // The viewer painted over everything ratatui believes is on screen.
+        // The viewer painted over everything ratatui believes is on screen, OSC 8 links
+        // included; forgetting them makes the next frame write them all again.
         let _ = self.terminal.clear();
+        self.links = crate::ui::table::Links::default();
         self.view.flash = None;
         if let Err(error) = outcome {
             tracing::warn!(%error, %command, "diff viewer failed");
@@ -964,8 +976,25 @@ impl Application for App {
                 result,
             } => self.view.discussions_loaded(&id, updated_at, *result),
 
-            AppEvent::DiffLoaded { iid, result } => match *result {
+            AppEvent::DiffLoaded {
+                project_path,
+                iid,
+                result,
+            } => match *result {
+                // Not the answer to the request in flight: nothing to show.
+                _ if self.diff_pending.as_ref() != Some(&(project_path.clone(), iid.clone())) => {
+                    false
+                }
+                // The user moved on while it loaded; taking over the screen now would
+                // show a diff they no longer asked for.
+                Ok(_) if !self.view.is_showing(&project_path, &iid) => {
+                    self.diff_pending = None;
+                    self.view
+                        .flash(format!("diff of !{iid} dropped: the selection changed"));
+                    true
+                }
                 Ok(diff) => {
+                    self.diff_pending = None;
                     if let Err(error) = self.show_diff(&iid, &diff) {
                         tracing::error!(%error, "terminal lost after the diff viewer");
                         self.fatal = Some(Box::new(error));
@@ -974,6 +1003,7 @@ impl Application for App {
                     true
                 }
                 Err(message) => {
+                    self.diff_pending = None;
                     tracing::warn!(%message, iid, "diff fetch failed");
                     self.view.flash(format!("diff failed: {message}"));
                     true
@@ -1383,6 +1413,7 @@ pub async fn run(
         browser_helpers,
         pager_helpers,
         input,
+        diff_pending: None,
         links: crate::ui::table::Links::default(),
         popup_open: false,
         mouse_captured: mouse,

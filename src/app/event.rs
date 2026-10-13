@@ -130,6 +130,7 @@ pub enum AppEvent {
     ///
     /// Boxed like the other large payloads (see `the_event_enum_stays_small`).
     DiffLoaded {
+        project_path: String,
         iid: String,
         result: Box<Result<String, String>>,
     },
@@ -386,21 +387,11 @@ pub fn spawn_signals(
     };
     let cancel = tasks.token();
     tasks.track(tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                () = cancel.cancelled() => break,
-                signal = signals.terminated() => {
-                    // A ctrl-c typed into the diff viewer reaches the whole foreground
-                    // process group; it was meant for the viewer, not for mrq.
-                    if signal == crate::term::signal::Termination::Interrupt
-                        && crate::term::guard::is_suspended()
-                    {
-                        continue;
-                    }
-                    tracing::info!(signal = signal.as_str(), "shutting down");
-                    let _ = events.send(AppEvent::Quit(QuitReason::Signal(signal)));
-                    break;
-                }
+        tokio::select! {
+            () = cancel.cancelled() => {}
+            signal = signals.terminated() => {
+                tracing::info!(signal = signal.as_str(), "shutting down");
+                let _ = events.send(AppEvent::Quit(QuitReason::Signal(signal)));
             }
         }
     }));

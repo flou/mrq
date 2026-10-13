@@ -62,26 +62,121 @@ impl std::error::Error for Error {}
 ///
 /// Blocking: the terminal belongs to the viewer until it exits, and nothing else may read
 /// or paint in the meantime.
+///
+/// The diff is staged in an anonymous file — unlinked from the start, so nothing is left
+/// in `$TMPDIR` however mrq exits. On a terminal the viewer runs as its own foreground
+/// process group, as a shell would run it: `ctrl-c`, `ctrl-\` and `ctrl-z` go to the viewer
+/// alone instead of to mrq as well.
 pub fn run(command: &str, diff: &str) -> Result<(), Error> {
-    let mut staged = tempfile::Builder::new()
-        .prefix("mrq-")
-        .suffix(".diff")
-        .tempfile()
-        .map_err(Error::Io)?;
-    staged.write_all(diff.as_bytes()).map_err(Error::Io)?;
-    staged.flush().map_err(Error::Io)?;
-    let stdin = staged.reopen().map_err(Error::Io)?;
+    run_with(
+        command,
+        diff,
+        std::io::IsTerminal::is_terminal(&std::io::stdin()),
+    )
+}
 
-    let status = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .stdin(stdin)
-        .status()
-        .map_err(Error::Io)?;
+/// [`run`], with whether stdin is a terminal injected: a test must not hand the terminal
+/// of whoever runs `cargo test` to its child.
+fn run_with(command: &str, diff: &str, on_terminal: bool) -> Result<(), Error> {
+    use std::io::Seek as _;
+    use std::os::unix::process::CommandExt as _;
+
+    let mut staged = tempfile::tempfile().map_err(Error::Io)?;
+    staged.write_all(diff.as_bytes()).map_err(Error::Io)?;
+    staged.rewind().map_err(Error::Io)?;
+
+    let mut child = std::process::Command::new("sh");
+    child.arg("-c").arg(command).stdin(staged);
+    if on_terminal {
+        child.process_group(0);
+    }
+    let mut child = child.spawn().map_err(Error::Io)?;
+
+    let status = if on_terminal {
+        foreground::wait(&child)
+    } else {
+        child.wait()
+    }
+    .map_err(Error::Io)?;
     if status.success() {
         Ok(())
     } else {
         Err(Error::NonZero(status))
+    }
+}
+
+/// Lending the terminal to a child's process group, and taking it back.
+mod foreground {
+    use std::io;
+    use std::os::unix::process::ExitStatusExt as _;
+    use std::process::{Child, ExitStatus};
+
+    use nix::errno::Errno;
+    use nix::sys::signal::{SigSet, SigmaskHow, Signal, killpg, pthread_sigmask};
+    use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
+    use nix::unistd::{Pid, getpgrp, tcsetpgrp};
+
+    /// Make `child`'s group the terminal's foreground, wait for it to exit, and make mrq's
+    /// group the foreground again.
+    pub fn wait(child: &Child) -> io::Result<ExitStatus> {
+        let group = Pid::from_raw(i32::try_from(child.id()).map_err(io::Error::other)?);
+        let tty = io::stdin();
+
+        // Taking the terminal back happens from what is then a background group, which
+        // the kernel answers with SIGTTOU unless the signal is blocked.
+        let _ttou = BlockTtou::new();
+        let handed = tcsetpgrp(&tty, group).is_ok();
+        // The child may have touched the terminal before it was handed over, and been
+        // stopped for it; it has the terminal now, so let it carry on.
+        let _ = killpg(group, Signal::SIGCONT);
+
+        let status = loop {
+            match waitpid(group, Some(WaitPidFlag::WUNTRACED)) {
+                Ok(WaitStatus::Exited(_, code)) => break Ok(ExitStatus::from_raw(code << 8)),
+                Ok(WaitStatus::Signaled(_, signal, _)) => {
+                    break Ok(ExitStatus::from_raw(signal as i32));
+                }
+                // ctrl-z: there is no shell job to return to, only mrq, which is waiting
+                // for this very process, so the stop is undone rather than left to hang.
+                // A child that could not be given the terminal stops on every read, so
+                // that one is ended instead.
+                Ok(WaitStatus::Stopped(..)) => {
+                    if !handed {
+                        let _ = killpg(group, Signal::SIGTERM);
+                    }
+                    let _ = killpg(group, Signal::SIGCONT);
+                }
+                Ok(_) | Err(Errno::EINTR) => {}
+                Err(errno) => break Err(io::Error::from(errno)),
+            }
+        };
+
+        if handed {
+            let _ = tcsetpgrp(&tty, getpgrp());
+        }
+        status
+    }
+
+    /// Blocks SIGTTOU on this thread for as long as it lives.
+    struct BlockTtou(Option<SigSet>);
+
+    impl BlockTtou {
+        fn new() -> Self {
+            let mut set = SigSet::empty();
+            set.add(Signal::SIGTTOU);
+            let mut previous = SigSet::empty();
+            let blocked =
+                pthread_sigmask(SigmaskHow::SIG_BLOCK, Some(&set), Some(&mut previous)).is_ok();
+            Self(blocked.then_some(previous))
+        }
+    }
+
+    impl Drop for BlockTtou {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.0 {
+                let _ = pthread_sigmask(SigmaskHow::SIG_SETMASK, Some(previous), None);
+            }
+        }
     }
 }
 
@@ -125,12 +220,15 @@ mod tests {
         let out = dir.path().join("out");
         let command = format!("cat > '{}'", out.display());
 
-        run(&command, "+added\n").unwrap();
+        run_with(&command, "+added\n", false).unwrap();
         assert_eq!(std::fs::read_to_string(out).unwrap(), "+added\n");
     }
 
     #[test]
     fn a_failing_viewer_is_reported() {
-        assert!(matches!(run("exit 3", ""), Err(Error::NonZero(_))));
+        assert!(matches!(
+            run_with("exit 3", "", false),
+            Err(Error::NonZero(_))
+        ));
     }
 }

@@ -278,13 +278,19 @@ impl Client {
             .bearer_auth(self.inner.token.expose())
             .send()
             .await
-            .map_err(classify_transport)?;
+            .map_err(classify_rest_transport)?;
 
-        if !response.status().is_success() {
-            return Err(self.classify_status(&response));
+        match response.status().as_u16() {
+            // A REST 403 is about one resource — a project whose repository this account
+            // cannot read — not the token, which GraphQL is using fine meanwhile.
+            403 => return Err(Error::Http { status: 403 }),
+            _ if !response.status().is_success() => {
+                return Err(self.classify_status(&response));
+            }
+            _ => {}
         }
         let headers = response.headers().clone();
-        let body = response.text().await.map_err(classify_transport)?;
+        let body = response.text().await.map_err(classify_rest_transport)?;
         Ok((headers, body))
     }
 
@@ -320,6 +326,19 @@ fn classify_transport(e: reqwest::Error) -> Error {
         )))
     } else {
         Error::Network(Box::new(e))
+    }
+}
+
+/// [`classify_transport`] for a REST download, where the remedy for a timeout is a longer
+/// timeout: there is no filter to narrow.
+fn classify_rest_transport(e: reqwest::Error) -> Error {
+    if e.is_timeout() {
+        Error::Network(Box::new(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "request timed out; a large download may need a higher gitlab.timeout_secs",
+        )))
+    } else {
+        classify_transport(e)
     }
 }
 

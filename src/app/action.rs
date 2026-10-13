@@ -495,6 +495,15 @@ impl ViewState {
             .cloned()
     }
 
+    /// Whether the list is in normal mode with this merge request selected, so a result
+    /// fetched for it is still what the user is looking at.
+    pub fn is_showing(&self, project_path: &str, iid: &str) -> bool {
+        matches!(self.mode, Mode::Normal)
+            && self
+                .selected()
+                .is_some_and(|mr| mr.project_path == project_path && mr.iid == iid)
+    }
+
     /// Sanitised here, once, rather than at each call site: several build the message
     /// from an `Error`'s `Display` (`open failed: {error}`, `copy failed: {failure}`),
     /// and an `Error`'s formatting is free to use an em dash — correct for stderr and the
@@ -2365,6 +2374,23 @@ mod tests {
                 iid: mr.iid,
             }
         );
+    }
+
+    #[test]
+    fn a_diff_is_only_shown_for_the_selection_in_normal_mode() {
+        let mut two = rows(2);
+        two[1].iid = "1".into();
+        let mut state = state_with(two);
+        dispatch(&mut state, Action::Down);
+        let first = state.selected().unwrap();
+        assert!(state.is_showing(&first.project_path, &first.iid));
+
+        dispatch(&mut state, Action::Down);
+        assert!(!state.is_showing(&first.project_path, &first.iid));
+
+        dispatch(&mut state, Action::Up);
+        dispatch(&mut state, Action::Help);
+        assert!(!state.is_showing(&first.project_path, &first.iid));
     }
 
     #[test]

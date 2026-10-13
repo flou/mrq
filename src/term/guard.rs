@@ -321,18 +321,9 @@ pub fn resume(suspended: Steps) -> io::Result<()> {
     resume_with(&mut CrosstermOps::new(), &ACTIVE, suspended)
 }
 
-/// Whether the terminal is currently handed to a child process, so the signal path can
-/// leave a `SIGINT` meant for that child alone.
-pub fn is_suspended() -> bool {
-    SUSPENDED.load(Ordering::SeqCst)
-}
-
-static SUSPENDED: AtomicBool = AtomicBool::new(false);
-
 fn suspend_with(ops: &mut dyn TerminalOps, active: &AtomicU32) -> Steps {
     let applied = Steps(active.load(Ordering::SeqCst));
     let suspended = Steps(applied.0 & !Step::TitleStack.bit());
-    SUSPENDED.store(true, Ordering::SeqCst);
     leave(ops, suspended);
     active.fetch_and(!suspended.0, Ordering::SeqCst);
     suspended
@@ -346,7 +337,6 @@ fn resume_with(ops: &mut dyn TerminalOps, active: &AtomicU32, suspended: Steps) 
         // `enter` rolled its own steps back; `ACTIVE` has to agree.
         active.fetch_and(!suspended.0, Ordering::SeqCst);
     }
-    SUSPENDED.store(false, Ordering::SeqCst);
     result.map(|_| ())
 }
 
