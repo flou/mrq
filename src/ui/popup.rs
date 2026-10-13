@@ -29,7 +29,7 @@ use crate::app::action::{
 };
 use crate::config::keymap::Keymap;
 use crate::ui::skins;
-use crate::ui::table::truncate;
+use crate::ui::table::{self, truncate};
 use crate::ui::theme::{Role, Theme};
 
 /// Share of the body a popup covers.
@@ -289,6 +289,8 @@ fn legend_sample(sample: &LegendSample, theme: &Theme) -> (&'static str, Style) 
         LegendSample::Dimmed => ("row", theme.style(Role::Dim)),
         LegendSample::DiffAdded => ("+12", theme.style(Role::Added)),
         LegendSample::DiffRemoved => ("-3", theme.style(Role::Removed)),
+        LegendSample::Nobody => (table::NOBODY_MARK, theme.style(Role::Dim)),
+        LegendSample::SelfMerged => (table::SELF_MARK, theme.style(Role::Dim)),
     }
 }
 

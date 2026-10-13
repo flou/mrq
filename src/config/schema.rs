@@ -359,7 +359,7 @@ pub struct Ui {
     /// rest, `-` for none) or `trigram`.
     pub reviewer_display: PeopleDisplay,
     /// How the MERGED BY column names the merger: `yes_no` (against whether you merged it),
-    /// `username` (`-` when nobody merged it) or `trigram`.
+    /// `username` (`-` until merged, a dim `=` when its author merged it) or `trigram`.
     pub merged_by_display: PeopleDisplay,
     /// Which column is the clickable link to the merge request, in a terminal that supports
     /// hyperlinks: `title`, `id`, `both`, or `none` to turn hyperlinks off. `id` only links while

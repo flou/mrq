@@ -1401,6 +1401,10 @@ pub enum LegendSample {
     Dimmed,
     DiffAdded,
     DiffRemoved,
+    /// The people-column placeholder for no one.
+    Nobody,
+    /// The MERGED BY placeholder for a merge request its author merged.
+    SelfMerged,
 }
 
 /// The help popup's content, generated from the resolved keymap.
@@ -1488,6 +1492,11 @@ fn legend_lines() -> Vec<HelpLine> {
                     S::Attention(Attention::Problem),
                     "tab: last refresh failed, list may be wrong",
                 ),
+                (
+                    S::Nobody,
+                    "no one in a people column (MERGED BY: not merged yet)",
+                ),
+                (S::SelfMerged, "MERGED BY: merged by its author"),
             ],
         ),
         (

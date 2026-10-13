@@ -319,12 +319,20 @@ impl MergeRequest {
         self.reviewing_me = contains_user(self.reviewers.iter().map(String::as_str), current_user);
     }
 
-    /// Who merged it, unless that is its author: a self-merge is the expected case and
-    /// would only repeat the AUTHOR column, so the MERGED BY column leaves it blank.
+    /// Who merged it, unless that is its author: a self-merge would only repeat the
+    /// AUTHOR column, so the MERGED BY column reads it as `=` instead (see
+    /// [`Self::self_merged`]).
     pub fn merged_by_other(&self) -> Option<&User> {
         self.merged_by
             .as_ref()
             .filter(|u| !eq_user(&u.username, &self.author.username))
+    }
+
+    /// Whether its author merged it themselves, which the MERGED BY column reads as `=`.
+    pub fn self_merged(&self) -> bool {
+        self.merged_by
+            .as_ref()
+            .is_some_and(|u| eq_user(&u.username, &self.author.username))
     }
 
     /// The first assignee, for the ASSIGNED column's trigram rendering.

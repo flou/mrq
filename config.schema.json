@@ -995,7 +995,7 @@
           "default": "title"
         },
         "merged_by_display": {
-          "description": "How the MERGED BY column names the merger: `yes_no` (against whether you merged it),\n`username` (`-` when nobody merged it) or `trigram`.",
+          "description": "How the MERGED BY column names the merger: `yes_no` (against whether you merged it),\n`username` (`-` until merged, a dim `=` when its author merged it) or `trigram`.",
           "$ref": "#/$defs/PeopleDisplay",
           "default": "username"
         },

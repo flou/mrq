@@ -277,7 +277,11 @@ fn trigram(name: Option<&str>, username: &str) -> String {
 }
 
 /// No one to name, in a column that names people.
-const NOBODY_MARK: &str = "-";
+pub(super) const NOBODY_MARK: &str = "-";
+
+/// The MERGED BY cell of a merge request its author merged, since a name would only
+/// repeat the AUTHOR column. Drawn dim, like [`NOBODY_MARK`].
+pub(super) const SELF_MARK: &str = "=";
 
 /// The ASSIGNED cell, in whichever of the three [`PeopleDisplay`] modes is configured.
 fn assigned_cell(mr: &MergeRequest, mode: PeopleDisplay) -> Cow<'_, str> {
@@ -318,10 +322,12 @@ fn reviewer_cell(mr: &MergeRequest, mode: PeopleDisplay) -> Cow<'_, str> {
 }
 
 /// The MERGED BY cell, in whichever of the three [`PeopleDisplay`] modes is configured.
-/// Blank (`-`) when the author merged it themselves.
+/// `-` until someone merges it (or when GitLab did not say who did), and [`SELF_MARK`]
+/// when its author merged it themselves, so a self-merge does not read as "not merged".
 fn merged_by_cell(mr: &MergeRequest, mode: PeopleDisplay) -> Cow<'_, str> {
     match mode {
         PeopleDisplay::YesNo => Cow::Borrowed(if mr.merged_by_me() { "Yes" } else { "No" }),
+        _ if mr.self_merged() => Cow::Borrowed(SELF_MARK),
         PeopleDisplay::Username => people_cell(
             mr.merged_by_other()
                 .map(|u| u.username.as_str())
@@ -456,6 +462,15 @@ const fn cell_role(mr: &MergeRequest, column: Column, dimmed: bool) -> Role {
         },
         Column::Diff => Role::Normal,
         _ => Role::Normal,
+    }
+}
+
+/// Whether a people-naming cell holds a placeholder rather than a name.
+fn is_placeholder(column: Column, text: &str) -> bool {
+    match column {
+        Column::Assigned | Column::Approver | Column::Reviewer => text == NOBODY_MARK,
+        Column::MergedBy => text == NOBODY_MARK || text == SELF_MARK,
+        _ => false,
     }
 }
 
@@ -596,12 +611,16 @@ fn row<'a>(
                 Cell::from(pad(&text, width)).style(theme.style(Role::Success))
             }
             other => {
-                let text = truncate(
-                    &cell_text(mr, *other, theme, now, modes),
-                    width,
-                    theme.ellipsis(),
-                );
-                Cell::from(pad(&text, width)).style(theme.style(cell_role(mr, *other, dimmed)))
+                let text = cell_text(mr, *other, theme, now, modes);
+                // A placeholder (`-` for nobody, `=` for a self-merge) names no one, so it
+                // recedes and the cells that do name someone stand out.
+                let role = if is_placeholder(*other, &text) {
+                    Role::Dim
+                } else {
+                    cell_role(mr, *other, dimmed)
+                };
+                let text = truncate(&text, width, theme.ellipsis());
+                Cell::from(pad(&text, width)).style(theme.style(role))
             }
         };
         cells.push(cell);
@@ -1529,9 +1548,18 @@ mod tests {
     fn merged_by_cell_names_the_merger_and_marks_the_current_user() {
         let mut m = mr("a", "jdoe");
         let default = PeopleDisplayModes::default();
+        let yes_no = PeopleDisplayModes {
+            merged_by: PeopleDisplay::YesNo,
+            ..default
+        };
         assert_eq!(
             cell_text(&m, Column::MergedBy, &theme(false), now(), default),
-            "-"
+            "-",
+            "an unmerged merge request has no merger"
+        );
+        assert_eq!(
+            cell_text(&m, Column::MergedBy, &theme(false), now(), yes_no),
+            "No"
         );
 
         m.merged_by = Some(User::new("asmith"));
@@ -1542,10 +1570,6 @@ mod tests {
         );
         assert!(!marks_me(&m, Column::MergedBy, default));
 
-        let yes_no = PeopleDisplayModes {
-            merged_by: PeopleDisplay::YesNo,
-            ..default
-        };
         assert_eq!(
             cell_text(&m, Column::MergedBy, &theme(false), now(), yes_no),
             "No"
@@ -1559,14 +1583,62 @@ mod tests {
         m.recompute_derived("jdoe");
         assert_eq!(
             cell_text(&m, Column::MergedBy, &theme(false), now(), default),
-            "-",
-            "a self-merge is left blank"
+            "=",
+            "a self-merge reads `=`, not `-`"
         );
         assert_eq!(
             cell_text(&m, Column::MergedBy, &theme(false), now(), yes_no),
             "No"
         );
         assert!(!marks_me(&m, Column::MergedBy, default));
+    }
+
+    #[test]
+    fn placeholders_are_drawn_dim() {
+        let theme = theme(false);
+        let render = |m: &MergeRequest, column: Column| {
+            let allocation = Allocation {
+                widths: vec![(column, 9)],
+                dropped: Vec::new(),
+            };
+            let row = row(
+                m,
+                &allocation,
+                &theme,
+                false,
+                false,
+                false,
+                now(),
+                PeopleDisplayModes::default(),
+            );
+            let mut buffer = Buffer::empty(Rect::new(0, 0, 10, 1));
+            ratatui::widgets::Widget::render(
+                Table::new(vec![row], [Constraint::Length(1), Constraint::Length(9)])
+                    .column_spacing(0),
+                Rect::new(0, 0, 10, 1),
+                &mut buffer,
+            );
+            buffer[(1, 0)].clone()
+        };
+        let dim = theme.style(Role::Dim).fg.unwrap();
+        let mut m = mr("a", "jdoe");
+        m.approved_by.clear();
+        m.reviewers.clear();
+
+        for column in [Column::MergedBy, Column::Approver, Column::Reviewer] {
+            let cell = render(&m, column);
+            assert_eq!(cell.symbol(), "-", "{column:?}");
+            assert_eq!(cell.fg, dim, "{column:?}");
+        }
+
+        m.state = MrState::Merged;
+        m.merged_by = Some(User::new("jdoe"));
+        let cell = render(&m, Column::MergedBy);
+        assert_eq!(cell.symbol(), "=");
+        assert_eq!(cell.fg, dim);
+
+        m.merged_by = Some(User::new("asmith"));
+        assert_ne!(render(&m, Column::MergedBy).fg, dim);
     }
 
     #[test]
