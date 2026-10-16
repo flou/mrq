@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/flou/mrq/compare/v0.1.0...v0.2.0) - 2026-10-16
+
+### Added
+
+- *(config)* [**breaking**] exclude a current-user relation from a filter's scope
+- *(ui)* add a glyph and colour legend to the help popup
+- *(ui)* add dim_drafts to choose which drafts are greyed out
+- *(ui)* mark merged, closed and draft titles with a coloured state glyph
+- *(activity)* add an activity feed popup listing recent changes
+
+### Fixed
+
+- *(deps)* update rustls and yoke-derive to clear deny gate
+- *(cache)* flush before rename so readers never see an empty file
+- *(fetch)* run the per-state queries concurrently
+- *(fetch)* cap merged and closed separately so they cannot hide open MRs
+- *(notify)* use OSC 777 on Ghostty and WezTerm so notifications carry the filter title
+
+### Other
+
+- *(deps)* update rust crate thiserror to v2.0.21
+- *(deps)* update rust crate tokio to v1.53.3
+- *(deps)* update rust crate tokio-util to v0.7.20
+- *(deps)* update rust crate toml to v1.1.8
+- *(deps)* update rust crate jsonschema to 0.58.0
+- *(deps)* update jdx/packslip action to v1.8.0
+- *(deps)* update jdx/mise-action action to v5.2.0
+- *(deps)* update rust crate schemars to v1.2.3
+- *(deps)* update rust crate serde_json to v1.0.154
+- *(deps)* update rust crate rand to v0.10.3
+- fix github rate limiting
+- enforce dependency licenses and ship third-party attribution
+- *(deps)* update rust crate jiff to v0.2.38
+- *(deps)* update dtolnay/rust-toolchain digest to b725eda
+- *(deps)* update release-plz/action action to v0.5.142
+- Add renovate.json
+- update README
+
 ## [0.1.0](https://github.com/flou/mrq/releases/tag/v0.1.0) - 2026-10-11
 
 ### Added
