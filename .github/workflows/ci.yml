@@ -35,3 +35,5 @@ jobs:
       # The same gates as a local `mise run check`: fmt, clippy -D warnings, tests, the
       # rustls-only TLS check and the cargo-deny license/advisory/bans/sources check.
       - run: mise run check
+        env:
+          GITHUB_TOKEN: ${{ secrets.MRQ_GITHUB_TOKEN }}
