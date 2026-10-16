@@ -256,6 +256,7 @@ fn check_filters(config: &mut Config, errors: &mut Vec<String>, clamps: &mut Vec
         }
 
         check_filter_scope(filter, &at, errors);
+        check_labels(&format!("{at}.labels"), &filter.labels, errors);
 
         if let Some(columns) = &filter.columns {
             check_columns(&format!("{at}.columns"), columns, errors);
@@ -266,6 +267,18 @@ fn check_filters(config: &mut Config, errors: &mut Vec<String>, clamps: &mut Vec
         }
         if let Some(max_closed) = &mut filter.max_results_closed {
             clamp_max_results(&format!("{at}.max_results_closed"), max_closed, clamps);
+        }
+    }
+}
+
+fn check_labels(at: &str, labels: &[String], errors: &mut Vec<String>) {
+    for label in labels {
+        match label.strip_prefix('!') {
+            Some("") => errors.push(format!("{at}: `!` must be followed by a label")),
+            Some(excluded) if labels.iter().any(|l| l == excluded) => errors.push(format!(
+                "{at}: `{excluded}` is both required and excluded, which matches nothing"
+            )),
+            _ => {}
         }
     }
 }
@@ -284,6 +297,20 @@ fn check_filter_scope(filter: &Filter, at: &str, errors: &mut Vec<String>) {
             "{at}.scope: a list may only combine assigned, review_requested and authored \
              (got {}); use a separate filter for group, project or instance",
             filter.scope.key()
+        ));
+    }
+
+    if filter.scope.has_exclude_conflicts() {
+        let tokens: Vec<String> = filter
+            .scope
+            .iter()
+            .map(|s| s.key().to_owned())
+            .chain(filter.scope.excluded().map(|s| format!("!{}", s.key())))
+            .collect();
+        errors.push(format!(
+            "{at}.scope: an excluded relation (`!...`) is repeated, or also included \
+             (got {})",
+            tokens.join("+")
         ));
     }
 
@@ -451,6 +478,18 @@ mod tests {
                 err.contains("group"),
                 "must name the group-scope alternative: {err}"
             );
+        }
+    }
+
+    #[test]
+    fn an_empty_or_contradictory_excluded_label_is_rejected() {
+        for (labels, needle) in [(vec!["!"], "`!`"), (vec!["wip", "!wip"], "`wip`")] {
+            let mut c = config();
+            c.filters[0].scope = Scope::Instance.into();
+            c.filters[0].labels = labels.into_iter().map(Into::into).collect();
+
+            let err = err_of(c);
+            assert!(err.contains(needle), "{err}");
         }
     }
 

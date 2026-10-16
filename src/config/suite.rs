@@ -21,7 +21,7 @@ use crate::config::init::DEFAULT_CONFIG;
 use crate::config::keymap::{self, Action, Keymap};
 use crate::config::load::{self, Overrides, Source};
 use crate::config::paths::{Env, Paths};
-use crate::config::schema::Config;
+use crate::config::schema::{Config, Scope};
 use crate::config::token::{self, TokenEnv, TokenSource};
 use crate::config::validate::{self, Clamped};
 use crate::error::ConfigError;
@@ -345,8 +345,7 @@ fn every_root_only_argument_on_a_current_user_scope_is_named_at_once() {
 [[filter]]
 name = \"Mine\"
 scope = \"assigned\"
-labels = [\"a\"]
-not_labels = [\"wip\"]
+labels = [\"a\", \"!wip\"]
 author = \"someuser\"
 assignee = \"someuser\"
 reviewer = \"someuser\"
@@ -358,7 +357,6 @@ updated_after_days = 30
 
     for key in [
         "labels",
-        "not_labels",
         "author",
         "assignee",
         "reviewer",
@@ -368,6 +366,71 @@ updated_after_days = 30
     ] {
         assert!(err.contains(key), "`{key}` missing from: {err}");
     }
+}
+
+/// `!review_requested` on an otherwise root-scoped filter drops rows where you are the
+/// reviewer, without disturbing the `labels`/`has_reviewer` arguments the root still takes.
+#[test]
+fn a_root_scope_can_exclude_a_current_user_relation_alongside_its_own_arguments() {
+    let world = World::new().with_home_config(&doc("[[filter]]
+name = \"In Review\"
+scope = [\"instance\", \"!review_requested\"]
+labels = [\"sre-review::ask\"]
+has_reviewer = true
+"));
+    let outcome = world.resolve().unwrap();
+
+    let filter = &outcome.config.filters[0];
+    assert_eq!(filter.scope.iter().collect::<Vec<_>>(), [Scope::Instance]);
+    assert_eq!(
+        filter.scope.excluded().collect::<Vec<_>>(),
+        [Scope::ReviewRequested]
+    );
+}
+
+/// `!authored` on a current-user list excludes self-authored rows from the union, so a
+/// "Participation" tab does not duplicate what a "Mine" tab already shows.
+#[test]
+fn a_current_user_list_scope_can_exclude_one_of_its_own_relations() {
+    let world = World::new().with_home_config(&doc("[[filter]]
+name = \"Participation\"
+scope = [\"review_requested\", \"assigned\", \"!authored\"]
+"));
+    let outcome = world.resolve().unwrap();
+
+    let filter = &outcome.config.filters[0];
+    assert_eq!(
+        filter.scope.iter().collect::<Vec<_>>(),
+        [Scope::ReviewRequested, Scope::Assigned]
+    );
+    assert_eq!(
+        filter.scope.excluded().collect::<Vec<_>>(),
+        [Scope::Authored]
+    );
+}
+
+/// Excluding a non-current-user relation makes no sense — there is nothing to drop a
+/// merge request from on a `group`/`project`/`instance` root — so it is a parse error.
+#[test]
+fn excluding_a_root_scope_is_rejected() {
+    let world = World::new().with_home_config(&doc(
+        "[[filter]]\nname = \"X\"\nscope = [\"instance\", \"!group\"]\n",
+    ));
+
+    let err = world.error();
+    assert!(err.contains("!group"), "{err}");
+}
+
+/// An excluded relation that is also included is contradictory: it would both source and
+/// drop the same merge requests.
+#[test]
+fn an_excluded_relation_that_is_also_included_is_rejected() {
+    let world = World::new().with_home_config(&doc(
+        "[[filter]]\nname = \"X\"\nscope = [\"assigned\", \"authored\", \"!authored\"]\n",
+    ));
+
+    let err = world.error();
+    assert!(err.contains("scope"), "{err}");
 }
 
 #[test]

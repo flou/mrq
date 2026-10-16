@@ -116,8 +116,8 @@ impl Fragment {
     pub fn lost(&self) -> Option<String> {
         let mut lost: Vec<&str> = Vec::new();
         if self.minimal {
-            // `assignees` survives the reduction, so it is deliberately not listed.
-            lost.extend(["reviewers", "labels", "approvers", "merge permissions"]);
+            // `assignees` and `reviewers` survive the reduction, so they are not listed.
+            lost.extend(["labels", "approvers", "merge permissions"]);
         }
         for field in &self.excluded {
             let name = field.as_str();
@@ -228,10 +228,11 @@ fn mr_fields(fragment: &Fragment) -> String {
             ),
             false,
         ),
+        // Kept even when `minimal`, like `assignees`: `!review_requested` is decided on it.
         (
             "reviewers",
             format!("reviewers(first: {REVIEWERS_CAP}) {{ nodes {{ username }} }}"),
-            true,
+            false,
         ),
         (
             "labels",
@@ -405,8 +406,14 @@ fn add_scoped_arguments(a: &mut Args, filter: &Filter, now: Timestamp) {
         );
     }
 
-    if !filter.labels.is_empty() {
-        a.add("labels", "[String!]", "labels", json!(filter.labels));
+    let (not_labels, labels): (Vec<&str>, Vec<&str>) = filter
+        .labels
+        .iter()
+        .map(String::as_str)
+        .partition(|l| l.starts_with('!'));
+    let not_labels: Vec<&str> = not_labels.into_iter().map(|l| &l[1..]).collect();
+    if !labels.is_empty() {
+        a.add("labels", "[String!]", "labels", json!(labels));
     }
     a.add_opt(
         "authorUsername",
@@ -462,12 +469,12 @@ fn add_scoped_arguments(a: &mut Args, filter: &Filter, now: Timestamp) {
     }
 
     // Negated parameters go in one `not:` object rather than as separate arguments.
-    if !filter.not_labels.is_empty() {
+    if !not_labels.is_empty() {
         a.add(
             "not",
             "MergeRequestsResolverNegatedParams",
             "not",
-            json!({ "labels": filter.not_labels }),
+            json!({ "labels": not_labels }),
         );
     }
 }
@@ -491,8 +498,7 @@ pub(crate) fn all_documents(now: Timestamp) -> Vec<Document> {
 
         // Worst case: every optional argument set.
         let maximal = Filter {
-            labels: vec!["a".into(), "b".into()],
-            not_labels: vec!["wip".into()],
+            labels: vec!["a".into(), "b".into(), "!wip".into()],
             author: Some("u".into()),
             assignee: Some("u".into()),
             reviewer: Some("u".into()),
@@ -509,8 +515,7 @@ pub(crate) fn all_documents(now: Timestamp) -> Vec<Document> {
     let instance_minimal = Filter::named("probe", Scope::Instance);
     filters.push(instance_minimal.clone());
     filters.push(Filter {
-        labels: vec!["a".into(), "b".into()],
-        not_labels: vec!["wip".into()],
+        labels: vec!["a".into(), "b".into(), "!wip".into()],
         author: Some("u".into()),
         assignee: Some("u".into()),
         reviewer: Some("u".into()),
@@ -574,10 +579,11 @@ pub fn over_budget_probe() -> Document {
 
 /// The GraphQL root a filter queries, formatted for a human rather than for the wire —
 /// `mrq check`'s filter report, so a user can see what would be sent without reading a
-/// GraphQL document. A list scope names each of its roots, joined with ` + `.
+/// GraphQL document. A list scope names each of its roots, joined with ` + `. Excluded
+/// relations are dropped client-side, so they appear here and not in the variables.
 pub fn root_description(filter: &Filter) -> String {
     let path = || filter.path.as_deref().unwrap_or("");
-    filter
+    let roots = filter
         .scope
         .iter()
         .map(|scope| match scope {
@@ -589,7 +595,11 @@ pub fn root_description(filter: &Filter) -> String {
             Scope::Project => format!("project({:?}).mergeRequests", path()),
         })
         .collect::<Vec<_>>()
-        .join(" + ")
+        .join(" + ");
+    filter
+        .scope
+        .excluded()
+        .fold(roots, |out, s| format!("{out} minus !{}", s.key()))
 }
 
 #[cfg(test)]
@@ -729,7 +739,7 @@ mod tests {
     fn the_minimal_fragment_drops_nested_connections() {
         let minimal = mr_fields(&Fragment::minimal());
 
-        for dropped in ["approvedBy", "reviewers", "labels"] {
+        for dropped in ["approvedBy", "labels"] {
             assert!(!minimal.contains(dropped), "`{dropped}` survived reduction");
         }
         for kept in [
@@ -803,12 +813,13 @@ mod tests {
         assert_eq!(Fragment::full().lost(), None);
 
         let minimal = Fragment::minimal().lost().unwrap();
-        assert!(minimal.contains("reviewers"), "{minimal}");
         assert!(minimal.contains("labels"), "{minimal}");
-        assert!(
-            !minimal.contains("assignees"),
-            "assignees survives the reduction: {minimal}"
-        );
+        for kept in ["assignees", "reviewers"] {
+            assert!(
+                !minimal.contains(kept),
+                "{kept} survives the reduction: {minimal}"
+            );
+        }
 
         let excluded = Fragment::full()
             .excluding(["userNotesCount"])
@@ -820,8 +831,10 @@ mod tests {
     /// Dropping assignees would not blank the ASSIGNED column, it would make it read
     /// "No" for merge requests that are in fact assigned to you.
     #[test]
-    fn the_reduced_fragment_keeps_assignees() {
-        assert!(mr_fields(&Fragment::minimal()).contains("assignees(first:"));
+    fn the_reduced_fragment_keeps_assignees_and_reviewers() {
+        let minimal = mr_fields(&Fragment::minimal());
+        assert!(minimal.contains("assignees(first:"), "{minimal}");
+        assert!(minimal.contains("reviewers(first:"), "{minimal}");
     }
 
     /// `name` rides along with `username` so the trigram rendering has a display name to
@@ -930,8 +943,7 @@ mod tests {
     #[test]
     fn every_declared_variable_is_also_referenced_as_an_argument() {
         let mut f = group_filter();
-        f.labels = vec!["a".into()];
-        f.not_labels = vec!["wip".into()];
+        f.labels = vec!["a".into(), "!wip".into()];
         f.author = Some("u".into());
         f.milestone = Some("m".into());
         f.target_branch = Some("main".into());
@@ -956,8 +968,7 @@ mod tests {
     #[test]
     fn scoped_arguments_map_to_gitlabs_names() {
         let mut f = group_filter();
-        f.labels = vec!["team::platform".into()];
-        f.not_labels = vec!["wip".into()];
+        f.labels = vec!["team::platform".into(), "!wip".into()];
         f.author = Some("jdoe".into());
         f.assignee = Some("asmith".into());
         f.reviewer = Some("bwayne".into());
@@ -982,6 +993,17 @@ mod tests {
             "a list, even for one"
         );
         assert_eq!(d.variables["not"], json!({"labels": ["wip"]}));
+    }
+
+    /// `!x` in `labels` excludes rather than requires.
+    #[test]
+    fn an_excluded_label_goes_to_the_not_argument() {
+        let mut f = group_filter();
+        f.labels = vec!["team::platform".into(), "!wip".into(), "!draft".into()];
+
+        let d = doc(&f);
+        assert_eq!(d.variables["labels"], json!(["team::platform"]));
+        assert_eq!(d.variables["not"], json!({"labels": ["wip", "draft"]}));
     }
 
     #[test]
@@ -1178,6 +1200,14 @@ mod tests {
         assert_eq!(
             root_description(&group),
             "group(\"acme/platform\").mergeRequests"
+        );
+
+        let mut excluding = Filter::named("f", Scope::Instance);
+        excluding.scope =
+            serde_json::from_value(json!(["instance", "!review_requested", "!authored"])).unwrap();
+        assert_eq!(
+            root_description(&excluding),
+            "mergeRequests minus !review_requested minus !authored"
         );
     }
 

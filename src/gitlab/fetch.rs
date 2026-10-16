@@ -23,7 +23,7 @@
 
 use jiff::Timestamp;
 
-use crate::config::schema::{Filter, StateFilter};
+use crate::config::schema::{Filter, Scope, StateFilter};
 use crate::error::{Error, Result};
 use crate::gitlab::client::Client;
 use crate::gitlab::model::MergeRequest;
@@ -351,6 +351,17 @@ fn next_rung(page_size: u32, fragment: &Fragment) -> Option<(u32, Fragment)> {
     None
 }
 
+/// Whether `mr` matches a relation the filter's scope excludes (`!assigned`, etc.) —
+/// already computed by `recompute_derived`, so this is a plain flag check.
+fn matches_excluded_relation(mr: &MergeRequest, filter: &Filter) -> bool {
+    filter.scope.excluded().any(|relation| match relation {
+        Scope::Assigned => mr.assigned_to_me,
+        Scope::ReviewRequested => mr.reviewing_me,
+        Scope::Authored => mr.authored_by_me,
+        Scope::Group | Scope::Project | Scope::Instance => false,
+    })
+}
+
 /// Walk the pages for one query shape.
 async fn paginate(
     client: &Client,
@@ -401,14 +412,18 @@ async fn paginate(
         };
 
         let page = connection.into_page(instance_url, current_user);
-        merge_requests.extend(page.merge_requests);
+        merge_requests.extend(
+            page.merge_requests
+                .into_iter()
+                .filter(|mr| !matches_excluded_relation(mr, filter)),
+        );
         merge(&mut anomalies, page.anomalies);
 
+        // Only truncated if the server actually had more: hitting the cap exactly on the
+        // last page is a complete list, but running out of `MAX_PAGES` is not.
+        truncated = page.has_next_page;
         if merge_requests.len() >= max_results {
             merge_requests.truncate(max_results);
-            // Only truncated if the server actually had more; hitting the cap exactly on
-            // the last page is a complete list, not a capped one.
-            truncated = page.has_next_page;
             break;
         }
 
@@ -1090,7 +1105,7 @@ mod tests {
             .lost()
             .expect("a minimal fragment lost data");
         assert!(
-            lost.contains("reviewers") && lost.contains("labels"),
+            lost.contains("approvers") && lost.contains("labels"),
             "{lost}"
         );
         assert!(
@@ -1226,5 +1241,55 @@ mod tests {
         let snapshot = fresh(&client_for(&server), &filter(100)).await.unwrap();
 
         assert!(snapshot.merge_requests[0].assigned_to_me());
+    }
+
+    #[tokio::test]
+    async fn an_excluded_relation_drops_matching_rows() {
+        let mut reviewed = node("1");
+        reviewed["reviewers"] = json!({"nodes": [{"username": "me"}]});
+        let kept = node("2");
+        let body = json!({"data": {"currentUser": {"assignedMergeRequests": {
+            "pageInfo": {"hasNextPage": false, "endCursor": null},
+            "nodes": [reviewed, kept]
+        }}}});
+        let (server, _, _) = serving(vec![body]).await;
+
+        let snapshot = fresh(&client_for(&server), &excluding_reviews(100))
+            .await
+            .unwrap();
+
+        assert_eq!(snapshot.merge_requests.len(), 1);
+        assert_eq!(snapshot.merge_requests[0].iid, "2");
+    }
+
+    fn excluding_reviews(max_results: usize) -> Filter {
+        Filter {
+            scope: serde_json::from_value(json!(["assigned", "!review_requested"])).unwrap(),
+            ..filter(max_results)
+        }
+    }
+
+    /// Exclusions can drain every page without reaching the cap; stopping at `MAX_PAGES`
+    /// with more on the server is still a capped list.
+    #[tokio::test]
+    async fn running_out_of_pages_is_reported_as_truncated() {
+        let pages = (0..MAX_PAGES)
+            .map(|i| {
+                let mut reviewed = node(&i.to_string());
+                reviewed["reviewers"] = json!({"nodes": [{"username": "me"}]});
+                json!({"data": {"currentUser": {"assignedMergeRequests": {
+                    "pageInfo": {"hasNextPage": true, "endCursor": format!("c{i}")},
+                    "nodes": [reviewed]
+                }}}})
+            })
+            .collect();
+        let (server, _, _) = serving(pages).await;
+
+        let snapshot = fresh(&client_for(&server), &excluding_reviews(100))
+            .await
+            .unwrap();
+
+        assert!(snapshot.merge_requests.is_empty());
+        assert!(snapshot.truncated);
     }
 }
