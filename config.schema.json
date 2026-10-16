@@ -18,7 +18,6 @@
         {
           "labels": [],
           "name": "Assigned",
-          "not_labels": [],
           "scope": "assigned",
           "state": "opened"
         }
@@ -316,7 +315,7 @@
           "type": "boolean"
         },
         "labels": {
-          "description": "Only merge requests carrying all of these labels (AND-ed), e.g. `[\"team::platform\"]`.\nNot accepted on `assigned`, `review_requested` or `authored`.",
+          "description": "Labels to require (AND-ed), or, prefixed with `!`, to exclude (OR-ed). Not accepted\non `assigned`, `review_requested` or `authored`.",
           "type": "array",
           "default": [],
           "items": {
@@ -345,14 +344,6 @@
           "default": "",
           "pattern": "\\S"
         },
-        "not_labels": {
-          "description": "Exclude merge requests carrying any of these labels. Not accepted on `assigned`,\n`review_requested` or `authored`.",
-          "type": "array",
-          "default": [],
-          "items": {
-            "type": "string"
-          }
-        },
         "notify": {
           "description": "Per-filter override of `[notifications].enabled`.",
           "type": "boolean"
@@ -366,7 +357,7 @@
           "type": "string"
         },
         "scope": {
-          "description": "Which merge requests to list: `assigned` to you, `review_requested` from you, `authored`\nby you, everything under a `group` or in one `project` (both need `path`), or the whole\n`instance`. Only `group`, `project` and `instance` accept the narrowing arguments below.\nA list such as `[\"assigned\", \"review_requested\"]` shows the union of those scopes, each\nmerge request once; a list may only combine `assigned`, `review_requested` and `authored`.",
+          "description": "Which merge requests to list: `assigned` to you, `review_requested` from you, `authored`\nby you, everything under a `group` or in one `project` (both need `path`), or the whole\n`instance`. Only `group`, `project` and `instance` accept the narrowing arguments below.\nA list such as `[\"assigned\", \"review_requested\"]` shows the union of those scopes, each\nmerge request once; a list may only combine `assigned`, `review_requested` and `authored`.\nAny entry prefixed with `!` (`!assigned`, `!review_requested`, `!authored`) drops a\nmerge request that matches that relation to you, regardless of what sourced it.",
           "$ref": "#/$defs/Scopes",
           "default": "assigned"
         },
@@ -487,14 +478,56 @@
             ]
           },
           "then": {
-            "properties": {
-              "scope": {
-                "items": {
-                  "enum": [
-                    "assigned",
-                    "review_requested",
-                    "authored"
-                  ]
+            "else": {
+              "properties": {
+                "scope": {
+                  "items": {
+                    "enum": [
+                      "assigned",
+                      "review_requested",
+                      "authored",
+                      "!assigned",
+                      "!review_requested",
+                      "!authored"
+                    ]
+                  }
+                }
+              }
+            },
+            "if": {
+              "properties": {
+                "scope": {
+                  "contains": {
+                    "enum": [
+                      "group",
+                      "project",
+                      "instance"
+                    ]
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "scope": {
+                  "contains": {
+                    "enum": [
+                      "group",
+                      "project",
+                      "instance"
+                    ]
+                  },
+                  "items": {
+                    "enum": [
+                      "group",
+                      "project",
+                      "instance",
+                      "!assigned",
+                      "!review_requested",
+                      "!authored"
+                    ]
+                  },
+                  "maxContains": 1
                 }
               }
             }
@@ -537,7 +570,10 @@
                       "enum": [
                         "assigned",
                         "review_requested",
-                        "authored"
+                        "authored",
+                        "!assigned",
+                        "!review_requested",
+                        "!authored"
                       ]
                     }
                   }
@@ -552,7 +588,6 @@
               "has_reviewer": false,
               "labels": false,
               "milestone": false,
-              "not_labels": false,
               "reviewer": false,
               "target_branch": false,
               "updated_after_days": false
@@ -846,15 +881,69 @@
       ]
     },
     "Scopes": {
-      "description": "One scope, or a list of current-user scopes whose results are merged.",
+      "description": "One scope, or a list of scopes and `!`-prefixed current-user exclusions.",
       "oneOf": [
         {
           "$ref": "#/$defs/Scope"
         },
         {
           "type": "array",
+          "allOf": [
+            {
+              "not": {
+                "allOf": [
+                  {
+                    "contains": {
+                      "const": "assigned"
+                    }
+                  },
+                  {
+                    "contains": {
+                      "const": "!assigned"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "not": {
+                "allOf": [
+                  {
+                    "contains": {
+                      "const": "review_requested"
+                    }
+                  },
+                  {
+                    "contains": {
+                      "const": "!review_requested"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "not": {
+                "allOf": [
+                  {
+                    "contains": {
+                      "const": "authored"
+                    }
+                  },
+                  {
+                    "contains": {
+                      "const": "!authored"
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "contains": {
+            "pattern": "^[a-z_]+$"
+          },
           "items": {
-            "$ref": "#/$defs/Scope"
+            "type": "string",
+            "pattern": "^(group|project|instance)$|^!?(assigned|review_requested|authored)$"
           },
           "minItems": 1,
           "uniqueItems": true

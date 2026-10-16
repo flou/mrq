@@ -103,9 +103,8 @@ fn strip_null(value: &mut serde_json::Value) {
 
 /// Arguments only the group, project and instance query roots accept; mirrors
 /// [`Filter::root_only_args`].
-const ROOT_ONLY_ARGS: [&str; 9] = [
+const ROOT_ONLY_ARGS: [&str; 8] = [
     "labels",
-    "not_labels",
     "author",
     "assignee",
     "reviewer",
@@ -174,6 +173,23 @@ fn constrain(root: &mut serde_json::Value) {
     // behaves like a current-user one.
     let path_scopes = json!({ "enum": ["group", "project"] });
     let current_user = json!(["assigned", "review_requested", "authored"]);
+    // `!x` excludes a current-user relation; valid alongside either a current-user list or a single root scope.
+    let current_user_or_excluded = json!([
+        "assigned",
+        "review_requested",
+        "authored",
+        "!assigned",
+        "!review_requested",
+        "!authored"
+    ]);
+    let root_or_excluded = json!([
+        "group",
+        "project",
+        "instance",
+        "!assigned",
+        "!review_requested",
+        "!authored"
+    ]);
     let no_root_args: serde_json::Map<String, Value> = ROOT_ONLY_ARGS
         .iter()
         .map(|k| ((*k).to_owned(), Value::Bool(false)))
@@ -201,14 +217,22 @@ fn constrain(root: &mut serde_json::Value) {
             },
             {
                 "if": { "required": ["scope"], "properties": { "scope": { "type": "array", "minItems": 2 } } },
-                "then": { "properties": { "scope": { "items": { "enum": current_user } } } }
+                "then": {
+                    "if": { "properties": { "scope": { "contains": { "enum": ["group", "project", "instance"] } } } },
+                    "then": { "properties": { "scope": {
+                        "items": { "enum": root_or_excluded },
+                        "contains": { "enum": ["group", "project", "instance"] },
+                        "maxContains": 1
+                    } } },
+                    "else": { "properties": { "scope": { "items": { "enum": current_user_or_excluded } } } }
+                }
             },
             { "not": { "required": ["reviewer", "has_reviewer"] } },
             {
                 "if": { "anyOf": [
                     { "not": { "required": ["scope"] } },
                     { "properties": { "scope": { "enum": current_user } } },
-                    { "properties": { "scope": { "type": "array", "items": { "enum": current_user } } } }
+                    { "properties": { "scope": { "type": "array", "items": { "enum": current_user_or_excluded } } } }
                 ] },
                 "then": { "properties": no_root_args }
             }
@@ -850,6 +874,8 @@ pub struct Filter {
     /// `instance`. Only `group`, `project` and `instance` accept the narrowing arguments below.
     /// A list such as `["assigned", "review_requested"]` shows the union of those scopes, each
     /// merge request once; a list may only combine `assigned`, `review_requested` and `authored`.
+    /// Any entry prefixed with `!` (`!assigned`, `!review_requested`, `!authored`) drops a
+    /// merge request that matches that relation to you, regardless of what sourced it.
     pub scope: Scopes,
     /// Which merge request state to list: `opened`, `merged`, `closed` or `all`.
     pub state: StateFilter,
@@ -875,12 +901,9 @@ pub struct Filter {
     // The arguments below are only accepted by the group, project and instance query
     // roots; the `currentUser.*` connections do not take them. `validate` rejects the
     // combination rather than silently dropping the filter.
-    /// Only merge requests carrying all of these labels (AND-ed), e.g. `["team::platform"]`.
-    /// Not accepted on `assigned`, `review_requested` or `authored`.
+    /// Labels to require (AND-ed), or, prefixed with `!`, to exclude (OR-ed). Not accepted
+    /// on `assigned`, `review_requested` or `authored`.
     pub labels: Vec<String>,
-    /// Exclude merge requests carrying any of these labels. Not accepted on `assigned`,
-    /// `review_requested` or `authored`.
-    pub not_labels: Vec<String>,
     /// Only merge requests opened by this username. Not accepted on `assigned`,
     /// `review_requested` or `authored`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -932,7 +955,6 @@ impl Default for Filter {
             path: None,
             include_subgroups: None,
             labels: Vec::new(),
-            not_labels: Vec::new(),
             author: None,
             assignee: None,
             reviewer: None,
@@ -967,7 +989,10 @@ impl Filter {
         self.scope
             .iter()
             .map(|scope| Self {
-                scope: scope.into(),
+                scope: Scopes {
+                    include: vec![scope],
+                    exclude: self.scope.exclude.clone(),
+                },
                 ..self.clone()
             })
             .collect()
@@ -992,9 +1017,6 @@ impl Filter {
         let mut set = Vec::new();
         if !self.labels.is_empty() {
             set.push("labels");
-        }
-        if !self.not_labels.is_empty() {
-            set.push("not_labels");
         }
         for (present, key) in [
             (self.author.is_some(), "author"),
@@ -1088,81 +1110,142 @@ impl Scope {
     }
 }
 
-/// A filter's scope: one [`Scope`], or a non-empty list of them whose results are merged.
+/// A filter's scope: which merge requests to include, and which current-user relations
+/// (if any) to exclude from the result regardless of what included it.
 ///
 /// Written in TOML as a string (`scope = "assigned"`) or a list
-/// (`scope = ["assigned", "review_requested"]`); a one-element list is the same as the string.
+/// (`scope = ["assigned", "review_requested"]`); a one-element list is the same as the
+/// string. An entry prefixed with `!` (`!assigned`, `!review_requested`, `!authored`)
+/// excludes merge requests matching that relation to you.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Scopes(Vec<Scope>);
+pub struct Scopes {
+    include: Vec<Scope>,
+    exclude: Vec<Scope>,
+}
 
 impl Scopes {
     /// Builds a list scope, or `None` when `scopes` is empty.
     pub fn many(scopes: impl IntoIterator<Item = Scope>) -> Option<Self> {
-        let scopes: Vec<Scope> = scopes.into_iter().collect();
-        (!scopes.is_empty()).then_some(Self(scopes))
+        let include: Vec<Scope> = scopes.into_iter().collect();
+        (!include.is_empty()).then_some(Self {
+            include,
+            exclude: Vec::new(),
+        })
     }
 
     pub fn iter(&self) -> impl Iterator<Item = Scope> + '_ {
-        self.0.iter().copied()
+        self.include.iter().copied()
     }
 
     /// The first scope, which is the only one of a single-scope filter.
     pub fn first(&self) -> Scope {
-        self.0[0]
+        self.include[0]
     }
 
     pub fn contains(&self, scope: Scope) -> bool {
-        self.0.contains(&scope)
+        self.include.contains(&scope)
     }
 
-    /// Whether every scope is rooted at `currentUser`; see [`Scope::is_current_user`].
+    /// The current-user relations excluded from the result, in declaration order.
+    pub fn excluded(&self) -> impl Iterator<Item = Scope> + '_ {
+        self.exclude.iter().copied()
+    }
+
+    /// Whether every included scope is rooted at `currentUser`; see [`Scope::is_current_user`].
     pub fn is_current_user(&self) -> bool {
-        self.0.iter().all(|s| s.is_current_user())
+        self.include.iter().all(|s| s.is_current_user())
     }
 
-    /// Whether any scope requires `path`.
+    /// Whether any included scope requires `path`.
     pub fn requires_path(&self) -> bool {
-        self.0.iter().any(|s| s.requires_path())
+        self.include.iter().any(|s| s.requires_path())
     }
 
-    /// Whether a scope is listed more than once.
+    /// Whether an included scope is listed more than once.
     pub fn has_duplicates(&self) -> bool {
-        self.0
+        self.include
             .iter()
             .enumerate()
-            .any(|(i, s)| self.0[..i].contains(s))
+            .any(|(i, s)| self.include[..i].contains(s))
     }
 
-    /// The scope names joined with `+`, for messages and query labels.
+    /// Whether an excluded relation is repeated, or also appears among the included scopes
+    /// (contradictory: it would both source and drop the same merge requests).
+    pub fn has_exclude_conflicts(&self) -> bool {
+        self.exclude
+            .iter()
+            .enumerate()
+            .any(|(i, s)| self.exclude[..i].contains(s) || self.include.contains(s))
+    }
+
+    /// The included scope names joined with `+`, for messages and query labels.
     pub fn key(&self) -> String {
-        self.0.iter().map(|s| s.key()).collect::<Vec<_>>().join("+")
+        self.include
+            .iter()
+            .map(|s| s.key())
+            .collect::<Vec<_>>()
+            .join("+")
     }
 }
 
 impl From<Scope> for Scopes {
     fn from(scope: Scope) -> Self {
-        Self(vec![scope])
+        Self {
+            include: vec![scope],
+            exclude: Vec::new(),
+        }
     }
 }
 
 impl PartialEq<Scope> for Scopes {
     fn eq(&self, other: &Scope) -> bool {
-        self.0 == [*other]
+        self.exclude.is_empty() && self.include == [*other]
     }
 }
 
 impl Serialize for Scopes {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self.0.as_slice() {
-            [one] => one.serialize(serializer),
-            many => many.serialize(serializer),
+        if self.exclude.is_empty()
+            && let [one] = self.include.as_slice()
+        {
+            return one.serialize(serializer);
         }
+        self.include
+            .iter()
+            .map(|s| s.key().to_owned())
+            .chain(self.exclude.iter().map(|s| format!("!{}", s.key())))
+            .collect::<Vec<_>>()
+            .serialize(serializer)
     }
 }
 
 impl<'de> Deserialize<'de> for Scopes {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::{Error, IntoDeserializer, SeqAccess, Visitor};
+
+        // `!x` only names a current-user relation: there is nothing to exclude a merge
+        // request from on a `group`/`project`/`instance` root.
+        fn parse_token<E: Error>(raw: &str) -> Result<(bool, Scope), E> {
+            match raw.strip_prefix('!') {
+                Some(rest) => {
+                    let scope = match rest {
+                        "assigned" => Scope::Assigned,
+                        "review_requested" => Scope::ReviewRequested,
+                        "authored" => Scope::Authored,
+                        other => {
+                            return Err(E::custom(format!(
+                                "`!{other}` cannot be excluded; only !assigned, \
+                                 !review_requested and !authored name a current-user relation"
+                            )));
+                        }
+                    };
+                    Ok((true, scope))
+                }
+                // Through `Scope`'s own impl, so an unknown name lists the valid ones.
+                None => Scope::deserialize(IntoDeserializer::<E>::into_deserializer(raw))
+                    .map(|s| (false, s)),
+            }
+        }
 
         struct ScopesVisitor;
 
@@ -1173,19 +1256,36 @@ impl<'de> Deserialize<'de> for Scopes {
                 f.write_str("a scope name or a non-empty list of scope names")
             }
 
-            // Through `Scope`'s own impl, so an unknown name lists the valid ones.
             fn visit_str<E: Error>(self, value: &str) -> Result<Scopes, E> {
-                Scope::deserialize(IntoDeserializer::<E>::into_deserializer(value))
-                    .map(Scopes::from)
+                let (excluded, scope) = parse_token::<E>(value)?;
+                if excluded {
+                    return Err(E::custom(format!(
+                        "scope must include at least one non-excluded scope; `!{}` alone has \
+                         nothing to list",
+                        scope.key()
+                    )));
+                }
+                Ok(Scopes::from(scope))
             }
 
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Scopes, A::Error> {
-                let mut scopes = Vec::new();
-                while let Some(scope) = seq.next_element::<Scope>()? {
-                    scopes.push(scope);
+                let mut include = Vec::new();
+                let mut exclude = Vec::new();
+                while let Some(raw) = seq.next_element::<String>()? {
+                    match parse_token::<A::Error>(&raw)? {
+                        (true, scope) => exclude.push(scope),
+                        (false, scope) => include.push(scope),
+                    }
                 }
-                Scopes::many(scopes)
-                    .ok_or_else(|| A::Error::custom("scope must not be an empty list"))
+                let mut scopes = Scopes::many(include).ok_or_else(|| {
+                    if exclude.is_empty() {
+                        A::Error::custom("scope must not be an empty list")
+                    } else {
+                        A::Error::custom("scope must include at least one non-excluded scope")
+                    }
+                })?;
+                scopes.exclude = exclude;
+                Ok(scopes)
             }
         }
 
@@ -1203,9 +1303,24 @@ impl JsonSchema for Scopes {
         schemars::json_schema!({
             "oneOf": [
                 scope,
-                { "type": "array", "items": scope, "minItems": 1, "uniqueItems": true }
+                {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "pattern": "^(group|project|instance)$|^!?(assigned|review_requested|authored)$"
+                    },
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "contains": { "pattern": "^[a-z_]+$" },
+                    "allOf": (["assigned", "review_requested", "authored"].map(|r| serde_json::json!({
+                        "not": { "allOf": [
+                            { "contains": { "const": r } },
+                            { "contains": { "const": format!("!{r}") } }
+                        ] }
+                    })))
+                }
             ],
-            "description": "One scope, or a list of current-user scopes whose results are merged.",
+            "description": "One scope, or a list of scopes and `!`-prefixed current-user exclusions.",
         })
     }
 }
@@ -1337,6 +1452,8 @@ mod tests {
             "[[filter]]\nname = \"a\"\nscope = [\"assigned\", \"group\"]\npath = \"x\"\n",
             "[[filter]]\nname = \"a\"\nscope = [\"assigned\", \"authored\"]\nlabels = [\"x\"]\n",
             "[[filter]]\nname = \"a\"\nscope = [\"assigned\", \"assigned\"]\n",
+            "[[filter]]\nname = \"a\"\nscope = [\"group\", \"project\"]\npath = \"x\"\n",
+            "[[filter]]\nname = \"a\"\nscope = [\"assigned\", \"!assigned\"]\n",
             "[notifications]\nbackend = \"command\"\n",
             "[notifications]\nbackend = \"command\"\ncommand = \"  \"\n",
         ];
@@ -1358,6 +1475,11 @@ mod tests {
             assert!(!schema_accepts(doc), "schema should reject:\n{doc}");
         }
 
+        // Rejected by the `Scopes` parser, so it never reaches `validate`.
+        assert!(!schema_accepts(
+            "[[filter]]\nname = \"a\"\nscope = [\"!authored\"]\n"
+        ));
+
         let accepted = [
             "",
             "[refresh]\ninterval_secs = 30\n",
@@ -1367,6 +1489,9 @@ mod tests {
             "[[filter]]\nname = \"a\"\nscope = \"project\"\npath = \"acme/x\"\nauthor = \"u\"\n",
             "[[filter]]\nname = \"a\"\nscope = [\"assigned\", \"review_requested\"]\n",
             "[[filter]]\nname = \"a\"\nscope = [\"group\"]\npath = \"acme/x\"\nlabels = [\"l\"]\n",
+            "[[filter]]\nname = \"a\"\nscope = [\"instance\", \"!review_requested\"]\nlabels = [\"l\", \"!wip\"]\nhas_reviewer = true\n",
+            "[[filter]]\nname = \"a\"\nscope = [\"assigned\", \"!authored\"]\n",
+            "[[filter]]\nname = \"a\"\nscope = [\"group\", \"!authored\"]\npath = \"acme/x\"\n",
             "[notifications]\nbackend = \"command\"\ncommand = \"notify {title}\"\n",
             "[skin]\nname = \"Nord\"\n[skin.colors]\nred = \"#ff0000\"\n",
             "[keys]\nquit = [\"q\"]\n",
@@ -1533,8 +1658,7 @@ name = "Platform"
 scope = "group"
 path = "acme/platform"
 include_subgroups = true
-labels = ["team::platform"]
-not_labels = ["wip"]
+labels = ["team::platform", "!wip"]
 author = "someuser"
 assignee = "someuser"
 reviewer = "someuser"
@@ -1562,7 +1686,7 @@ notify = false
         let platform = &c.filters[2];
         assert_eq!(platform.scope, Scope::Group);
         assert_eq!(platform.path.as_deref(), Some("acme/platform"));
-        assert_eq!(platform.labels, ["team::platform"]);
+        assert_eq!(platform.labels, ["team::platform", "!wip"]);
         assert_eq!(platform.updated_after_days, Some(30));
 
         assert_eq!(c.filters[3].has_reviewer, Some(false));

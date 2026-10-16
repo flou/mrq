@@ -131,7 +131,10 @@ Each block is a tab.
 | `project` | in one project | yes |
 | `instance` | every one the token can see | no |
 
-`scope` may be a list of `assigned`, `review_requested` and `authored`.
+`scope` may be a list of `assigned`, `review_requested` and `authored`. Any entry prefixed
+with `!` (`!assigned`, `!review_requested`, `!authored`) excludes merge requests matching
+that relation to you, regardless of what included them — usable alongside a current-user
+list or a single `group`/`project`/`instance` scope.
 
 ### Keys
 
@@ -147,8 +150,7 @@ Each block is a tab.
 | `max_results_closed` | all | Overrides `[gitlab].max_results_closed`. Only used with `state = "all"`. |
 | `path` | `group`, `project` | GitLab full path, e.g. `acme/platform`. No leading or trailing slash. |
 | `include_subgroups` | `group` | Default `true`. |
-| `labels` | `group`, `project`, `instance` | AND-ed. |
-| `not_labels` | same | Excludes MRs with any of these. |
+| `labels` | `group`, `project`, `instance` | AND-ed; prefix an entry with `!` to exclude it. |
 | `author`, `assignee` | same | Username. |
 | `reviewer` | same | Username. Exclusive with `has_reviewer`. |
 | `has_reviewer` | same | `true` has any reviewer, `false` has none. |

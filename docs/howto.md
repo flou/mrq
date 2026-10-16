@@ -39,8 +39,7 @@ Names must be unique. Check the result with `mrq check --offline`.
 name = "Platform"
 scope = "group"
 path = "acme/platform"
-labels = ["team::platform"]
-not_labels = ["wip"]
+labels = ["team::platform", "!wip"]
 updated_after_days = 30
 ```
 
@@ -67,6 +66,28 @@ scope = ["assigned", "review_requested"]
 ```
 
 Each merge request appears once. Only `assigned`, `review_requested` and `authored` can be combined.
+
+## Exclude a relation to you
+
+Prefix a scope with `!` to drop merge requests matching that relation to you, regardless
+of what included them. Useful for splitting an instance-wide tab from a personal one so
+they don't overlap:
+
+```toml
+[[filter]]
+name = "In review"
+scope = ["instance", "!review_requested"]
+labels = ["sre-review::ask"]
+has_reviewer = true
+
+[[filter]]
+name = "Participation"
+scope = ["review_requested", "assigned", "!authored"]
+```
+
+"In review" lists every merge request with a reviewer, except the ones where you
+are a reviewer — those belong in "Participation" instead, which already excludes what
+you authored so it never repeats "Mine".
 
 ## See merged and closed merge requests
 

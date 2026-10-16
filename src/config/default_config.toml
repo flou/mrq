@@ -156,6 +156,9 @@
 # are only accepted by the group, project and instance scopes. Setting one on assigned,
 # review_requested or authored is a startup error rather than a filter that silently does
 # nothing.
+#
+# Any scope prefixed with `!` (`!assigned`, `!review_requested`, `!authored`) excludes
+# merge requests matching that relation to you, regardless of what included them.
 
 [[filter]]
 name = "Assigned"
@@ -171,18 +174,17 @@ scope = "assigned"
 # scope = "review_requested"
 
 # A list shows the union of its scopes, each merge request once. It may only combine
-# assigned, review_requested and authored.
+# assigned, review_requested and authored, plus any number of `!`-prefixed exclusions.
 # [[filter]]
 # name = "Needs my attention"
-# scope = ["assigned", "review_requested"]
+# scope = ["assigned", "review_requested", "!authored"]
 
 # [[filter]]
 # name = "Platform"
 # scope = "group"
 # path = "acme/platform"            # a GitLab full path, no leading or trailing slash
 # include_subgroups = true          # group scope only
-# labels = ["team::platform"]       # AND-ed
-# not_labels = ["wip"]
+# labels = ["team::platform", "!wip"]   # required labels AND-ed; `!x` excludes a label
 # author = "someuser"
 # assignee = "someuser"
 # reviewer = "someuser"
