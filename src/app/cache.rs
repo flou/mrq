@@ -108,6 +108,9 @@ pub async fn write(dir: &Path, filter: &Filter, entry: &Entry) -> std::io::Resul
         .open(&tmp)
         .await?;
     file.write_all(&json).await?;
+    // tokio hands the write to a blocking thread; without this the rename can land
+    // before the bytes do, and a reader sees an empty file.
+    file.flush().await?;
     drop(file);
 
     let result = tokio::fs::rename(&tmp, &path).await;
