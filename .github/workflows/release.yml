@@ -61,7 +61,7 @@ jobs:
           targets: ${{ matrix.target }}
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+      - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
       - run: cargo build --release --locked --target "$TARGET"
       # Attribution for the crates in the binary: Apache-2.0 and friends require their
       # copyright notices to travel with what we distribute, so bundle the generated file
@@ -106,7 +106,7 @@ jobs:
       # Draft first: packslip records the digest of each final asset, and immutable
       # releases cannot take new assets once published.
       - run: gh release create "$TAG" --draft --verify-tag --generate-notes dist/*
-      - uses: jdx/packslip@0e9bde4ea49070555a79cac1f040f1dafe60acd6 # v1.8.0
+      - uses: jdx/packslip@ddcddd9c8c33977d2d08d5db91caec579da59aab # v1.11.0
         with:
           artifacts: dist/*.tar.gz
           bin: mrq
