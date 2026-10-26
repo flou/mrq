@@ -763,6 +763,20 @@ impl Default for Sort {
     }
 }
 
+/// A `[[filter]]` override of `[sort]`. `drafts_last` is not here: it applies to every list.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct FilterSort {
+    /// Overrides `[sort].column`. Need not be in the filter's columns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Column")]
+    pub column: Option<Column>,
+    /// Overrides `[sort].order`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Order")]
+    pub order: Option<Order>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Order {
@@ -886,6 +900,10 @@ pub struct Filter {
     /// `[ui].columns`, it may omit `sort.column`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub columns: Option<Vec<ColumnSpec>>,
+    /// Per-filter override of `[sort]`; a key left out keeps the global value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "FilterSort")]
+    pub sort: Option<FilterSort>,
     /// Per-filter override of `[notifications].enabled`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notify: Option<bool>,
@@ -951,6 +969,7 @@ impl Default for Filter {
             state: StateFilter::Opened,
             show_drafts: None,
             columns: None,
+            sort: None,
             notify: None,
             path: None,
             include_subgroups: None,

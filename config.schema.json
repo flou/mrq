@@ -365,6 +365,10 @@
           "description": "Per-filter override of `[ui].show_drafts`.",
           "type": "boolean"
         },
+        "sort": {
+          "description": "Per-filter override of `[sort]`; a key left out keeps the global value.",
+          "$ref": "#/$defs/FilterSort"
+        },
         "state": {
           "description": "Which merge request state to list: `opened`, `merged`, `closed` or `all`.",
           "$ref": "#/$defs/StateFilter",
@@ -595,6 +599,21 @@
           }
         }
       ]
+    },
+    "FilterSort": {
+      "description": "A `[[filter]]` override of `[sort]`. `drafts_last` is not here: it applies to every list.",
+      "type": "object",
+      "properties": {
+        "column": {
+          "description": "Overrides `[sort].column`. Need not be in the filter's columns.",
+          "$ref": "#/$defs/Column"
+        },
+        "order": {
+          "description": "Overrides `[sort].order`.",
+          "$ref": "#/$defs/Order"
+        }
+      },
+      "additionalProperties": false
     },
     "Gitlab": {
       "description": "GitLab connection settings.",
