@@ -145,6 +145,7 @@ list or a single `group`/`project`/`instance` scope.
 | `state` | all | `opened` (default), `merged`, `closed`, `all`. |
 | `show_drafts` | all | Overrides `[ui].show_drafts`. |
 | `columns` | all | Overrides `[ui].columns`. |
+| `sort` | all | Overrides `[sort]`: `{ column = "age", order = "asc" }`, either key optional. No `drafts_last`. |
 | `notify` | all | Overrides `[notifications].enabled`. |
 | `max_results` | all | Overrides `[gitlab].max_results`. `1..=500`. |
 | `max_results_closed` | all | Overrides `[gitlab].max_results_closed`. Only used with `state = "all"`. |

@@ -120,6 +120,7 @@ pub struct Tab {
 impl Tab {
     /// Build a tab from its configured filter and the global sort defaults.
     pub fn new(index: usize, filter: &Filter, sort: Sort, show_drafts: bool) -> Self {
+        let own = filter.sort.unwrap_or_default();
         Self {
             index,
             name: filter.name.clone(),
@@ -130,8 +131,8 @@ impl Tab {
             partial: false,
             truncated: false,
             fragment: Fragment::full(),
-            sort_column: sort.column,
-            sort_order: sort.order,
+            sort_column: own.column.unwrap_or(sort.column),
+            sort_order: own.order.unwrap_or(sort.order),
             columns: filter.columns.clone(),
             // The per-filter override wins over the global default, which is what makes
             // a "Drafts" filter possible alongside a default that hides them.
@@ -503,7 +504,7 @@ impl Tabs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::{Scope, StateFilter};
+    use crate::config::schema::{FilterSort, Scope, StateFilter};
     use crate::gitlab::model::fixtures::mr;
 
     #[test]
@@ -531,6 +532,27 @@ mod tests {
         };
         let tab = Tab::new(1, &filter, Sort::default(), false);
         assert_eq!(tab.columns_or(&ui), own);
+    }
+
+    #[test]
+    fn a_filter_sort_overrides_the_global_default() {
+        let filter = Filter {
+            sort: Some(FilterSort {
+                column: Some(Column::Age),
+                order: Some(Order::Asc),
+            }),
+            ..Filter::named("A", Scope::Assigned)
+        };
+        let tab = Tab::new(0, &filter, Sort::default(), false);
+        assert_eq!((tab.sort_column, tab.sort_order), (Column::Age, Order::Asc));
+
+        let plain = Tab::new(
+            0,
+            &Filter::named("B", Scope::Assigned),
+            Sort::default(),
+            false,
+        );
+        assert_eq!(plain.sort_column, Sort::default().column);
     }
 
     fn filters(names: &[&str]) -> Vec<Filter> {
