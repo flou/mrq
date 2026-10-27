@@ -171,8 +171,6 @@ impl World {
         Status {
             position: selected.map(|index| index + 1),
             count: rows.len(),
-            sort_column: tab.sort_column,
-            sort_order: tab.sort_order,
             show_drafts: tab.show_drafts(),
             wide: self.view.wide,
             refresh: Refresh::Fresh {

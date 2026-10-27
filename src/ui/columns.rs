@@ -73,7 +73,7 @@ fn total_gaps(columns: &[Column]) -> u16 {
 }
 
 /// The narrowest the `id` column gets, whatever the rows hold.
-pub const ID_MIN: u16 = 3;
+pub const ID_MIN: u16 = 4;
 
 /// Upper bound on either content-fitted column (`author`, `repo`).
 pub const FIT_MAX: u16 = 30;
@@ -185,16 +185,16 @@ const fn rules(column: Column, fitted: Fitted) -> Rules {
             flex: true,
         },
         Column::Pipeline => Rules {
-            preferred: 2,
-            minimum: 2,
+            preferred: 4,
+            minimum: 4,
             flex: false,
         },
-        // Fixed at 4 — wide enough for `Yes`/`No` and a trigram — unless `username`
+        // Fixed at 5 — wide enough for the header and its sort arrow — unless `username`
         // display mode measured wider content, the same treatment as `author`.
         Column::Assigned => {
             let preferred = match fitted.assigned {
                 Some(width) => width,
-                None => 4,
+                None => 5,
             };
             Rules {
                 preferred,
@@ -238,8 +238,8 @@ const fn rules(column: Column, fitted: Fitted) -> Rules {
         }
         // Wide enough for the longest label, `merged`/`closed`/`locked`.
         Column::Status => Rules {
-            preferred: 6,
-            minimum: 6,
+            preferred: 8,
+            minimum: 8,
             flex: false,
         },
         Column::Id => {
@@ -263,8 +263,8 @@ const fn rules(column: Column, fitted: Fitted) -> Rules {
             flex: false,
         },
         Column::Updated => Rules {
-            preferred: 7,
-            minimum: 7,
+            preferred: 9,
+            minimum: 9,
             flex: false,
         },
         Column::Diff => Rules {
@@ -485,7 +485,7 @@ mod tests {
         assert_eq!(allocation.width_of(Column::Author), Some(12));
         assert_eq!(allocation.width_of(Column::Repo), Some(20));
         assert_eq!(allocation.width_of(Column::Approved), Some(1));
-        assert_eq!(allocation.width_of(Column::Pipeline), Some(2));
+        assert_eq!(allocation.width_of(Column::Pipeline), Some(4));
         assert_eq!(allocation.width_of(Column::Diff), Some(11));
     }
 
@@ -500,7 +500,7 @@ mod tests {
 
         assert_eq!(
             wide_title - narrow_title,
-            77,
+            72,
             "the extra 80 columns went to the title, apart from what approver/reviewer \
              still needed to reach their own preferred width"
         );
@@ -607,7 +607,7 @@ mod tests {
                 allocation.width_of(Column::Title).is_some(),
                 "the title survives at {width}"
             );
-            if width >= 100 {
+            if width >= 120 {
                 assert!(
                     allocation.dropped.is_empty(),
                     "nothing should drop at {width}: {:?}",
@@ -683,7 +683,7 @@ mod tests {
         let columns = vec![Column::Pipeline, Column::Assigned];
         let allocation = allocate(&columns, 200, Fitted::default());
 
-        assert_eq!(allocation.total(), 2 + GAP + 4);
+        assert_eq!(allocation.total(), 4 + GAP + 5);
     }
 
     /// AUTHOR and REPO, and REPO and TITLE, get the wider gap; every other boundary keeps
@@ -745,7 +745,7 @@ mod tests {
     }
 
     #[test]
-    fn id_fits_the_longest_id_and_shrinks_to_three() {
+    fn id_fits_the_longest_id_and_shrinks_to_four() {
         let fitted = Fitted {
             id: Some(5),
             ..Fitted::default()
@@ -753,8 +753,8 @@ mod tests {
         let allocation = allocate(&Column::DEFAULT, 200, fitted);
         assert_eq!(allocation.width_of(Column::Id), Some(5));
 
-        let narrow = allocate(&[Column::Id, Column::Title], 24, fitted);
-        assert_eq!(narrow.width_of(Column::Id), Some(ID_MIN.max(3)));
+        let narrow = allocate(&[Column::Id, Column::Title], 25, fitted);
+        assert_eq!(narrow.width_of(Column::Id), Some(ID_MIN));
     }
 
     #[test]
@@ -993,7 +993,7 @@ mod tests {
     #[test]
     fn no_measurement_falls_back_to_the_fixed_assigned_width() {
         let allocation = allocate(&default_columns(), 200, Fitted::default());
-        assert_eq!(allocation.width_of(Column::Assigned), Some(4));
+        assert_eq!(allocation.width_of(Column::Assigned), Some(5));
     }
 
     #[test]

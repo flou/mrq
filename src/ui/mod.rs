@@ -9,7 +9,7 @@
 //! - `layout`    — the three frame regions and popup placement
 //! - `columns`   — the column model and responsive width allocation
 //! - `table`     — the merge-request table and row state styling
-//! - `statusbar` — position, sort, refresh state and transient flashes
+//! - `statusbar` — position, refresh state and transient flashes
 //! - `tabbar`    — the filter tabs with overflow and error markers
 //! - `popup`     — help, sort menu, filter switcher, skin picker and log overlays
 //! - `selection` — mouse text selection bounded to a text popup

@@ -23,7 +23,7 @@ use ratatui::widgets::{Cell, Row, Table};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::state::Tab;
-use crate::config::schema::{Column, DimDrafts, PeopleDisplay};
+use crate::config::schema::{Column, DimDrafts, Order, PeopleDisplay};
 use crate::gitlab::model::{MergeRequest, MrState, User};
 use crate::term::hyperlink;
 use crate::ui::columns::{self, Allocation};
@@ -143,7 +143,8 @@ fn merged_by_fit(rows: &[&MergeRequest], mode: PeopleDisplay) -> Option<u16> {
 /// username or repo name can contain CJK or combining marks just as a title can.
 fn content_fit(widths: impl Iterator<Item = usize>, column: Column) -> Option<u16> {
     let widest = widths.max()?;
-    let header = column.header().width();
+    // Two cells past the header: a space and the sort arrow.
+    let header = column.header().width() + 2;
     let clamped = widest.max(header).min(columns::FIT_MAX as usize);
     u16::try_from(clamped).ok()
 }
@@ -506,8 +507,8 @@ const fn gutter(theme: &Theme, selected: bool, is_new: bool) -> &str {
     }
 }
 
-/// Build the header row.
-fn header<'a>(allocation: &Allocation, theme: &Theme) -> Row<'a> {
+/// Build the header row, with the sort arrow after the sorted column's name.
+fn header<'a>(allocation: &Allocation, theme: &Theme, sort: (Column, Order)) -> Row<'a> {
     let style = theme.style(Role::ColumnHeader);
     let mut cells = vec![Cell::from(" ")];
 
@@ -519,7 +520,17 @@ fn header<'a>(allocation: &Allocation, theme: &Theme) -> Row<'a> {
             let gap = columns::gap_between(previous, *column);
             cells.push(Cell::from(" ".repeat(gap as usize)).style(style));
         }
-        cells.push(Cell::from(pad(column.header(), *width as usize)).style(style));
+        // The sorted column is set apart by bold, not just the arrow.
+        let (text, style) = if *column == sort.0 {
+            let arrow = theme.sort_arrow(sort.1 == Order::Asc);
+            (
+                format!("{} {arrow}", column.header()),
+                theme.sorted_header_style(),
+            )
+        } else {
+            (column.header().to_owned(), style)
+        };
+        cells.push(Cell::from(pad(&text, *width as usize)).style(style));
     }
     Row::new(cells).style(style)
 }
@@ -728,7 +739,7 @@ pub fn build<'a>(
     }
 
     Table::new(body, constraints)
-        .header(header(allocation, theme))
+        .header(header(allocation, theme, (tab.sort_column, tab.sort_order)))
         // Gaps are drawn as explicit constraints above, so ratatui adds none of its own.
         // No row striping: it fights with terminal themes.
         .column_spacing(0)
@@ -1133,7 +1144,7 @@ mod tests {
         let short = mr("a", "bo");
         assert_eq!(
             author_fit(&[&short]),
-            Some(Column::Author.header().width() as u16)
+            Some(Column::Author.header().width() as u16 + 2)
         );
     }
 
@@ -1158,8 +1169,8 @@ mod tests {
     /// A CJK username occupies two cells per character, not one — the same rule as titles.
     #[test]
     fn author_fit_measures_display_width_not_characters() {
-        let m = mr("a", "データ");
-        assert_eq!(author_fit(&[&m]), Some("データ".width() as u16));
+        let m = mr("a", "データベース");
+        assert_eq!(author_fit(&[&m]), Some("データベース".width() as u16));
     }
 
     /// Between the header floor and `FIT_MAX`, TITLE gets back whatever AUTHOR does not
@@ -1194,7 +1205,7 @@ mod tests {
         short.project_name = "x".into();
         assert_eq!(
             repo_fit(&[&short]),
-            Some(Column::Repo.header().width() as u16)
+            Some(Column::Repo.header().width() as u16 + 2)
         );
     }
 
@@ -1287,9 +1298,8 @@ mod tests {
             all(PeopleDisplay::Username),
         );
 
-        // Floored at the ASG header's own width (3), not the old fixed 4 — that fixed
-        // width was never about the header, only about fitting `Yes`/`No`/a trigram.
-        assert_eq!(narrow_assigned.width_of(Column::Assigned), Some(3));
+        // Floored at the ASG header plus its sort arrow (5).
+        assert_eq!(narrow_assigned.width_of(Column::Assigned), Some(5));
         assert_eq!(
             wide_assigned.width_of(Column::Assigned),
             Some("a-fairly-long-username".width() as u16)
@@ -1321,7 +1331,7 @@ mod tests {
         long.approved_by = vec!["x".repeat(50)];
         long.reviewers = vec!["x".repeat(50)];
 
-        let header = u16::try_from(Column::Approver.header().width()).unwrap();
+        let header = u16::try_from(Column::Approver.header().width()).unwrap() + 2;
         assert_eq!(
             approver_fit(&[&short], PeopleDisplay::Username),
             Some(header)
@@ -1349,7 +1359,7 @@ mod tests {
         let narrow = allocate(&Column::DEFAULT, 200, &[&short], modes);
         let wide = allocate(&Column::DEFAULT, 200, &[&long], modes);
 
-        assert_eq!(narrow.width_of(Column::Approver), Some(8));
+        assert_eq!(narrow.width_of(Column::Approver), Some(10));
         assert_eq!(
             wide.width_of(Column::Approver),
             Some("a-fairly-long-username".width() as u16)
@@ -1480,13 +1490,13 @@ mod tests {
     }
 
     #[test]
-    fn id_fit_follows_the_longest_id_with_a_floor_of_three() {
+    fn id_fit_follows_the_longest_id_with_a_floor_of_four() {
         let mut short = mr("a", "jdoe");
         short.iid = "7".to_owned();
         let mut long = mr("b", "jdoe");
         long.iid = "12345".to_owned();
 
-        assert_eq!(id_fit(&[&short]), Some(3));
+        assert_eq!(id_fit(&[&short]), Some(4));
         assert_eq!(id_fit(&[&short, &long]), Some(6));
         assert_eq!(id_fit(&[]), None);
     }
@@ -2388,6 +2398,39 @@ mod tests {
         );
     }
 
+    /// The sort arrow sits right after the sorted column's name, and only there.
+    #[test]
+    fn the_sorted_column_header_carries_the_direction_arrow() {
+        let m = mr("a", "someone");
+        let rows = [&m];
+        let mut tab = tab();
+        tab.sort_column = Column::Updated;
+        tab.sort_order = Order::Desc;
+        let theme = theme(false);
+        let allocation = allocate(&Column::DEFAULT, 200, &rows, all(PeopleDisplay::YesNo));
+        let mut terminal = Terminal::new(TestBackend::new(200, 3)).unwrap();
+        terminal
+            .draw(|frame| {
+                let table = build(
+                    &rows,
+                    &tab,
+                    &allocation,
+                    &theme,
+                    now(),
+                    PeopleDisplayModes::default(),
+                    DimDrafts::All,
+                );
+                frame.render_widget(table, frame.area());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let header: String = (0..200).map(|x| buffer[(x, 0)].symbol()).collect();
+
+        let down = theme.sort_arrow(false);
+        assert!(header.contains(&format!("UPDATED {down}")), "{header}");
+        assert_eq!(header.matches(down).count(), 1, "{header}");
+    }
+
     /// The allocated widths have to be the widths drawn. When the table asks ratatui's
     /// layout for more cells than the area has, the solver takes them back from whichever
     /// column it likes — and every rendered line is still exactly as wide as the area, so
@@ -2402,7 +2445,11 @@ mod tests {
 
         for width in [80u16, 120, 200] {
             let mut terminal = Terminal::new(TestBackend::new(width, 3)).unwrap();
-            let theme = theme(false);
+            let theme = theme(true);
+            let sort = {
+                let tab = tab();
+                (tab.sort_column, tab.sort_order)
+            };
             let allocation = allocate(&Column::DEFAULT, width, &rows, all(PeopleDisplay::YesNo));
             let area = Rect {
                 x: 0,
@@ -2446,7 +2493,18 @@ mod tests {
                 }
                 assert_eq!(
                     &header[x as usize..(x + column_width) as usize],
-                    pad(column.header(), *column_width as usize),
+                    pad(
+                        &if *column == sort.0 {
+                            format!(
+                                "{} {}",
+                                column.header(),
+                                theme.sort_arrow(sort.1 == Order::Asc)
+                            )
+                        } else {
+                            column.header().to_owned()
+                        },
+                        *column_width as usize
+                    ),
                     "at {width}: {column:?} did not get its allocated {column_width} cells"
                 );
             }
@@ -3028,7 +3086,7 @@ mod tests {
     fn a_scrolled_redraw_relinks_every_cell_to_its_new_row() {
         let mut rows = linked_rows();
         rows[0].title = "Merge request".to_owned();
-        rows[1].title = "Merge request with a longer title".to_owned();
+        rows[1].title = "Merge request with a longer one".to_owned();
         let forward: Vec<&MergeRequest> = rows.iter().collect();
         let backward: Vec<&MergeRequest> = rows.iter().rev().collect();
         let mut linked = Linked::new(&rows);
