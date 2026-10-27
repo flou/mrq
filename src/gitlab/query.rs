@@ -309,13 +309,15 @@ impl Args {
 /// with [`Filter::split_by_scope`] first.
 ///
 /// `now` is injected rather than read from the clock so the analyzer test produces the
-/// same documents on every run.
+/// same documents on every run. `current_user` is the username an excluded relation
+/// (`!authored`, etc.) is negated against.
 pub fn build(
     filter: &Filter,
     fragment: &Fragment,
     page_size: u32,
     after: Option<&str>,
     now: Timestamp,
+    current_user: &str,
 ) -> Document {
     let mut a = Args::default();
     a.add("first", "Int!", "first", json!(page_size));
@@ -353,8 +355,29 @@ pub fn build(
         }
     };
 
+    // Negated parameters go in one `not:` object rather than as separate arguments.
+    let mut not = Map::new();
     if !filter.scope.is_current_user() {
-        add_scoped_arguments(&mut a, filter, now);
+        let not_labels = add_scoped_arguments(&mut a, filter, now);
+        if !not_labels.is_empty() {
+            not.insert("labels".into(), json!(not_labels));
+        }
+    }
+    for relation in filter.scope.excluded() {
+        match relation {
+            Scope::Assigned => not.insert("assigneeUsernames".into(), json!([current_user])),
+            Scope::ReviewRequested => not.insert("reviewerUsername".into(), json!(current_user)),
+            Scope::Authored => not.insert("authorUsername".into(), json!(current_user)),
+            Scope::Group | Scope::Project | Scope::Instance => None,
+        };
+    }
+    if !not.is_empty() {
+        a.add(
+            "not",
+            "MergeRequestsResolverNegatedParams",
+            "not",
+            Value::Object(not),
+        );
     }
 
     let selection = format!(
@@ -392,11 +415,12 @@ pub fn build(
     }
 }
 
-/// Arguments accepted only by the group and project roots.
+/// Arguments accepted only by the group and project roots. Returns the excluded labels,
+/// which belong in the `not:` object `build` assembles.
 ///
 /// `validate` has already rejected these on a `currentUser` scope, so reaching here with
 /// them set is impossible by construction.
-fn add_scoped_arguments(a: &mut Args, filter: &Filter, now: Timestamp) {
+fn add_scoped_arguments<'f>(a: &mut Args, filter: &'f Filter, now: Timestamp) -> Vec<&'f str> {
     if filter.scope.contains(Scope::Group) {
         a.add(
             "includeSubgroups",
@@ -468,15 +492,7 @@ fn add_scoped_arguments(a: &mut Args, filter: &Filter, now: Timestamp) {
         );
     }
 
-    // Negated parameters go in one `not:` object rather than as separate arguments.
-    if !not_labels.is_empty() {
-        a.add(
-            "not",
-            "MergeRequestsResolverNegatedParams",
-            "not",
-            json!({ "labels": not_labels }),
-        );
-    }
+    not_labels
 }
 
 /// Every document the binary can emit, for the coverage tests below.
@@ -490,6 +506,19 @@ pub(crate) fn all_documents(now: Timestamp) -> Vec<Document> {
     for scope in [Scope::Assigned, Scope::ReviewRequested, Scope::Authored] {
         filters.push(Filter::named("probe", scope));
     }
+    let every_exclusion = |include: &str| -> crate::config::schema::Scopes {
+        serde_json::from_value(serde_json::json!([
+            include,
+            "!assigned",
+            "!review_requested",
+            "!authored"
+        ]))
+        .unwrap()
+    };
+    filters.push(Filter {
+        scope: every_exclusion("assigned"),
+        ..Filter::named("probe", Scope::Assigned)
+    });
 
     for scope in [Scope::Group, Scope::Project] {
         let mut minimal = Filter::named("probe", scope);
@@ -507,6 +536,7 @@ pub(crate) fn all_documents(now: Timestamp) -> Vec<Document> {
             target_branch: Some("main".into()),
             updated_after_days: Some(30),
             include_subgroups: Some(true),
+            scope: every_exclusion(scope.key()),
             ..minimal
         };
         filters.push(maximal);
@@ -523,6 +553,7 @@ pub(crate) fn all_documents(now: Timestamp) -> Vec<Document> {
         milestone: Some("24.Q3".into()),
         target_branch: Some("main".into()),
         updated_after_days: Some(30),
+        scope: every_exclusion("instance"),
         ..instance_minimal
     });
 
@@ -532,9 +563,16 @@ pub(crate) fn all_documents(now: Timestamp) -> Vec<Document> {
     for filter in &filters {
         for fragment in &fragments {
             for page_size in FALLBACK_PAGE_SIZES {
-                documents.push(build(filter, fragment, page_size, None, now));
+                documents.push(build(filter, fragment, page_size, None, now, "me"));
                 // With a cursor too: `after` adds a variable and must also fit.
-                documents.push(build(filter, fragment, page_size, Some("CURSOR"), now));
+                documents.push(build(
+                    filter,
+                    fragment,
+                    page_size,
+                    Some("CURSOR"),
+                    now,
+                    "me",
+                ));
             }
         }
     }
@@ -579,8 +617,7 @@ pub fn over_budget_probe() -> Document {
 
 /// The GraphQL root a filter queries, formatted for a human rather than for the wire —
 /// `mrq check`'s filter report, so a user can see what would be sent without reading a
-/// GraphQL document. A list scope names each of its roots, joined with ` + `. Excluded
-/// relations are dropped client-side, so they appear here and not in the variables.
+/// GraphQL document. A list scope names each of its roots, joined with ` + `.
 pub fn root_description(filter: &Filter) -> String {
     let path = || filter.path.as_deref().unwrap_or("");
     let roots = filter
@@ -611,7 +648,14 @@ mod tests {
     }
 
     fn doc(filter: &Filter) -> Document {
-        build(filter, &Fragment::full(), DEFAULT_PAGE_SIZE, None, now())
+        build(
+            filter,
+            &Fragment::full(),
+            DEFAULT_PAGE_SIZE,
+            None,
+            now(),
+            "me",
+        )
     }
 
     fn group_filter() -> Filter {
@@ -895,6 +939,7 @@ mod tests {
             DEFAULT_PAGE_SIZE,
             Some("CURSOR123"),
             now(),
+            "me",
         );
         assert!(next.query.contains("$after: String"), "{}", next.query);
         assert!(next.query.contains("after: $after"));
@@ -1004,6 +1049,25 @@ mod tests {
         let d = doc(&f);
         assert_eq!(d.variables["labels"], json!(["team::platform"]));
         assert_eq!(d.variables["not"], json!({"labels": ["wip", "draft"]}));
+    }
+
+    #[test]
+    fn an_excluded_relation_goes_to_the_not_argument() {
+        let mut f = Filter::named("f", Scope::Assigned);
+        f.scope =
+            serde_json::from_value(json!(["assigned", "!authored", "!review_requested"])).unwrap();
+        assert_eq!(
+            doc(&f).variables["not"],
+            json!({"authorUsername": "me", "reviewerUsername": "me"})
+        );
+
+        let mut g = group_filter();
+        g.scope = serde_json::from_value(json!(["group", "!assigned"])).unwrap();
+        g.labels = vec!["!wip".into()];
+        assert_eq!(
+            doc(&g).variables["not"],
+            json!({"labels": ["wip"], "assigneeUsernames": ["me"]})
+        );
     }
 
     #[test]

@@ -334,6 +334,7 @@ fn print_resolved_filters(filters: &[Filter], out: &mut impl std::io::Write) -> 
                 query::FALLBACK_PAGE_SIZES[0],
                 None,
                 now,
+                "<you>",
             );
             writeln!(out, "    {}", document.variables).map_err(io_err)?;
         }

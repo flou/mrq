@@ -23,7 +23,7 @@
 
 use jiff::Timestamp;
 
-use crate::config::schema::{Filter, MaxResults, Scope, StateFilter};
+use crate::config::schema::{Filter, MaxResults, StateFilter};
 use crate::error::{Error, Result};
 use crate::gitlab::client::Client;
 use crate::gitlab::model::MergeRequest;
@@ -340,17 +340,6 @@ fn next_rung(page_size: u32, fragment: &Fragment) -> Option<(u32, Fragment)> {
     None
 }
 
-/// Whether `mr` matches a relation the filter's scope excludes (`!assigned`, etc.) —
-/// already computed by `recompute_derived`, so this is a plain flag check.
-fn matches_excluded_relation(mr: &MergeRequest, filter: &Filter) -> bool {
-    filter.scope.excluded().any(|relation| match relation {
-        Scope::Assigned => mr.assigned_to_me,
-        Scope::ReviewRequested => mr.reviewing_me,
-        Scope::Authored => mr.authored_by_me,
-        Scope::Group | Scope::Project | Scope::Instance => false,
-    })
-}
-
 /// Walk the pages for one query shape.
 async fn paginate(
     client: &Client,
@@ -375,7 +364,14 @@ async fn paginate(
         fragment,
         page_size,
     } = degradation;
-    let mut document = query::build(filter, fragment, *page_size, cursor.as_deref(), now);
+    let mut document = query::build(
+        filter,
+        fragment,
+        *page_size,
+        cursor.as_deref(),
+        now,
+        current_user,
+    );
 
     for _ in 0..MAX_PAGES {
         let response = client
@@ -401,11 +397,7 @@ async fn paginate(
         };
 
         let page = connection.into_page(instance_url, current_user);
-        merge_requests.extend(
-            page.merge_requests
-                .into_iter()
-                .filter(|mr| !matches_excluded_relation(mr, filter)),
-        );
+        merge_requests.extend(page.merge_requests);
         merge(&mut anomalies, page.anomalies);
 
         // Only truncated if the server actually had more: hitting the cap exactly on the
@@ -438,7 +430,14 @@ async fn paginate(
                 if cursor.is_none() {
                     // The one shape change: the first page declared no `$after` at all.
                     cursor = Some(next);
-                    document = query::build(filter, fragment, *page_size, cursor.as_deref(), now);
+                    document = query::build(
+                        filter,
+                        fragment,
+                        *page_size,
+                        cursor.as_deref(),
+                        now,
+                        current_user,
+                    );
                 } else {
                     document.variables["after"] = serde_json::Value::String(next.clone());
                     cursor = Some(next);
@@ -1280,52 +1279,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_excluded_relation_drops_matching_rows() {
-        let mut reviewed = node("1");
-        reviewed["reviewers"] = json!({"nodes": [{"username": "me"}]});
-        let kept = node("2");
+    async fn an_excluded_relation_is_negated_server_side() {
         let body = json!({"data": {"currentUser": {"assignedMergeRequests": {
             "pageInfo": {"hasNextPage": false, "endCursor": null},
-            "nodes": [reviewed, kept]
+            "nodes": [node("1")]
         }}}});
-        let (server, _, _) = serving(vec![body]).await;
-
-        let snapshot = fresh(&client_for(&server), &excluding_reviews(100))
-            .await
-            .unwrap();
-
-        assert_eq!(snapshot.merge_requests.len(), 1);
-        assert_eq!(snapshot.merge_requests[0].iid, "2");
-    }
-
-    fn excluding_reviews(max_results: usize) -> Filter {
-        Filter {
+        let (server, _, bodies) = serving(vec![body]).await;
+        let excluding = Filter {
             scope: serde_json::from_value(json!(["assigned", "!review_requested"])).unwrap(),
-            ..filter(max_results)
-        }
+            ..filter(100)
+        };
+
+        fresh(&client_for(&server), &excluding).await.unwrap();
+
+        let sent = &bodies.lock().unwrap()[0];
+        assert_eq!(sent["variables"]["not"], json!({"reviewerUsername": "me"}));
     }
 
-    /// Exclusions can drain every page without reaching the cap; stopping at `MAX_PAGES`
-    /// with more on the server is still a capped list.
+    /// Stopping at `MAX_PAGES` with more on the server is still a capped list.
     #[tokio::test]
     async fn running_out_of_pages_is_reported_as_truncated() {
         let pages = (0..MAX_PAGES)
             .map(|i| {
-                let mut reviewed = node(&i.to_string());
-                reviewed["reviewers"] = json!({"nodes": [{"username": "me"}]});
                 json!({"data": {"currentUser": {"assignedMergeRequests": {
                     "pageInfo": {"hasNextPage": true, "endCursor": format!("c{i}")},
-                    "nodes": [reviewed]
+                    "nodes": [node(&i.to_string())]
                 }}}})
             })
             .collect();
         let (server, _, _) = serving(pages).await;
 
-        let snapshot = fresh(&client_for(&server), &excluding_reviews(100))
-            .await
-            .unwrap();
+        let snapshot = fresh(&client_for(&server), &filter(100)).await.unwrap();
 
-        assert!(snapshot.merge_requests.is_empty());
+        assert_eq!(snapshot.merge_requests.len(), MAX_PAGES);
         assert!(snapshot.truncated);
     }
 }
