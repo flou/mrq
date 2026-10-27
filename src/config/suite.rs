@@ -582,15 +582,18 @@ jitter_secs = 600
 [[filter]]
 name = \"Mine\"
 scope = \"assigned\"
-max_results = 5000
+max_results = { open = 5000 }
 "));
     let outcome = world.resolve().unwrap();
 
     assert_eq!(outcome.config.refresh.jitter_secs, 60);
-    assert_eq!(outcome.config.filters[0].max_results, Some(500));
+    assert_eq!(
+        outcome.config.filters[0].max_results.and_then(|m| m.open),
+        Some(500)
+    );
 
     let keys: Vec<&str> = outcome.clamps.iter().map(|c| c.key.as_str()).collect();
-    assert_eq!(keys, ["refresh.jitter_secs", "filter[0].max_results"]);
+    assert_eq!(keys, ["refresh.jitter_secs", "filter[0].max_results.open"]);
 }
 
 // ----------------------------------------------------------- precedence: config location

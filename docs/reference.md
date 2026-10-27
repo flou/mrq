@@ -42,8 +42,7 @@ Unknown config keys are an error.
 | `token` | | Literal token. Needs the `read_api` scope. |
 | `timeout_secs` | `20` | Request timeout. |
 | `max_concurrent_requests` | `4` | Parallel requests. |
-| `max_results` | `40` | Merge requests fetched per filter, `1..=500`. A filter's own `max_results` overrides it. |
-| `max_results_closed` | `10` | Merged and closed merge requests fetched together for a filter with `state = "all"`, `1..=500`. Open ones are capped by `max_results` alone. A filter's own `max_results_closed` overrides it. |
+| `max_results` | `{ open = 40, closed = 40 }` | Merge requests fetched per filter, each key `1..=500`. `open` caps open ones; `closed` caps merged and closed ones together, whatever the filter's `state`, so with `state = "all"` recent merges cannot push open ones out. A filter's own `max_results` overrides either key. |
 
 ## `[refresh]`
 
@@ -103,7 +102,7 @@ Merged and closed MRs are always grouped below the others. Ties break on `update
 | --- | --- | --- |
 | `enabled` | `true` | Master switch. |
 | `backend` | `auto` | `auto`, `osc9`, `osc777`, `command` or `none`. |
-| `command` | | Required for `command`. `{title}` and `{body}` are substituted. |
+| `command` | | Required for `command`. `{title}` and `{body}` are substituted, already shell-quoted: `notify-send {title} {body}`. Do not quote them again. |
 | `bell` | `true` | Ring the terminal bell. |
 | `on_new_mr` | `true` | New merge request. |
 | `on_approval` | `true` | New approval. |
@@ -149,8 +148,7 @@ list or a single `group`/`project`/`instance` scope.
 | `columns` | all | Overrides `[ui].columns`. |
 | `sort` | all | Overrides `[sort]`: `{ column = "age", order = "asc" }`, either key optional. No `drafts_last`. |
 | `notify` | all | Overrides `[notifications].enabled`. |
-| `max_results` | all | Overrides `[gitlab].max_results`. `1..=500`. |
-| `max_results_closed` | all | Overrides `[gitlab].max_results_closed`. Only used with `state = "all"`. |
+| `max_results` | all | Overrides `[gitlab].max_results`: `{ open = 100, closed = 25 }`, either key optional. |
 | `path` | `group`, `project` | GitLab full path, e.g. `acme/platform`. No leading or trailing slash. |
 | `include_subgroups` | `group` | Default `true`. |
 | `labels` | `group`, `project`, `instance` | AND-ed; prefix an entry with `!` to exclude it. |
@@ -162,6 +160,17 @@ list or a single `group`/`project`/`instance` scope.
 | `updated_after_days` | same | Only MRs updated within this many days. |
 
 Narrowing keys on `assigned`, `review_requested` or `authored` are a startup error.
+
+`sort` and `max_results` are inline tables. A key left out keeps the global value:
+
+```toml
+[[filter]]
+name = "Shipped"
+scope = "authored"
+state = "merged"
+sort = { column = "age" }                  # order stays [sort].order
+max_results = { closed = 50 }              # open stays [gitlab].max_results.open
+```
 
 ## Key bindings
 

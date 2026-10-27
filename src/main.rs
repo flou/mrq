@@ -303,7 +303,7 @@ fn print_resolved_config(
 }
 
 /// Report the values `validate` changed in place, which the report above would otherwise
-/// print as ordinary resolved values: `filter[0].max_results = 500 (file)` is
+/// print as ordinary resolved values: `filter[0].max_results.open = 500 (file)` is
 /// indistinguishable from a user who wrote 500.
 fn print_clamps(clamps: &[Clamped], out: &mut impl std::io::Write) -> Result<(), Error> {
     for clamp in clamps {
@@ -565,7 +565,7 @@ scope = "assigned"
     #[test]
     fn a_clamped_value_is_reported_rather_than_shown_silently_changed() {
         let r = report(
-            "[[filter]]\nname = \"Assigned\"\nscope = \"assigned\"\nmax_results = 5000\n",
+            "[[filter]]\nname = \"Assigned\"\nscope = \"assigned\"\nmax_results = { open = 5000 }\n",
             &TokenEnv::default(),
             true,
         );
@@ -573,7 +573,7 @@ scope = "assigned"
 
         assert!(
             r.printed
-                .contains("filter[0].max_results: 5000 is out of range, using 500"),
+                .contains("filter[0].max_results.open: 5000 is out of range, using 500"),
             "{}",
             r.printed
         );

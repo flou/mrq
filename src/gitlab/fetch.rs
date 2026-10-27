@@ -23,7 +23,7 @@
 
 use jiff::Timestamp;
 
-use crate::config::schema::{Filter, Scope, StateFilter};
+use crate::config::schema::{Filter, MaxResults, Scope, StateFilter};
 use crate::error::{Error, Result};
 use crate::gitlab::client::Client;
 use crate::gitlab::model::MergeRequest;
@@ -46,22 +46,6 @@ pub struct Snapshot {
     /// response is fully representable.
     #[cfg(test)]
     pub(crate) anomalies: Anomalies,
-}
-
-/// How many merge requests one fetch keeps.
-#[derive(Debug, Clone, Copy)]
-pub struct Caps {
-    /// Per query: the whole list, or just the open rows of a `state = all` filter.
-    pub results: usize,
-    /// Merged and closed rows together, for a `state = all` filter.
-    pub closed: usize,
-}
-
-impl Caps {
-    #[cfg(test)]
-    pub(crate) const fn new(results: usize, closed: usize) -> Self {
-        Self { results, closed }
-    }
 }
 
 /// How many requests one refresh of a filter may make.
@@ -120,29 +104,34 @@ impl Default for Degradation {
 /// Fetch one filter, following pagination and degrading the query if the server refuses
 /// it.
 ///
-/// A `state = all` filter is fetched per state: open merge requests up to `max_results`,
-/// merged and closed ones together up to `max_closed`. One `all` query sorted by update time
+/// A `state = all` filter is fetched per state: open merge requests up to `caps.open`,
+/// merged and closed ones together up to `caps.closed`. One `all` query sorted by update time
 /// lets recently merged work crowd older open work out of the cap.
 ///
 /// `degradation` is both where the attempt starts and where it ends up: a filter that
 /// needed a smaller page or a reduced fragment last time asks for that shape first.
 ///
 /// A list scope is fetched one scope at a time, sharing `degradation`, and the results are
-/// merged: each merge request once, newest first, capped at `max_results`.
+/// merged: each merge request once, newest first, capped at the state's cap.
 pub async fn fetch(
     client: &Client,
     filter: &Filter,
-    caps: Caps,
+    caps: MaxResults,
     degradation: &mut Degradation,
     current_user: &str,
     instance_url: &str,
     now: Timestamp,
 ) -> Result<Snapshot> {
     if filter.state != StateFilter::All {
+        let cap = if filter.state == StateFilter::Opened {
+            caps.open
+        } else {
+            caps.closed
+        };
         return fetch_state(
             client,
             filter,
-            caps.results,
+            cap,
             degradation,
             current_user,
             instance_url,
@@ -175,7 +164,7 @@ pub async fn fetch(
         }
     };
     let ((open, d_open), (merged, d_merged), (closed, d_closed)) = tokio::join!(
-        fetch_as(StateFilter::Opened, caps.results),
+        fetch_as(StateFilter::Opened, caps.open),
         fetch_as(StateFilter::Merged, caps.closed),
         fetch_as(StateFilter::Closed, caps.closed),
     );
@@ -501,7 +490,7 @@ fn merge(into: &mut Anomalies, from: Anomalies) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::{Gitlab, Scope, Scopes};
+    use crate::config::schema::{FilterMaxResults, Gitlab, Scope, Scopes};
     use crate::config::token::{TokenEnv, resolve};
     use serde_json::{Value, json};
     use std::sync::Arc;
@@ -531,10 +520,7 @@ mod tests {
         fetch(
             client,
             filter,
-            Caps {
-                results: filter.max_results(&Gitlab::default()),
-                closed: filter.max_results_closed(&Gitlab::default()),
-            },
+            filter.max_results(&Gitlab::default()),
             &mut Degradation::none(),
             "me",
             INSTANCE,
@@ -543,9 +529,16 @@ mod tests {
         .await
     }
 
+    fn open_cap(open: usize) -> Option<FilterMaxResults> {
+        Some(FilterMaxResults {
+            open: Some(open),
+            closed: None,
+        })
+    }
+
     fn filter(max_results: usize) -> Filter {
         Filter {
-            max_results: Some(max_results),
+            max_results: open_cap(max_results),
             ..Filter::named("Assigned", Scope::Assigned)
         }
     }
@@ -650,7 +643,7 @@ mod tests {
 
     fn two_scopes(max_results: usize) -> Filter {
         Filter {
-            max_results: Some(max_results),
+            max_results: open_cap(max_results),
             scope: Scopes::many([Scope::Assigned, Scope::ReviewRequested]).unwrap(),
             ..Filter::named("Mine", Scope::Assigned)
         }
@@ -851,8 +844,10 @@ mod tests {
         }
         let all = Filter {
             state: StateFilter::All,
-            max_results: Some(10),
-            max_results_closed: Some(3),
+            max_results: Some(FilterMaxResults {
+                open: Some(10),
+                closed: Some(3),
+            }),
             ..Filter::named("Mine", Scope::Assigned)
         };
 
@@ -864,6 +859,32 @@ mod tests {
             "2 open + 3 of the 4 merged and closed"
         );
         assert!(snapshot.truncated, "the merged cap was hit");
+    }
+
+    #[tokio::test]
+    async fn a_merged_filter_is_capped_by_closed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(page(
+                &["1", "2", "3"],
+                true,
+                Some("C"),
+            )))
+            .mount(&server)
+            .await;
+        let merged = Filter {
+            state: StateFilter::Merged,
+            max_results: Some(FilterMaxResults {
+                open: Some(10),
+                closed: Some(2),
+            }),
+            ..Filter::named("Shipped", Scope::Assigned)
+        };
+
+        let snapshot = fresh(&client_for(&server), &merged).await.unwrap();
+
+        assert_eq!(snapshot.merge_requests.len(), 2);
+        assert!(snapshot.truncated);
     }
 
     /// The three states walk the ladder independently; the caller must keep the lowest rung
@@ -984,7 +1005,10 @@ mod tests {
         fetch(
             &client,
             &filter(100),
-            Caps::new(100, 10),
+            MaxResults {
+                open: 100,
+                closed: 10,
+            },
             &mut degradation,
             "me",
             INSTANCE,
@@ -999,7 +1023,10 @@ mod tests {
         fetch(
             &client,
             &filter(100),
-            Caps::new(100, 10),
+            MaxResults {
+                open: 100,
+                closed: 10,
+            },
             &mut degradation,
             "me",
             INSTANCE,
@@ -1043,7 +1070,10 @@ mod tests {
         fetch(
             &client,
             &filter(100),
-            Caps::new(100, 10),
+            MaxResults {
+                open: 100,
+                closed: 10,
+            },
             &mut degradation,
             "me",
             INSTANCE,
@@ -1054,7 +1084,10 @@ mod tests {
         fetch(
             &client,
             &filter(100),
-            Caps::new(100, 10),
+            MaxResults {
+                open: 100,
+                closed: 10,
+            },
             &mut degradation,
             "me",
             INSTANCE,
@@ -1090,7 +1123,10 @@ mod tests {
         let snapshot = fetch(
             &client_for(&server),
             &filter(100),
-            Caps::new(100, 10),
+            MaxResults {
+                open: 100,
+                closed: 10,
+            },
             &mut degradation,
             "me",
             INSTANCE,

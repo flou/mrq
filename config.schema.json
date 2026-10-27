@@ -32,8 +32,10 @@
       "$ref": "#/$defs/Gitlab",
       "default": {
         "max_concurrent_requests": 4,
-        "max_results": 40,
-        "max_results_closed": 10,
+        "max_results": {
+          "closed": 40,
+          "open": 40
+        },
         "timeout_secs": 20,
         "url": "https://gitlab.com"
       }
@@ -225,7 +227,7 @@
           "const": "reviewer"
         },
         {
-          "description": "Who merged the merge request, shown per `[ui].merged_by_display`. Not in the default\ncolumn list, and hidden unless a merged merge request is on screen.",
+          "description": "Who merged the merge request, shown per `[ui].merged_by_display`. Not in the default\ncolumn list, and hidden unless one merged by someone other than its author is on screen.",
           "type": "string",
           "const": "merged_by"
         },
@@ -323,16 +325,8 @@
           }
         },
         "max_results": {
-          "description": "Per-filter override of `[gitlab].max_results`: the maximum number of merge requests\nfetched for this filter. Clamped to `1..=500`, with a warning.",
-          "type": "integer",
-          "format": "uint",
-          "minimum": 0
-        },
-        "max_results_closed": {
-          "description": "Per-filter override of `[gitlab].max_results_closed`. Only used when `state` is `all`.\nClamped to `1..=500`, with a warning.",
-          "type": "integer",
-          "format": "uint",
-          "minimum": 0
+          "description": "Per-filter override of `[gitlab].max_results`; a key left out keeps the global value.",
+          "$ref": "#/$defs/FilterMaxResults"
         },
         "milestone": {
           "description": "Only merge requests in the milestone with this title, e.g. `24.Q3`. Not accepted on\n`assigned`, `review_requested` or `authored`.",
@@ -600,6 +594,25 @@
         }
       ]
     },
+    "FilterMaxResults": {
+      "description": "A `[[filter]]` override of `[gitlab].max_results`.",
+      "type": "object",
+      "properties": {
+        "closed": {
+          "description": "Overrides `[gitlab].max_results.closed`.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "open": {
+          "description": "Overrides `[gitlab].max_results.open`.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
     "FilterSort": {
       "description": "A `[[filter]]` override of `[sort]`. `drafts_last` is not here: it applies to every list.",
       "type": "object",
@@ -627,18 +640,12 @@
           "minimum": 1
         },
         "max_results": {
-          "description": "Default maximum number of merge requests fetched per filter. A filter's own\n`max_results` overrides it. Clamped to `1..=500`, with a warning.",
-          "type": "integer",
-          "format": "uint",
-          "default": 40,
-          "minimum": 0
-        },
-        "max_results_closed": {
-          "description": "Default maximum number of merged and closed merge requests fetched, together, for a\nfilter whose `state` is `all`. Open ones are capped by `max_results` alone, so recent\nmerges cannot push them out. Clamped to `1..=500`, with a warning.",
-          "type": "integer",
-          "format": "uint",
-          "default": 10,
-          "minimum": 0
+          "description": "Default maximum number of merge requests fetched per filter. A filter's own\n`max_results` overrides it, key by key.",
+          "$ref": "#/$defs/MaxResults",
+          "default": {
+            "closed": 40,
+            "open": 40
+          }
         },
         "timeout_secs": {
           "description": "Timeout for each GitLab request, in seconds. Must be at least 1.",
@@ -689,6 +696,27 @@
         }
       ]
     },
+    "MaxResults": {
+      "description": "The maximum number of merge requests fetched for one filter, per state.",
+      "type": "object",
+      "properties": {
+        "closed": {
+          "description": "Merged and closed merge requests, together. Capped apart from `open` so that, with\n`state = \"all\"`, recent merges cannot push open ones out. Clamped to `1..=500`, with a\nwarning.",
+          "type": "integer",
+          "format": "uint",
+          "default": 40,
+          "minimum": 0
+        },
+        "open": {
+          "description": "Open merge requests. Clamped to `1..=500`, with a warning.",
+          "type": "integer",
+          "format": "uint",
+          "default": 40,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
     "Notifications": {
       "description": "Notifications for changes seen between refreshes.",
       "type": "object",
@@ -704,7 +732,7 @@
           "default": true
         },
         "command": {
-          "description": "Shell command run when `backend = \"command\"`; `{title}` and `{body}` are substituted.\nRequired and non-empty in that case.",
+          "description": "Shell command run when `backend = \"command\"`; `{title}` and `{body}` are substituted,\nalready shell-quoted, so they must not be quoted again, e.g. `notify-send {title} {body}`.\nRequired and non-empty in that case.",
           "type": "string",
           "default": ""
         },

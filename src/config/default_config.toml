@@ -1,7 +1,8 @@
 # mrq configuration
 #
-# Every key below is commented out and shows mrq's built-in default, so this file as
-# written behaves exactly as if it did not exist. Uncomment a line to change it.
+# Every key below is commented out and shows mrq's built-in default, or an example where
+# there is none, so this file as written behaves exactly as if it did not exist. Uncomment
+# a line to change it.
 #
 # Unknown keys are a hard error rather than being ignored, so a typo tells you about
 # itself at startup instead of looking like a bug in mrq.
@@ -22,8 +23,11 @@
 
 # timeout_secs = 20
 # max_concurrent_requests = 4
-# max_results = 40                  # per filter, 1..=500; a [[filter]] can override it
-# max_results_closed = 10           # merged + closed, for filters with state = "all"; same range
+
+# How many merge requests each filter fetches, 1..=500 per key. `open` caps open ones;
+# `closed` caps merged and closed ones together, for any state, so with state = "all"
+# recent merges cannot push open work out. A [[filter]] can override either key with its own.
+# max_results = { open = 40, closed = 40 }
 
 [refresh]
 # Seconds between refresh cycles. The minimum is 30 — below that mrq refuses to start
@@ -73,11 +77,12 @@
 
 # set_terminal_title = true
 
-# Display order, left to right. Any subset of these keys (plus branch, merged_by and status), each at most once;
-# `sort.column` below has to be one of them. A ":wide" suffix hides that column until wide mode
-# (w) is toggled on; approved, author, repo, title and pipeline identify a row and can never
-# be wide-only. merged_by is not in the default list; when added, it only shows while a merged
-# merge request is on screen. A [[filter]] can override the whole list with its own `columns`.
+# Display order, left to right. Any subset of these keys, plus branch, merged_by and
+# status, each at most once; `sort.column` below has to be one of them. A ":wide" suffix
+# hides that column until wide mode (w) is toggled on; approved, author, repo, title and
+# pipeline identify a row and can never be wide-only. merged_by only shows while a merge
+# request merged by someone other than its author is on screen. A [[filter]] can override
+# the whole list with its own `columns`.
 # columns = ["approved", "author", "repo", "id:wide", "title", "pipeline", "assigned", "approver:wide", "reviewer:wide", "age", "updated", "diff:wide"]
 
 # Start with wide mode on; w still toggles it.
@@ -115,8 +120,10 @@
 # auto | osc9 | osc777 | command | none
 # backend = "auto"
 
-# Used when backend = "command"; {title} and {body} are substituted.
+# Used when backend = "command"; {title} and {body} are substituted, already
+# shell-quoted, so do not put quotes around them.
 # command = ""
+# e.g. command = "notify-send {title} {body}"
 
 # bell = true
 
@@ -167,7 +174,10 @@ scope = "assigned"
 # show_drafts = false               # per-filter override of [ui].show_drafts
 # columns = ["approved", "author", "title", "age", "branch:wide"]   # per-filter override of [ui].columns
 # notify = true                     # per-filter override of [notifications].enabled
-# max_results = 40                  # per-filter override of [gitlab].max_results
+#
+# Inline tables override the matching global table; a key left out keeps the global value.
+# sort = { column = "age", order = "asc" }   # per-filter override of [sort]
+# max_results = { open = 100 }               # per-filter override of [gitlab].max_results
 
 # [[filter]]
 # name = "Reviewing"
@@ -188,7 +198,7 @@ scope = "assigned"
 # author = "someuser"
 # assignee = "someuser"
 # reviewer = "someuser"
-# has_reviewer = false             # true = has a reviewer, false = has none; mutually exclusive with reviewer
+# has_reviewer = false              # true = has a reviewer, false = has none; mutually exclusive with reviewer
 # milestone = "24.Q3"
 # target_branch = "main"
 # updated_after_days = 30           # bounds the result set for large groups
