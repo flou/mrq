@@ -93,6 +93,8 @@ Available columns: `approved`, `author`, `repo`, `id`, `title`, `pipeline`, `ass
 | `order` | `desc` | `asc` or `desc`. |
 | `drafts_last` | `true` | Sink drafts below other rows. |
 
+The sorted column's header is bold and followed by `▲` (ascending) or `▼` (descending); `^` and `v` with `ascii = true`.
+
 Merged and closed MRs are always grouped below the others. Ties break on `updated` descending, then id. `pipeline` sorts by severity: failed, running, pending, manual, canceled, skipped, success, none.
 
 ## `[notifications]`

@@ -2,7 +2,7 @@
 //!
 //! //!
 //! ```text
-//! {position}/{count} · sort: {COLUMN} {↑|↓} · drafts: {shown|hidden} · {refresh state} · {search} · [{help key}] help
+//! {position}/{count} · drafts: {shown|hidden} · {refresh state} · {search} · [{help key}] help
 //! ```
 //!
 //! # Everything non-fatal surfaces here
@@ -25,7 +25,7 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::state::{FetchState, Tab};
-use crate::config::schema::{Column, Order};
+use crate::config::schema::Column;
 use crate::ui::table::compact_seconds;
 use crate::ui::theme::{Role, Theme};
 
@@ -115,8 +115,6 @@ pub struct Status {
     /// 1-based row position, or `None` when nothing is selected.
     pub position: Option<usize>,
     pub count: usize,
-    pub sort_column: Column,
-    pub sort_order: Order,
     pub show_drafts: bool,
     /// Wide mode (`w`), shown only when on — unlike `show_drafts`, which always names
     /// its state. Wide mode's default state needs no explanation; drafts hidden does.
@@ -169,14 +167,6 @@ fn segments(status: &Status, theme: &Theme) -> Vec<Segment> {
                 None => format!("-/{}", status.count),
                 Some(position) => format!("{position}/{}", status.count),
             },
-            Role::Normal,
-        ),
-        fixed(
-            format!(
-                "sort: {} {}",
-                status.sort_column.header(),
-                theme.sort_arrow(status.sort_order == Order::Asc)
-            ),
             Role::Normal,
         ),
         fixed(
@@ -414,8 +404,6 @@ mod tests {
         Status {
             position: Some(3),
             count: 12,
-            sort_column: Column::Updated,
-            sort_order: Order::Desc,
             show_drafts: false,
             wide: false,
             refresh: Refresh::Fresh {
@@ -457,7 +445,6 @@ mod tests {
         let line = rendered(&status, 200);
 
         assert!(line.contains("3/12"), "{line}");
-        assert!(line.contains("sort: UPDATED"), "{line}");
         assert!(line.contains("drafts: hidden"), "{line}");
         assert!(line.contains("next refresh in 3m"), "{line}");
         assert!(line.contains("/dark"), "{line}");
@@ -487,17 +474,6 @@ mod tests {
 
         status.help_key = None;
         assert!(!rendered(&status, 200).contains("help"));
-    }
-
-    #[test]
-    fn the_sort_direction_is_shown() {
-        let mut status = status();
-        let descending = rendered(&status, 200);
-        status.sort_order = Order::Asc;
-        let ascending = rendered(&status, 200);
-
-        assert_ne!(descending, ascending, "direction has to be visible");
-        assert!(ascending.contains(theme().sort_arrow(true)), "{ascending}");
     }
 
     /// There is no zeroth row, and `0/12` reads like a broken count.

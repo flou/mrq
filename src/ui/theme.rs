@@ -361,13 +361,18 @@ impl Theme {
         " "
     }
 
-    /// Sort direction indicator for the status bar.
+    /// The column header the list is sorted by: the usual header colour, in bold.
+    pub fn sorted_header_style(&self) -> Style {
+        self.style(Role::ColumnHeader).add_modifier(Modifier::BOLD)
+    }
+
+    /// Sort direction indicator, shown after the sorted column's header.
     pub const fn sort_arrow(&self, ascending: bool) -> &'static str {
         match (self.ascii, ascending) {
             (true, true) => "^",
             (true, false) => "v",
-            (false, true) => "↑",
-            (false, false) => "↓",
+            (false, true) => "▲",
+            (false, false) => "▼",
         }
     }
 
