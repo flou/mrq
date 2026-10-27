@@ -12,7 +12,7 @@ mrq rejects a narrowing argument on a user-rooted scope at startup. Silently ign
 
 ## Combining scopes
 
-A list of scopes runs one query per scope and merges the results, with each merge request shown once. `max_results` caps the merged list and keeps the most recently updated, so a noisy scope cannot hide a quiet one for long. Only user-rooted scopes combine; a `group`, `project` or `instance` filter has its own narrowing arguments, which would not make sense applied to the other scopes.
+A list of scopes runs one query per scope and merges the results, with each merge request shown once. The cap for the filter's state caps the merged list and keeps the most recently updated, so a noisy scope cannot hide a quiet one for long: `max_results.open` for `opened`, `max_results.closed` for `merged` and `closed` (with `state = "all"`, each cap applies to its own rows). Only user-rooted scopes combine; a `group`, `project` or `instance` filter has its own narrowing arguments, which would not make sense applied to the other scopes.
 
 ## Refreshing politely
 

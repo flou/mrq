@@ -93,6 +93,27 @@ you authored so it never repeats "Mine".
 
 Set `state = "all"` (or `merged` / `closed`). Merged and closed rows are grouped at the bottom, whatever the sort, and dimmed in a list that also holds open ones. A mark before the title tells the states apart: `✓` merged, `✗` closed (title struck through), `✎` draft — `M`, `C`, `D` with `ascii = true`.
 
+Merged and closed merge requests are capped by `max_results.closed`, 40 by default. Change it for one filter:
+
+```toml
+[[filter]]
+name = "Mine"
+scope = "authored"
+state = "all"
+max_results = { closed = 100 }  # open keeps [gitlab].max_results.open
+```
+
+## Sort one filter differently
+
+A filter's `sort` overrides `[sort]`; a key left out keeps the global value:
+
+```toml
+[[filter]]
+name = "By age"
+scope = "review_requested"
+sort = { column = "age", order = "desc" }
+```
+
 ## Choose which columns to show
 
 Set `columns` globally under `[ui]` or per filter. Add `:wide` to show a column only after pressing `w`:
@@ -134,6 +155,8 @@ If your terminal has no notification support, run a command instead:
 backend = "command"
 command = "notify-send {title} {body}"
 ```
+
+`{title}` and `{body}` are shell-quoted for you; quoting them again (`"{title}"`) would let a merge request title run shell code.
 
 ## Review what changed while you were away
 

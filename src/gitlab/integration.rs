@@ -25,11 +25,11 @@ use serde_json::Value;
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
-use crate::config::schema::{Filter, Gitlab, Scope};
+use crate::config::schema::{Filter, FilterMaxResults, Gitlab, MaxResults, Scope};
 use crate::config::token::{TokenEnv, resolve};
 use crate::error::Error;
 use crate::gitlab::client::Client;
-use crate::gitlab::fetch::{Caps, Degradation, Snapshot, fetch};
+use crate::gitlab::fetch::{Degradation, Snapshot, fetch};
 use crate::gitlab::model::{MergeStatus, PipelineStatus};
 
 const INSTANCE: &str = "https://gitlab.example.com";
@@ -48,7 +48,10 @@ macro_rules! fixture {
 
 fn filter(max_results: usize) -> Filter {
     Filter {
-        max_results: Some(max_results),
+        max_results: Some(FilterMaxResults {
+            open: Some(max_results),
+            closed: None,
+        }),
         ..Filter::named("Assigned", Scope::Assigned)
     }
 }
@@ -133,7 +136,10 @@ impl Recording {
         fetch(
             &client_for(&self.server),
             &filter(max_results),
-            Caps::new(max_results, 10),
+            MaxResults {
+                open: max_results,
+                closed: 10,
+            },
             degradation,
             ME,
             INSTANCE,

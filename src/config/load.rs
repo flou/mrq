@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::config::paths::Paths;
-use crate::config::schema::Config;
+use crate::config::schema::{Config, MaxResults};
 use crate::error::ConfigError;
 
 /// Where a configuration value came from.
@@ -243,11 +243,69 @@ fn read_file(
         source: Box::new(e),
     })?;
     provenance.record_document(&document);
+    reject_legacy_max_results(path, &document)?;
 
     toml::from_str(&text).map_err(|e| ConfigError::Parse {
         path: path.to_path_buf(),
         source: Box::new(e),
     })
+}
+
+/// The v0.2 integer `max_results` and `max_results_closed` keys would otherwise fail
+/// with a bare serde type or unknown-field error that does not name the new shape.
+fn reject_legacy_max_results(path: &Path, document: &toml::Value) -> Result<(), ConfigError> {
+    let gitlab = document.get("gitlab").map(|t| ("gitlab".to_owned(), t));
+    let filters = document
+        .get("filter")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .map(|(i, t)| (format!("filter[{i}]"), t));
+    for (at, table) in gitlab.into_iter().chain(filters) {
+        let old = table.get("max_results").and_then(toml::Value::as_integer);
+        let old_closed = table.get("max_results_closed").map(|v| v.as_integer());
+        if old.is_none() && old_closed.is_none() {
+            continue;
+        }
+        // v0.2 capped a merged or closed filter with `max_results`, and only read
+        // `max_results_closed` with `state = "all"`; `[gitlab]` held both defaults.
+        let default_state = if at == "gitlab" { "all" } else { "opened" };
+        let state = table.get("state").and_then(toml::Value::as_str);
+        let (open, closed) = match state.unwrap_or(default_state) {
+            "merged" | "closed" => (None, old),
+            "all" => (old, old_closed.flatten()),
+            _ => (old, None),
+        };
+        let keys: Vec<String> = [("open", open), ("closed", closed)]
+            .into_iter()
+            .filter_map(|(key, value)| Some(format!("{key} = {}", value?)))
+            .collect();
+        let mut fix = if keys.is_empty() {
+            "delete max_results_closed, it was never read for this filter".to_owned()
+        } else {
+            format!("write max_results = {{ {} }}", keys.join(", "))
+        };
+        // The old global `max_results` also capped merged and closed filters, which now
+        // read `closed` instead: no single value keeps both meanings.
+        let new_closed = closed.unwrap_or(MaxResults::default().closed as i64);
+        if let (true, Some(old)) = (at == "gitlab", old)
+            && old != new_closed
+        {
+            fix = format!(
+                "{fix}. Filters with state = \"merged\" or \"closed\" were capped at {old} and \
+                 now use closed: raise it, or set max_results = {{ closed = {old} }} on those filters"
+            );
+        }
+        return Err(ConfigError::Parse {
+            path: path.to_path_buf(),
+            source: format!(
+                "{at}: max_results and max_results_closed were merged into one table; {fix}"
+            )
+            .into(),
+        });
+    }
+    Ok(())
 }
 
 fn apply_overrides(loaded: &mut Loaded, overrides: &Overrides) {
@@ -368,7 +426,7 @@ path = "acme/platform"
         assert_eq!(loaded.provenance.get("filter[0].name"), Source::File);
         assert_eq!(loaded.provenance.get("filter[1].path"), Source::File);
         assert_eq!(
-            loaded.provenance.get("filter[1].max_results"),
+            loaded.provenance.get("filter[1].max_results.open"),
             Source::Default,
         );
     }
@@ -565,6 +623,48 @@ path = "acme/platform"
             loaded.config.ui.columns
         );
         validate(&mut loaded.config).expect("a pre-existing config must still load");
+    }
+
+    #[test]
+    fn the_legacy_max_results_keys_point_at_the_new_table() {
+        let filter = |rest: &str| format!("[[filter]]\nname = \"A\"\nscope = \"assigned\"\n{rest}");
+        for (doc, fix) in [
+            (
+                "[gitlab]\nmax_results = 120\nmax_results_closed = 25\n".to_owned(),
+                "gitlab: max_results and max_results_closed were merged into one table; \
+                 write max_results = { open = 120, closed = 25 }. Filters with \
+                 state = \"merged\" or \"closed\" were capped at 120 and now use closed: \
+                 raise it, or set max_results = { closed = 120 } on those filters",
+            ),
+            // Merged filters keep their old cap through the `closed` default.
+            (
+                "[gitlab]\nmax_results = 40\n".to_owned(),
+                "gitlab: max_results and max_results_closed were merged into one table; \
+                 write max_results = { open = 40 }",
+            ),
+            (
+                filter("max_results = 100\n"),
+                "max_results = { open = 100 }",
+            ),
+            (
+                filter("state = \"merged\"\nmax_results = 100\n"),
+                "max_results = { closed = 100 }",
+            ),
+            (
+                filter("state = \"all\"\nmax_results = 100\nmax_results_closed = 5\n"),
+                "max_results = { open = 100, closed = 5 }",
+            ),
+            (
+                filter("max_results_closed = 5\n"),
+                "delete max_results_closed, it was never read for this filter",
+            ),
+        ] {
+            let fx = Fixture::new();
+            let path = fx.write_config(&doc);
+            let err = fx.load(&Overrides::default()).unwrap_err().to_string();
+            assert!(err.ends_with(fix), "{err}");
+            assert!(err.contains(&path.display().to_string()), "{err}");
+        }
     }
 
     /// The removed `wide_columns` key still parses, so `validate` can point at `:wide`.

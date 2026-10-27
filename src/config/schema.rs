@@ -289,12 +289,43 @@ pub struct Gitlab {
     /// Maximum number of GitLab requests in flight at once. Must be at least 1.
     pub max_concurrent_requests: usize,
     /// Default maximum number of merge requests fetched per filter. A filter's own
-    /// `max_results` overrides it. Clamped to `1..=500`, with a warning.
-    pub max_results: usize,
-    /// Default maximum number of merged and closed merge requests fetched, together, for a
-    /// filter whose `state` is `all`. Open ones are capped by `max_results` alone, so recent
-    /// merges cannot push them out. Clamped to `1..=500`, with a warning.
-    pub max_results_closed: usize,
+    /// `max_results` overrides it, key by key.
+    pub max_results: MaxResults,
+}
+
+/// The maximum number of merge requests fetched for one filter, per state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct MaxResults {
+    /// Open merge requests. Clamped to `1..=500`, with a warning.
+    pub open: usize,
+    /// Merged and closed merge requests, together. Capped apart from `open` so that, with
+    /// `state = "all"`, recent merges cannot push open ones out. Clamped to `1..=500`, with a
+    /// warning.
+    pub closed: usize,
+}
+
+impl Default for MaxResults {
+    fn default() -> Self {
+        Self {
+            open: 40,
+            closed: 40,
+        }
+    }
+}
+
+/// A `[[filter]]` override of `[gitlab].max_results`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct FilterMaxResults {
+    /// Overrides `[gitlab].max_results.open`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "usize")]
+    pub open: Option<usize>,
+    /// Overrides `[gitlab].max_results.closed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "usize")]
+    pub closed: Option<usize>,
 }
 
 impl Default for Gitlab {
@@ -305,8 +336,7 @@ impl Default for Gitlab {
             token_command: None,
             timeout_secs: 20,
             max_concurrent_requests: 4,
-            max_results: 40,
-            max_results_closed: 10,
+            max_results: MaxResults::default(),
         }
     }
 }
@@ -542,7 +572,7 @@ pub enum Column {
     /// Reviewers, shown per `[ui].reviewer_display`.
     Reviewer,
     /// Who merged the merge request, shown per `[ui].merged_by_display`. Not in the default
-    /// column list, and hidden unless a merged merge request is on screen.
+    /// column list, and hidden unless one merged by someone other than its author is on screen.
     MergedBy,
     /// Where the merge request stands: `draft`, `open`, `merged`, `closed` or `locked`. Not in
     /// the default column list.
@@ -807,7 +837,8 @@ pub struct Notifications {
     /// How notifications are delivered: `auto` (detect from the terminal), `osc9` or `osc777`
     /// (terminal escape sequences), `command` (run `command`) or `none`.
     pub backend: NotifyBackend,
-    /// Shell command run when `backend = "command"`; `{title}` and `{body}` are substituted.
+    /// Shell command run when `backend = "command"`; `{title}` and `{body}` are substituted,
+    /// already shell-quoted, so they must not be quoted again, e.g. `notify-send {title} {body}`.
     /// Required and non-empty in that case.
     pub command: String,
     /// Also ring the terminal bell when a notification fires.
@@ -951,14 +982,10 @@ pub struct Filter {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_after_days: Option<u32>,
 
-    /// Per-filter override of `[gitlab].max_results`: the maximum number of merge requests
-    /// fetched for this filter. Clamped to `1..=500`, with a warning.
+    /// Per-filter override of `[gitlab].max_results`; a key left out keeps the global value.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_results: Option<usize>,
-    /// Per-filter override of `[gitlab].max_results_closed`. Only used when `state` is `all`.
-    /// Clamped to `1..=500`, with a warning.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_results_closed: Option<usize>,
+    #[schemars(with = "FilterMaxResults")]
+    pub max_results: Option<FilterMaxResults>,
 }
 
 impl Default for Filter {
@@ -982,7 +1009,6 @@ impl Default for Filter {
             target_branch: None,
             updated_after_days: None,
             max_results: None,
-            max_results_closed: None,
         }
     }
 }
@@ -996,10 +1022,14 @@ impl Filter {
         }
     }
 
-    /// The maximum number of merge requests to fetch: this filter's override, else the
-    /// `[gitlab]` default.
-    pub fn max_results(&self, gitlab: &Gitlab) -> usize {
-        self.max_results.unwrap_or(gitlab.max_results)
+    /// The maximum number of merge requests to fetch: this filter's overrides, else the
+    /// `[gitlab]` defaults.
+    pub fn max_results(&self, gitlab: &Gitlab) -> MaxResults {
+        let own = self.max_results.unwrap_or_default();
+        MaxResults {
+            open: own.open.unwrap_or(gitlab.max_results.open),
+            closed: own.closed.unwrap_or(gitlab.max_results.closed),
+        }
     }
 
     /// One single-scope copy of this filter per listed scope, in order. Each is queried on
@@ -1015,12 +1045,6 @@ impl Filter {
                 ..self.clone()
             })
             .collect()
-    }
-
-    /// The maximum number of merged and closed merge requests to fetch for a `state = all`
-    /// filter: this filter's override, else the `[gitlab]` default.
-    pub fn max_results_closed(&self, gitlab: &Gitlab) -> usize {
-        self.max_results_closed.unwrap_or(gitlab.max_results_closed)
     }
 
     /// Whether subgroups are included, defaulting to true for a group scope.
@@ -1684,7 +1708,7 @@ reviewer = "someuser"
 milestone = "24.Q3"
 target_branch = "main"
 updated_after_days = 30
-max_results = 100
+max_results = { open = 100 }
 
 [[filter]]
 name = "SRE ask"
@@ -1698,7 +1722,7 @@ notify = false
         assert_eq!(c.filters.len(), 4);
         assert_eq!(c.filters[1].scope, Scope::ReviewRequested);
         assert_eq!(c.filters[1].max_results, None, "default applies");
-        assert_eq!(c.filters[1].max_results(&c.gitlab), 40);
+        assert_eq!(c.filters[1].max_results(&c.gitlab), MaxResults::default());
         assert_eq!(c.filters[1].notify, None, "default applies");
         assert_eq!(c.filters[3].notify, Some(false));
 
@@ -1844,13 +1868,12 @@ notify = false
         assert_eq!(Config::default().filters[0].columns, None);
     }
 
-    /// A filter without its own `max_results` follows `[gitlab].max_results`; one with it
-    /// keeps its own.
+    /// A filter follows `[gitlab].max_results` for every key it leaves out.
     #[test]
-    fn filter_max_results_falls_back_to_the_gitlab_default() {
+    fn filter_max_results_falls_back_to_the_gitlab_default_per_key() {
         let doc = r#"
 [gitlab]
-max_results = 30
+max_results = { open = 30, closed = 7 }
 
 [[filter]]
 name = "Inherits"
@@ -1859,10 +1882,17 @@ scope = "assigned"
 [[filter]]
 name = "Overrides"
 scope = "authored"
-max_results = 5
+max_results = { open = 5 }
 "#;
         let c: Config = toml::from_str(doc).unwrap();
-        assert_eq!(c.filters[0].max_results(&c.gitlab), 30);
-        assert_eq!(c.filters[1].max_results(&c.gitlab), 5);
+        let caps = |i: usize| c.filters[i].max_results(&c.gitlab);
+        assert_eq!(
+            caps(0),
+            MaxResults {
+                open: 30,
+                closed: 7
+            }
+        );
+        assert_eq!(caps(1), MaxResults { open: 5, closed: 7 });
     }
 }

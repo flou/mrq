@@ -89,12 +89,9 @@ fn check_gitlab(config: &mut Config, errors: &mut Vec<String>, clamps: &mut Vec<
     if config.gitlab.max_concurrent_requests == 0 {
         errors.push("gitlab.max_concurrent_requests: must be at least 1".into());
     }
-    clamp_max_results("gitlab.max_results", &mut config.gitlab.max_results, clamps);
-    clamp_max_results(
-        "gitlab.max_results_closed",
-        &mut config.gitlab.max_results_closed,
-        clamps,
-    );
+    let caps = &mut config.gitlab.max_results;
+    clamp_max_results("gitlab.max_results.open", &mut caps.open, clamps);
+    clamp_max_results("gitlab.max_results.closed", &mut caps.closed, clamps);
 }
 
 fn clamp_max_results(key: &str, value: &mut usize, clamps: &mut Vec<Clamped>) {
@@ -262,11 +259,13 @@ fn check_filters(config: &mut Config, errors: &mut Vec<String>, clamps: &mut Vec
             check_columns(&format!("{at}.columns"), columns, errors);
         }
 
-        if let Some(max_results) = &mut filter.max_results {
-            clamp_max_results(&format!("{at}.max_results"), max_results, clamps);
-        }
-        if let Some(max_closed) = &mut filter.max_results_closed {
-            clamp_max_results(&format!("{at}.max_results_closed"), max_closed, clamps);
+        if let Some(caps) = &mut filter.max_results {
+            if let Some(open) = &mut caps.open {
+                clamp_max_results(&format!("{at}.max_results.open"), open, clamps);
+            }
+            if let Some(closed) = &mut caps.closed {
+                clamp_max_results(&format!("{at}.max_results.closed"), closed, clamps);
+            }
         }
     }
 }
@@ -373,7 +372,9 @@ fn check_filter_scope(filter: &Filter, at: &str, errors: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::{Column, NotifyBackend, Scope, Scopes, StateFilter};
+    use crate::config::schema::{
+        Column, FilterMaxResults, NotifyBackend, Scope, Scopes, StateFilter,
+    };
 
     fn config() -> Config {
         Config::default()
@@ -419,34 +420,42 @@ mod tests {
     /// Out-of-range values that only affect the person who typed them clamp and warn.
     #[test]
     fn max_results_clamps_per_filter() {
+        let caps = |open, closed| {
+            Some(FilterMaxResults {
+                open: Some(open),
+                closed: Some(closed),
+            })
+        };
         let mut c = config();
-        c.filters[0].max_results = Some(5_000);
+        c.filters[0].max_results = caps(5_000, 0);
 
         let clamps = validate(&mut c).unwrap();
-        assert_eq!(c.filters[0].max_results, Some(MAX_MAX_RESULTS));
-        assert_eq!(clamps[0].key, "filter[0].max_results");
-
-        let mut c = config();
-        c.filters[0].max_results = Some(0);
-        validate(&mut c).unwrap();
-        assert_eq!(c.filters[0].max_results, Some(MIN_MAX_RESULTS));
+        assert_eq!(
+            c.filters[0].max_results,
+            caps(MAX_MAX_RESULTS, MIN_MAX_RESULTS)
+        );
+        let keys: Vec<&str> = clamps.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            ["filter[0].max_results.open", "filter[0].max_results.closed"]
+        );
     }
 
     #[test]
     fn max_results_clamps_globally() {
         let mut c = config();
-        c.gitlab.max_results = 5_000;
+        c.gitlab.max_results.open = 5_000;
 
         let clamps = validate(&mut c).unwrap();
-        assert_eq!(c.gitlab.max_results, MAX_MAX_RESULTS);
-        assert_eq!(clamps[0].key, "gitlab.max_results");
+        assert_eq!(c.gitlab.max_results.open, MAX_MAX_RESULTS);
+        assert_eq!(clamps[0].key, "gitlab.max_results.open");
         // An unset override stays unset, so it keeps following the global value.
         assert_eq!(c.filters[0].max_results, None);
 
         let mut c = config();
-        c.gitlab.max_results = 0;
+        c.gitlab.max_results.closed = 0;
         validate(&mut c).unwrap();
-        assert_eq!(c.gitlab.max_results, MIN_MAX_RESULTS);
+        assert_eq!(c.gitlab.max_results.closed, MIN_MAX_RESULTS);
     }
 
     /// Jitter larger than the interval makes refreshes unpredictable rather than merely

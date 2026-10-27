@@ -21,11 +21,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::app::event::{AppEvent, EventSender, FilterId, Tasks};
 use crate::app::identity;
-use crate::config::schema::{Config, Refresh};
+use crate::config::schema::{Config, MaxResults, Refresh};
 use crate::error::{Phase, Recovery};
 use crate::gitlab::client::Client;
 use crate::gitlab::error::Backoff;
-use crate::gitlab::fetch::{self, Caps, Degradation};
+use crate::gitlab::fetch::{self, Degradation};
 
 /// A request for a filter to refresh now, sent by `ctrl-r` or a focus gain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,7 +184,6 @@ pub fn spawn_generation(
             id: crate::app::event::tag(generation, index),
             filter: filter.clone(),
             max_results: filter.max_results(&config.gitlab),
-            max_results_closed: filter.max_results_closed(&config.gitlab),
             refresh: config.refresh.clone(),
             instance_url: config.gitlab.url.clone(),
             identity: identity.clone(),
@@ -210,10 +209,8 @@ pub fn spawn_generation(
 struct Worker {
     id: FilterId,
     filter: crate::config::schema::Filter,
-    /// The filter's override or the `[gitlab]` default, resolved once at spawn.
-    max_results: usize,
-    /// Cap on merged and closed rows for a `state = all` filter, resolved like `max_results`.
-    max_results_closed: usize,
+    /// The filter's overrides or the `[gitlab]` defaults, resolved once at spawn.
+    max_results: MaxResults,
     refresh: Refresh,
     instance_url: String,
     /// The identity probe's result. Not yet known at construction time — the whole
@@ -388,10 +385,7 @@ impl Worker {
         let result = fetch::fetch(
             &self.client,
             &self.filter,
-            Caps {
-                results: self.max_results,
-                closed: self.max_results_closed,
-            },
+            self.max_results,
             degradation,
             current_user,
             &self.instance_url,
