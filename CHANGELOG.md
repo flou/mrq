@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/flou/mrq/compare/v0.2.0...v0.3.0) - 2026-10-28
+
+### Added
+
+- *(term)* detect Rex for notifications, truecolor and hyperlinks
+- *(config)* [**breaking**] group max_results into an { open, closed } table
+- *(ui)* show the sort direction on the sorted column header
+- *(config)* add per-filter sort override
+
+### Fixed
+
+- *(ui)* scroll list popups only when the selection nears an edge
+
+### Other
+
+- *(deps)* update jdx/packslip action to v1.11.2
+- *(deps)* update rust crate unicode-width to v0.2.3
+- *(gitlab)* negate excluded scopes server-side
+- *(deps)* update release-plz/action action to v0.5.147
+- *(deps)* update swatinem/rust-cache action to v2.9.3
+- *(deps)* update rust crate jsonschema to 0.60.0
+- *(deps)* update jdx/packslip action to v1.11.1
+- *(deps)* update jdx/mise-action action to v5.2.4
+- *(deps)* update rustls webpki crates
+
 ## [0.2.0](https://github.com/flou/mrq/compare/v0.1.0...v0.2.0) - 2026-10-16
 
 ### Added
