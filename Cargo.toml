@@ -1,6 +1,6 @@
 [package]
 name = "mrq"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Keyboard-driven TUI for the GitLab merge requests you need to review"
 repository = "https://github.com/flou/mrq"
