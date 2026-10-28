@@ -134,8 +134,9 @@ fn color_depth(env: &TermEnv) -> ColorDepth {
     // when the variable is lost crossing an ssh or tmux boundary.
     if matches!(
         env.program().as_str(),
-        "iterm.app" | "wezterm" | "ghostty" | "vscode"
+        "iterm.app" | "wezterm" | "ghostty" | "vscode" | "rex"
     ) || term.starts_with("xterm-kitty")
+        || term.starts_with("xterm-rex")
         || term.starts_with("wezterm")
         || term.starts_with("foot")
     {
@@ -157,12 +158,16 @@ fn supports_hyperlinks(env: &TermEnv, multiplexed: bool) -> bool {
 
     if matches!(
         env.program().as_str(),
-        "iterm.app" | "wezterm" | "ghostty" | "vscode" | "hyper"
+        "iterm.app" | "wezterm" | "ghostty" | "vscode" | "hyper" | "rex"
     ) {
         return true;
     }
     let term = env.term();
-    if term.starts_with("xterm-kitty") || term.starts_with("wezterm") || term.starts_with("foot") {
+    if term.starts_with("xterm-kitty")
+        || term.starts_with("xterm-rex")
+        || term.starts_with("wezterm")
+        || term.starts_with("foot")
+    {
         return true;
     }
 
@@ -177,11 +182,13 @@ fn notify_escape(env: &TermEnv) -> NotifyEscape {
     let term = env.term();
     match env.program().as_str() {
         // OSC 9 has no title field, so Ghostty and WezTerm title it with the window
-        // title — which mrq sets to the *active* tab, not the filter that fired. Both also
-        // speak OSC 777, which carries a title of its own. iTerm2 only knows OSC 9.
-        "wezterm" | "ghostty" => NotifyEscape::Osc777,
+        // title — which mrq sets to the *active* tab, not the filter that fired. They and
+        // Rex also speak OSC 777, which carries a title of its own. iTerm2 only knows OSC 9.
+        "wezterm" | "ghostty" | "rex" => NotifyEscape::Osc777,
         "iterm.app" => NotifyEscape::Osc9,
-        _ if term.starts_with("xterm-kitty") => NotifyEscape::Osc777,
+        _ if term.starts_with("xterm-kitty") || term.starts_with("xterm-rex") => {
+            NotifyEscape::Osc777
+        }
         _ if term.starts_with("wezterm") || term.starts_with("foot") => NotifyEscape::Osc777,
         _ if term.starts_with("rxvt") || term.starts_with("urxvt") => NotifyEscape::Osc777,
         _ => NotifyEscape::None,
@@ -268,6 +275,8 @@ mod tests {
         assert_eq!(color_depth(&program("iTerm.app")), ColorDepth::TrueColor);
         assert_eq!(color_depth(&program("WezTerm")), ColorDepth::TrueColor);
         assert_eq!(color_depth(&program("ghostty")), ColorDepth::TrueColor);
+        assert_eq!(color_depth(&program("rex")), ColorDepth::TrueColor);
+        assert_eq!(color_depth(&env("xterm-rex")), ColorDepth::TrueColor);
     }
 
     /// <https://no-color.org> — a deliberate user choice, and not negotiable.
@@ -296,13 +305,14 @@ mod tests {
 
     #[test]
     fn hyperlink_support_is_allowlisted() {
-        for name in ["iTerm.app", "WezTerm", "ghostty", "vscode", "Hyper"] {
+        for name in ["iTerm.app", "WezTerm", "ghostty", "vscode", "Hyper", "rex"] {
             assert!(
                 supports_hyperlinks(&program(name), false),
                 "{name} supports OSC 8"
             );
         }
         assert!(supports_hyperlinks(&env("xterm-kitty"), false));
+        assert!(supports_hyperlinks(&env("xterm-rex"), false));
         assert!(!supports_hyperlinks(&env("xterm-256color"), false));
     }
 
@@ -349,6 +359,8 @@ mod tests {
         assert_eq!(notify_escape(&program("iTerm.app")), NotifyEscape::Osc9);
         assert_eq!(notify_escape(&program("WezTerm")), NotifyEscape::Osc777);
         assert_eq!(notify_escape(&program("ghostty")), NotifyEscape::Osc777);
+        assert_eq!(notify_escape(&program("rex")), NotifyEscape::Osc777);
+        assert_eq!(notify_escape(&env("xterm-rex")), NotifyEscape::Osc777);
         assert_eq!(notify_escape(&env("xterm-kitty")), NotifyEscape::Osc777);
         assert_eq!(notify_escape(&env("rxvt-unicode")), NotifyEscape::Osc777);
         assert_eq!(notify_escape(&env("xterm-256color")), NotifyEscape::None);
