@@ -136,51 +136,23 @@ pub fn build<'a>(
         .panel(title(popup.kind))
         .padding(Padding::horizontal(1));
     // Help/Log/Details have no separate selection: `cursor` already *is* the top line
-    // (see `popup_rows`), so the window follows it directly — one press, one line. Sort/
-    // Filter/Skin move a selection over a short list instead, where `scroll_to`'s
-    // proportional mapping still applies.
-    let scrolled = match popup.kind {
-        Popup::Help | Popup::Log | Popup::Details | Popup::Discussions => {
-            scroll_from(lines, popup.cursor, inner_height)
-        }
-        Popup::Sort | Popup::Filter | Popup::Skin | Popup::Activity => {
-            scroll_to(lines, popup.cursor, inner_height)
-        }
+    // (see `popup_rows`). Sort/Filter/Skin/Activity move a selection instead, and keep
+    // their window in `scroll` (see `action::selection_scroll`), so it only moves once
+    // the selection nears an edge.
+    let top = match popup.kind {
+        Popup::Help | Popup::Log | Popup::Details | Popup::Discussions => popup.cursor,
+        Popup::Sort | Popup::Filter | Popup::Skin | Popup::Activity => popup.scroll,
     };
+    let scrolled = scroll_from(lines, top, inner_height);
     Some((Clear, Paragraph::new(scrolled).block(block)))
 }
 
-/// Take the window of `lines` that keeps `cursor` visible.
-///
-/// There are `lines.len()` cursor positions but only `last_start + 1` places the window
-/// can start from, so some positions are inevitably going to share a window — the
-/// question is only where that slack lands. Truncating (`cursor.min(last_start)`) dumps
-/// all of it on the last page: from the bottom, `k` would sit dead for up to
-/// `height - 1` presses before the window actually moved, which reads as a stuck popup
-/// rather than as scrolling up. Scaling `cursor` onto `0..=last_start` instead spreads
-/// that same slack evenly across the whole range, so every direction responds within a
-/// press or two — matching what already happens scrolling down from the top, where
-/// `cursor` and `start` agree exactly because there is no slack down there yet.
+/// Take the window of `lines` starting at `top`. `top` is already clamped to a valid
+/// scroll position by the action layer, so the `min` here only guards against a
+/// `height` that is one frame stale.
 ///
 /// Clipping instead of windowing would silently lose the end of a long help screen, and
 /// the user has no way to know there was more.
-fn scroll_to<'a>(lines: Vec<Line<'a>>, cursor: usize, height: usize) -> Vec<Line<'a>> {
-    if height == 0 || lines.len() <= height {
-        return lines;
-    }
-
-    let last_start = lines.len() - height;
-    let last_cursor = lines.len() - 1;
-    // Rounded rather than truncated, so the slack is distributed rather than always
-    // favouring the lower `start` (which would bias every repeat towards not scrolling).
-    let start = (cursor * last_start + last_cursor / 2) / last_cursor;
-    lines[start..start + height].to_vec()
-}
-
-/// Take the window of `lines` starting at `top`, the top-line-per-press counterpart to
-/// [`scroll_to`]. `top` is already clamped to a valid scroll position by [`popup_rows`],
-/// so a press of `j`/`k` moves the window by exactly one line every time — the `min` here
-/// only guards against a `height` that is one frame stale.
 fn scroll_from<'a>(lines: Vec<Line<'a>>, top: usize, height: usize) -> Vec<Line<'a>> {
     if height == 0 || lines.len() <= height {
         return lines;
@@ -1043,11 +1015,11 @@ mod tests {
             .map(|i| Line::from(Span::raw(format!("line {i}"))))
             .collect();
 
-        let top = scroll_to(lines.clone(), 0, 10);
+        let top = scroll_from(lines.clone(), 0, 10);
         assert_eq!(top.len(), 10);
         assert_eq!(top[0].to_string(), "line 0");
 
-        let bottom = scroll_to(lines.clone(), 39, 10);
+        let bottom = scroll_from(lines.clone(), 39, 10);
         assert_eq!(bottom.len(), 10);
         assert_eq!(
             bottom.last().unwrap().to_string(),
@@ -1055,51 +1027,11 @@ mod tests {
             "the end is reachable"
         );
 
-        assert_eq!(scroll_to(lines, 0, 0).len(), 40, "no height, no window");
-    }
-
-    /// `scroll_to`'s proportional mapping still has to follow the very first cursor step,
-    /// with no dead zone — a list popup (Sort, Filter, Skin) would otherwise look stuck
-    /// for a press or two before the selection visibly moved.
-    #[test]
-    fn the_window_follows_the_cursor_from_the_first_step() {
-        let lines: Vec<Line> = (0..40)
-            .map(|i| Line::from(Span::raw(format!("line {i}"))))
-            .collect();
-
-        let after_one_step = scroll_to(lines, 1, 10);
-        assert_eq!(
-            after_one_step[0].to_string(),
-            "line 1",
-            "no dead zone: the very first cursor step already scrolls the window"
-        );
-    }
-
-    /// The mirror of the test above: scrolling *up* from the last line must respond just
-    /// as fast as scrolling down from the first one does. Truncating `cursor` at
-    /// `last_start` used to dump the whole compression on this end, so `k` right after
-    /// `shift-G` sat dead for several presses before the window actually moved.
-    #[test]
-    fn the_window_follows_the_cursor_up_from_the_last_line_too() {
-        let lines: Vec<Line> = (0..40)
-            .map(|i| Line::from(Span::raw(format!("line {i}"))))
-            .collect();
-
-        let at_the_end = scroll_to(lines.clone(), 39, 10);
-        assert_eq!(at_the_end.last().unwrap().to_string(), "line 39");
-
-        let after_one_step_up = scroll_to(lines, 38, 10);
-        assert_ne!(
-            after_one_step_up.last().unwrap().to_string(),
-            "line 39",
-            "no dead zone: the very first step up from the end already scrolls the window"
-        );
+        assert_eq!(scroll_from(lines, 0, 0).len(), 40, "no height, no window");
     }
 
     /// `scroll_from` backs Help/Log/Details, where `cursor` already is the top line: every
-    /// press has to move the window by exactly one line, in both directions, with none of
-    /// `scroll_to`'s proportional rounding — that rounding is what let `j`/`k` presses
-    /// disappear on those popups (mrq-l4k).
+    /// press has to move the window by exactly one line, in both directions (mrq-l4k).
     #[test]
     fn scroll_from_moves_exactly_one_line_per_step() {
         let lines: Vec<Line> = (0..40)

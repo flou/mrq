@@ -140,6 +140,7 @@ impl World {
         self.view.mode = Mode::Popup(PopupState {
             kind,
             cursor: 0,
+            scroll: 0,
             query: String::new(),
             lines: vec!["2026-09-11T11:59:48Z  INFO mrq: refreshing Assigned".to_owned()],
             styled: Vec::new(),

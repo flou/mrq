@@ -72,6 +72,10 @@ pub struct PopupState {
     /// in the text ones. One field because clamping and page movement are the same
     /// operation either way.
     pub cursor: usize,
+    /// The top visible line of the list popups (Sort/Filter/Skin/Activity), kept by
+    /// [`selection_scroll`] so the window only moves when the selection nears its edge.
+    /// The text popups ignore it: their `cursor` already is the top line.
+    pub scroll: usize,
     /// The filter switcher's fuzzy query.
     pub query: String,
     /// The log lines as they were when the popup opened.
@@ -108,6 +112,7 @@ impl PopupState {
         Self {
             kind,
             cursor: 0,
+            scroll: 0,
             query: String::new(),
             lines: Vec::new(),
             styled: Vec::new(),
@@ -216,8 +221,8 @@ pub struct ViewState {
     /// [`DEFAULT_POPUP_WIDTH`] stands in until the first of those.
     pub popup_width: usize,
     /// The popup's live text height, for turning a text popup's `cursor` into a scroll
-    /// position (see [`popup_rows`]) — one line per key press, rather than the list
-    /// popups' proportional-mapping scroll.
+    /// position (see [`popup_rows`]), and for keeping a list popup's selection in view
+    /// (see [`selection_scroll`]).
     ///
     /// Written the same way as `popup_width`; [`DEFAULT_POPUP_HEIGHT`] stands in until the
     /// first of those.
@@ -795,12 +800,14 @@ pub fn dispatch(state: &mut ViewState, action: Action) -> (bool, Effect) {
                 .active()
                 .and_then(|tab| SORTABLE.iter().position(|c| *c == tab.sort_column))
                 .unwrap_or(0);
+            popup.scroll = selection_scroll(state, &popup);
             state.mode = Mode::Popup(popup);
             (true, Effect::None)
         }
         Action::FilterMenu => {
             let mut popup = PopupState::new(Popup::Filter);
             popup.cursor = state.tabs.active_index();
+            popup.scroll = selection_scroll(state, &popup);
             state.mode = Mode::Popup(popup);
             (true, Effect::None)
         }
@@ -813,6 +820,7 @@ pub fn dispatch(state: &mut ViewState, action: Action) -> (bool, Effect) {
                 .position(|name| *name == state.theme.skin())
                 .unwrap_or(0);
             popup.previous_skin = Some(state.theme.skin().to_owned());
+            popup.scroll = selection_scroll(state, &popup);
             state.mode = Mode::Popup(popup);
             (true, Effect::None)
         }
@@ -1114,6 +1122,7 @@ pub fn popup_wheel(state: &mut ViewState, keymap: &Keymap, up: bool) -> Option<b
         state.theme = state.theme.with_skin(name);
     }
 
+    popup.scroll = selection_scroll(state, &popup);
     state.mode = Mode::Popup(popup);
     Some(true)
 }
@@ -1274,6 +1283,7 @@ fn popup_key(
         state.theme = state.theme.with_skin(name);
     }
 
+    popup.scroll = selection_scroll(state, &popup);
     state.mode = Mode::Popup(popup);
     KeyOutcome::Handled { redraw: true }
 }
@@ -1297,6 +1307,28 @@ fn popup_rows(state: &ViewState, keymap: &Keymap, popup: &PopupState) -> usize {
         }
         Popup::Help => scroll_positions(help_lines(keymap).len(), state.popup_height),
     }
+}
+
+/// Where a list popup's window should start so its selection stays in view.
+///
+/// The same [`scroll_to_keep`] the table uses, so the window holds still until the
+/// selection nears its edge and then follows it one line per press. Filter draws its
+/// query above the list, which puts the selection one line further down. Text popups
+/// keep whatever `scroll` they have: `cursor` is their top line already.
+pub fn selection_scroll(state: &ViewState, popup: &PopupState) -> usize {
+    let (rows, header) = match popup.kind {
+        Popup::Sort => (SORTABLE.len(), 0),
+        Popup::Filter => (matching_filters(state, &popup.query).len(), 1),
+        Popup::Skin => (skins::BUILTIN_NAMES.len(), 0),
+        Popup::Activity => (popup.activity.len(), 0),
+        Popup::Help | Popup::Log | Popup::Details | Popup::Discussions => return popup.scroll,
+    };
+    scroll_to_keep(
+        popup.scroll,
+        popup.cursor + header,
+        rows.max(1) + header,
+        state.popup_height,
+    )
 }
 
 /// How many places a `height`-tall window can start from within `lines` lines: every
@@ -1357,6 +1389,15 @@ pub fn resize_popup(state: &mut ViewState, keymap: &Keymap, width: usize, height
                 .min(scroll_positions(popup.styled.len(), height) - 1);
         }
         Popup::Sort | Popup::Filter | Popup::Skin | Popup::Activity => {}
+    }
+
+    // A new height moves where the window has to sit to keep the selection in view.
+    let scroll = state
+        .mode
+        .popup_state()
+        .map(|popup| selection_scroll(state, popup));
+    if let (Mode::Popup(popup), Some(scroll)) = (&mut state.mode, scroll) {
+        popup.scroll = scroll;
     }
 }
 
@@ -3008,7 +3049,7 @@ mod tests {
     }
 
     /// Every `j`/`k` on an open Details popup moves the window by exactly one line. The
-    /// regression this guards: `scroll_to`'s proportional mapping moved the window by
+    /// regression this guards: a proportional cursor-to-window mapping moved the window by
     /// *less* than one line per press, so repeated presses looked dropped (mrq-l4k).
     #[test]
     fn the_details_popup_scrolls_one_line_per_press() {
@@ -3753,6 +3794,52 @@ mod tests {
 
         open_activity(&mut state);
         assert!(state.mode.is_normal(), "the same key closes it");
+    }
+
+    /// The window holds still while the selection walks down it, then follows one line
+    /// per press — like the table. A proportional mapping used to scroll on almost every
+    /// press while the highlight crept down the screen, which read as a stuck cursor.
+    #[test]
+    fn the_feed_scrolls_only_once_the_selection_nears_an_edge() {
+        use crate::app::diff::Trigger;
+        let mut state = state_with(rows(1));
+        for i in 0..40 {
+            state.activity.record(
+                &[activity_event(
+                    "Assigned",
+                    &format!("id-{i}"),
+                    Trigger::NewMergeRequest,
+                )],
+                jiff::Timestamp::now() - jiff::SignedDuration::from_mins(40 - i),
+            );
+        }
+        state.popup_height = 10;
+        open_activity(&mut state);
+        let scroll = |state: &ViewState| state.mode.popup_state().unwrap().scroll;
+        let press = |state: &mut ViewState, code| {
+            handle_key(state, &keymap(), key(code));
+        };
+
+        // Down to two lines from the bottom edge, the window does not move.
+        for _ in 0..7 {
+            press(&mut state, KeyCode::Char('j'));
+        }
+        assert_eq!(scroll(&state), 0);
+        // Past that, one line per press.
+        for expected in 1..=5 {
+            press(&mut state, KeyCode::Char('j'));
+            assert_eq!(scroll(&state), expected);
+        }
+
+        press(&mut state, KeyCode::Char('G'));
+        assert_eq!(scroll(&state), 30, "the end is pinned");
+        // Back up, the window holds until the selection nears the top edge.
+        for _ in 0..7 {
+            press(&mut state, KeyCode::Char('k'));
+        }
+        assert_eq!(scroll(&state), 30);
+        press(&mut state, KeyCode::Char('k'));
+        assert_eq!(scroll(&state), 29);
     }
 
     #[test]
