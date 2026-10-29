@@ -38,6 +38,11 @@ pub struct Config {
     pub notifications: Notifications,
     /// The command used to open merge requests, pipelines and projects.
     pub browser: Browser,
+    /// What makes a merge request READY for review. Unset by default, which disables the `ready`
+    /// column and the `ready` filter key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "ReadyRule")]
+    pub ready: Option<ReadyRule>,
 
     /// The merge request lists, one `[[filter]]` array-of-tables entry per tab. Order defines tab
     /// order and the `1`..`9` shortcuts. At least one is required, and names must be unique.
@@ -257,6 +262,7 @@ impl Default for Config {
             sort: Sort::default(),
             notifications: Notifications::default(),
             browser: Browser::default(),
+            ready: None,
             // The default view is the merge requests assigned to me.
             filters: vec![Filter::named("Assigned", Scope::Assigned)],
             keys: BTreeMap::new(),
@@ -581,6 +587,9 @@ pub enum Column {
     Age,
     /// Time since the merge request last changed.
     Updated,
+    /// Time since the merge request became READY per `[ready]`, blank when it is not; `?` when
+    /// its history could not be read. Needs a `[ready]` section; not in the default column list.
+    Ready,
     /// Size of the change.
     Diff,
     /// The source branch. Not in the default column list.
@@ -589,7 +598,7 @@ pub enum Column {
 
 impl Column {
     /// Every column, including those not in the default list.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::Approved,
         Self::Author,
         Self::Repo,
@@ -603,6 +612,7 @@ impl Column {
         Self::Status,
         Self::Age,
         Self::Updated,
+        Self::Ready,
         Self::Diff,
         Self::Branch,
     ];
@@ -638,6 +648,7 @@ impl Column {
             Self::Status => "status",
             Self::Age => "age",
             Self::Updated => "updated",
+            Self::Ready => "ready",
             Self::Diff => "diff",
             Self::Branch => "branch",
         }
@@ -662,6 +673,7 @@ impl Column {
             Self::Status => "STATUS",
             Self::Age => "AGE",
             Self::Updated => "UPDATED",
+            Self::Ready => "READY",
             Self::Diff => "DIFF",
             Self::Branch => "BRANCH",
         }
@@ -906,6 +918,31 @@ pub struct Browser {
     pub command: String,
 }
 
+// -------------------------------------------------------------------------- [ready]
+
+/// What makes a merge request READY: open, not a draft, carrying every one of `labels`, and, with
+/// `pipeline`, a passing head pipeline. How long it has been ready is reconstructed from its
+/// history: the later of the draft being lifted and each label being added. A pipeline re-run
+/// does not reset it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct ReadyRule {
+    /// Labels a merge request must all carry, e.g. `["sre-review::ask"]`. At least one is
+    /// required, and the `!` exclusion prefix is not accepted.
+    pub labels: Vec<String>,
+    /// Require the head pipeline to have passed.
+    pub pipeline: bool,
+}
+
+impl Default for ReadyRule {
+    fn default() -> Self {
+        Self {
+            labels: Vec::new(),
+            pipeline: true,
+        }
+    }
+}
+
 // -------------------------------------------------------------------------- [[filter]]
 
 /// One merge request list, shown as a tab.
@@ -938,6 +975,10 @@ pub struct Filter {
     /// Per-filter override of `[notifications].enabled`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notify: Option<bool>,
+    /// Show only merge requests that meet the `[ready]` rule, which must be configured. Applied
+    /// after the fetch, on any scope.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub ready: bool,
 
     /// GitLab full path like `acme/platform`, without leading or trailing slashes. Required for
     /// `group` and `project` scopes, and not accepted for any other.
@@ -998,6 +1039,7 @@ impl Default for Filter {
             columns: None,
             sort: None,
             notify: None,
+            ready: false,
             path: None,
             include_subgroups: None,
             labels: Vec::new(),

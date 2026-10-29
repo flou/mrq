@@ -21,11 +21,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::app::event::{AppEvent, EventSender, FilterId, Tasks};
 use crate::app::identity;
-use crate::config::schema::{Config, MaxResults, Refresh};
+use crate::config::schema::{Config, MaxResults, ReadyRule, Refresh};
 use crate::error::{Phase, Recovery};
 use crate::gitlab::client::Client;
 use crate::gitlab::error::Backoff;
 use crate::gitlab::fetch::{self, Degradation};
+use crate::gitlab::ready;
 
 /// A request for a filter to refresh now, sent by `ctrl-r` or a focus gain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,6 +186,7 @@ pub fn spawn_generation(
             filter: filter.clone(),
             max_results: filter.max_results(&config.gitlab),
             refresh: config.refresh.clone(),
+            ready: config.ready.clone(),
             instance_url: config.gitlab.url.clone(),
             identity: identity.clone(),
             client: client.clone(),
@@ -212,6 +214,8 @@ struct Worker {
     /// The filter's overrides or the `[gitlab]` defaults, resolved once at spawn.
     max_results: MaxResults,
     refresh: Refresh,
+    /// The `[ready]` rule, applied to every snapshot before it is cached or sent.
+    ready: Option<ReadyRule>,
     instance_url: String,
     /// The identity probe's result. Not yet known at construction time — the whole
     /// point is that the worker's spawn does not wait on it — so the wait happens once,
@@ -254,6 +258,16 @@ impl Worker {
         // Loop state, like the backoff: the rung this filter settled on is carried across
         // refreshes so the ladder is walked once per session.
         let mut degradation = Degradation::none();
+        // Likewise carried, so an unchanged ready merge request is not looked up again —
+        // seeded from the cache so neither is one resolved by the previous run.
+        let mut ready_memo = match (&self.ready, &self.cache_dir) {
+            (Some(_), Some(dir)) => {
+                crate::app::cache::read(dir, &self.filter, jiff::Timestamp::now())
+                    .map(|entry| ready::remembered(&entry.merge_requests))
+                    .unwrap_or_default()
+            }
+            _ => ready::Memo::new(),
+        };
 
         // The stagger and the identity probe overlap: both are waits, and serialising
         // them would add the probe's round trip on top of a delay that already exists
@@ -307,7 +321,7 @@ impl Worker {
                 // the terminal guard is allowed to restore.
                 let outcome = tokio::select! {
                     () = self.cancel.cancelled() => return,
-                    outcome = self.fetch_once(&mut degradation, &current_user) => outcome,
+                    outcome = self.fetch_once(&mut degradation, &mut ready_memo, &current_user) => outcome,
                 };
                 match outcome {
                     Outcome::Healthy => {
@@ -367,7 +381,12 @@ impl Worker {
     }
 
     /// Run one fetch, reporting the outcome.
-    async fn fetch_once(&self, degradation: &mut Degradation, current_user: &str) -> Outcome {
+    async fn fetch_once(
+        &self,
+        degradation: &mut Degradation,
+        ready_memo: &mut ready::Memo,
+        current_user: &str,
+    ) -> Outcome {
         let Ok(_permit) = self.permits.acquire().await else {
             // The semaphore is closed, which only happens at shutdown.
             return Outcome::Healthy;
@@ -394,7 +413,12 @@ impl Worker {
         .await;
 
         match result {
-            Ok(snapshot) => {
+            Ok(mut snapshot) => {
+                // Before the cache write, so a warm start shows the same READY ages.
+                if let Some(rule) = &self.ready {
+                    ready::mark(&self.client, rule, &mut snapshot.merge_requests, ready_memo).await;
+                }
+
                 // Written here rather than from the event loop: the loop is the render
                 // loop, and a cache directory on a network home would stutter a frame
                 //. A failed write is logged and forgotten — the next

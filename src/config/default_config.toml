@@ -146,6 +146,13 @@
 # Empty means `open` on macOS and `xdg-open` on Linux.
 # command = ""
 
+# What makes a merge request READY: open, not a draft, carrying every label below and, with
+# `pipeline`, a passing head pipeline. Enables the `ready` column (time since it became
+# ready) and the per-filter `ready = true`. Unset by default.
+# [ready]
+# labels = ["sre-review::ask"]
+# pipeline = true
+
 # ---- filters ----------------------------------------------------------------------
 #
 # Each [[filter]] is a tab. The order here is the tab order and the 1..9 shortcuts.
@@ -174,6 +181,7 @@ scope = "assigned"
 # show_drafts = false               # per-filter override of [ui].show_drafts
 # columns = ["approved", "author", "title", "age", "branch:wide"]   # per-filter override of [ui].columns
 # notify = true                     # per-filter override of [notifications].enabled
+# ready = true                      # only merge requests meeting [ready]
 #
 # Inline tables override the matching global table; a key left out keeps the global value.
 # sort = { column = "age", order = "asc" }   # per-filter override of [sort]

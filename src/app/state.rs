@@ -87,6 +87,8 @@ pub struct Tab {
     columns: Option<Vec<ColumnSpec>>,
     /// Session-only: not written back to the config file.
     show_drafts: bool,
+    /// The filter's `ready`: show only rows that meet the `[ready]` rule.
+    ready_only: bool,
 
     pub search: Option<String>,
     pub scroll: usize,
@@ -137,6 +139,7 @@ impl Tab {
             // The per-filter override wins over the global default, which is what makes
             // a "Drafts" filter possible alongside a default that hides them.
             show_drafts: filter.show_drafts.unwrap_or(show_drafts),
+            ready_only: filter.ready,
             search: None,
             scroll: 0,
             selected_id: None,
@@ -167,6 +170,10 @@ impl Tab {
 
     pub const fn show_drafts(&self) -> bool {
         self.show_drafts
+    }
+
+    pub const fn ready_only(&self) -> bool {
+        self.ready_only
     }
 
     pub const fn toggle_drafts(&mut self) {

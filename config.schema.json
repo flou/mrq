@@ -104,6 +104,10 @@
         "only_when_unfocused": true
       }
     },
+    "ready": {
+      "description": "What makes a merge request READY for review. Unset by default, which disables the `ready`\ncolumn and the `ready` filter key.",
+      "$ref": "#/$defs/ReadyRule"
+    },
     "refresh": {
       "description": "How often the merge request lists are refetched in the background.",
       "$ref": "#/$defs/Refresh",
@@ -247,6 +251,11 @@
           "const": "updated"
         },
         {
+          "description": "Time since the merge request became READY per `[ready]`, blank when it is not; `?` when\nits history could not be read. Needs a `[ready]` section; not in the default column list.",
+          "type": "string",
+          "const": "ready"
+        },
+        {
           "description": "Size of the change.",
           "type": "string",
           "const": "diff"
@@ -261,7 +270,7 @@
     "ColumnSpec": {
       "description": "A column key, optionally suffixed `:wide` to show it only in wide mode.",
       "type": "string",
-      "pattern": "^((approved|author|repo|title|pipeline)|(id|assigned|approver|reviewer|merged_by|status|age|updated|diff|branch)(:wide)?)$"
+      "pattern": "^((approved|author|repo|title|pipeline)|(id|assigned|approver|reviewer|merged_by|status|age|updated|ready|diff|branch)(:wide)?)$"
     },
     "DimDrafts": {
       "description": "Which draft merge requests are greyed out.",
@@ -345,6 +354,10 @@
         "path": {
           "description": "GitLab full path like `acme/platform`, without leading or trailing slashes. Required for\n`group` and `project` scopes, and not accepted for any other.",
           "type": "string"
+        },
+        "ready": {
+          "description": "Show only merge requests that meet the `[ready]` rule, which must be configured. Applied\nafter the fetch, on any scope.",
+          "type": "boolean"
         },
         "reviewer": {
           "description": "Only merge requests with this username as a reviewer. Mutually exclusive with\n`has_reviewer`. Not accepted on `assigned`, `review_requested` or `authored`.",
@@ -860,6 +873,26 @@
           "const": "trigram"
         }
       ]
+    },
+    "ReadyRule": {
+      "description": "What makes a merge request READY: open, not a draft, carrying every one of `labels`, and, with\n`pipeline`, a passing head pipeline. How long it has been ready is reconstructed from its\nhistory: the later of the draft being lifted and each label being added. A pipeline re-run\ndoes not reset it.",
+      "type": "object",
+      "properties": {
+        "labels": {
+          "description": "Labels a merge request must all carry, e.g. `[\"sre-review::ask\"]`. At least one is\nrequired, and the `!` exclusion prefix is not accepted.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "pipeline": {
+          "description": "Require the head pipeline to have passed.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
     },
     "Refresh": {
       "description": "Background refresh scheduling.",

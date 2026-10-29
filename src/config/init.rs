@@ -146,11 +146,13 @@ mod tests {
         bare.then(|| body.split(" #").next().unwrap_or(body).trim_end())
     }
 
-    /// The nearest preceding uncommented table header, so a commented setting can be
-    /// parsed in the section it actually belongs to.
+    /// The nearest preceding table header, so a commented setting can be parsed in the
+    /// section it actually belongs to. A commented header counts: a section that is off by
+    /// default, like `# [ready]`, is uncommented along with its keys.
     fn enclosing_table(text: &str, line: usize) -> &str {
         text.lines()
             .take(line)
+            .map(|l| l.strip_prefix("# ").unwrap_or(l))
             .filter(|l| l.starts_with('['))
             .last()
             .unwrap_or("")

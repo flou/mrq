@@ -360,6 +360,9 @@ impl WireMergeRequest {
                 .head_pipeline
                 .and_then(|p| convert_pipeline(p, instance_url, anomalies)),
             truncated_lists: false,
+            // Decided by the refresh worker, which holds the `[ready]` rule.
+            ready: false,
+            ready_since: None,
             approved_by_me: false,
             assigned_to_me: false,
             authored_by_me: false,
