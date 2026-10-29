@@ -265,8 +265,8 @@ const fn rules(column: Column, fitted: Fitted) -> Rules {
             flex: false,
         },
         Column::Ready => Rules {
-            preferred: 6,
-            minimum: 6,
+            preferred: 7,
+            minimum: 7,
             flex: false,
         },
         Column::Updated => Rules {
