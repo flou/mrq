@@ -54,6 +54,7 @@ pub fn validate(config: &mut Config) -> Result<Vec<Clamped>, ConfigError> {
     check_ui_and_sort(config, &mut errors);
     check_notifications(config, &mut errors);
     check_filters(config, &mut errors, &mut clamps);
+    check_ready(config, &mut errors);
 
     if let Some(first) = errors.first() {
         // One error per line, under one ConfigError, so a config with several mistakes
@@ -267,6 +268,47 @@ fn check_filters(config: &mut Config, errors: &mut Vec<String>, clamps: &mut Vec
                 clamp_max_results(&format!("{at}.max_results.closed"), closed, clamps);
             }
         }
+    }
+}
+
+fn check_ready(config: &Config, errors: &mut Vec<String>) {
+    if let Some(rule) = &config.ready {
+        if rule.labels.is_empty() {
+            errors.push("ready.labels: must list at least one label".into());
+        }
+        for label in &rule.labels {
+            if label.trim().is_empty() {
+                errors.push("ready.labels: a label must not be empty".into());
+            } else if label.starts_with('!') {
+                errors.push(format!(
+                    "ready.labels: `{label}` cannot be excluded, list only required labels"
+                ));
+            }
+        }
+        return;
+    }
+
+    // Without a rule nothing is ever ready: the filter would be empty and the column blank,
+    // with nothing on screen to say why.
+    for (i, filter) in config.filters.iter().enumerate() {
+        if filter.ready {
+            errors.push(format!(
+                "filter[{i}].ready: needs a [ready] section saying what ready means"
+            ));
+        }
+        if filter
+            .columns
+            .iter()
+            .flatten()
+            .any(|s| s.column == Column::Ready)
+        {
+            errors.push(format!(
+                "filter[{i}].columns: `ready` needs a [ready] section saying what ready means"
+            ));
+        }
+    }
+    if config.ui.columns.iter().any(|s| s.column == Column::Ready) {
+        errors.push("ui.columns: `ready` needs a [ready] section saying what ready means".into());
     }
 }
 
@@ -765,6 +807,39 @@ mod tests {
             assert!(err.contains("never be wide-only"), "{column:?}: {err}");
             assert!(err.contains(column.key()), "{column:?}: {err}");
         }
+    }
+
+    #[test]
+    fn ready_needs_a_rule_with_required_labels() {
+        use crate::config::schema::ReadyRule;
+
+        let mut c = config();
+        c.filters[0].ready = true;
+        assert!(err_of(c).contains("filter[0].ready"));
+
+        let mut c = config();
+        c.ui.columns.push(Column::Ready.into());
+        assert!(err_of(c).contains("ui.columns: `ready`"));
+
+        let mut c = config();
+        c.ready = Some(ReadyRule::default());
+        assert!(err_of(c).contains("ready.labels: must list"));
+
+        let mut c = config();
+        c.ready = Some(ReadyRule {
+            labels: vec!["!wip".into()],
+            pipeline: true,
+        });
+        assert!(err_of(c).contains("cannot be excluded"));
+
+        let mut c = config();
+        c.ready = Some(ReadyRule {
+            labels: vec!["sre-review::ask".into()],
+            pipeline: true,
+        });
+        c.filters[0].ready = true;
+        c.ui.columns.push(Column::Ready.into());
+        validate(&mut c).expect("a rule makes both usable");
     }
 
     #[test]

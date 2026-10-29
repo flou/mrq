@@ -357,6 +357,7 @@ impl ViewState {
             tab.all()
                 .iter()
                 .filter(move |mr| tab.show_drafts() || !mr.draft)
+                .filter(move |mr| !tab.ready_only() || mr.ready)
                 .filter(move |mr| query.is_none_or(|q| matches_search(mr, q)))
         })
     }

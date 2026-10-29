@@ -18,6 +18,7 @@ pub mod error;
 pub mod model;
 pub mod probe;
 pub mod query;
+pub mod ready;
 pub mod wire;
 
 pub mod fetch;

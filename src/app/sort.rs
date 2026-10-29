@@ -37,6 +37,15 @@ pub fn sort(rows: &mut [&MergeRequest], column: Column, order: Order, drafts_las
                 other => return other,
             }
         }
+        if column == Column::Ready {
+            // Rows that are not ready, or whose history could not be read, have no age to
+            // sort by: they sink in either direction instead of crowding the top of a
+            // descending sort.
+            match a.ready_since.is_none().cmp(&b.ready_since.is_none()) {
+                Ordering::Equal => {}
+                other => return other,
+            }
+        }
 
         let primary = match order {
             Order::Asc => compare(a, b, column),
@@ -106,6 +115,8 @@ fn compare(a: &MergeRequest, b: &MergeRequest, column: Column) -> Ordering {
         // that has been waiting longest at the top, and that is the earliest timestamp.
         Column::Age => a.created_at.cmp(&b.created_at),
         Column::Updated => a.updated_at.cmp(&b.updated_at),
+        // Like AGE: ascending puts the longest-waiting merge request at the top.
+        Column::Ready => a.ready_since.cmp(&b.ready_since),
 
         Column::Diff => a.diff_size().cmp(&b.diff_size()),
 
@@ -311,6 +322,27 @@ mod tests {
         let mut rows = refs(&mrs);
         sort(&mut rows, Column::Age, Order::Asc, false);
         assert_eq!(ids(&rows), ["old", "new"]);
+    }
+
+    #[test]
+    fn ready_puts_the_longest_waiting_first_and_the_rest_last_either_way() {
+        let mut long = row("long", "someone");
+        long.ready = true;
+        long.ready_since = Some(at("2026-09-01T00:00:00Z"));
+        let mut short = row("short", "someone");
+        short.ready = true;
+        short.ready_since = Some(at("2026-09-10T00:00:00Z"));
+        let mut unknown = row("unknown", "someone");
+        unknown.ready = true;
+        let not_ready = row("not-ready", "someone");
+
+        let mrs = vec![not_ready, short, unknown, long];
+        let mut rows = refs(&mrs);
+        sort(&mut rows, Column::Ready, Order::Asc, false);
+        assert_eq!(&ids(&rows)[..2], ["long", "short"]);
+
+        sort(&mut rows, Column::Ready, Order::Desc, false);
+        assert_eq!(&ids(&rows)[..2], ["short", "long"]);
     }
 
     #[test]
@@ -539,8 +571,9 @@ mod tests {
     fn every_comparator_is_a_total_order() {
         let mut rows = vec![row("a", "x"), row("b", "y"), row("c", "z")];
         rows[1].updated_at = at("2025-05-05T00:00:00Z");
+        rows[1].ready_since = Some(at("2025-05-06T00:00:00Z"));
 
-        for column in Column::DEFAULT {
+        for column in Column::ALL {
             for a in &rows {
                 for b in &rows {
                     let forward = compare(a, b, column).then_with(|| tiebreak(a, b));

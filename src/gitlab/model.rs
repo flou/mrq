@@ -13,6 +13,8 @@
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use crate::config::schema::ReadyRule;
+
 /// A GitLab user, reduced to what the table and sidebar render.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct User {
@@ -282,6 +284,16 @@ pub struct MergeRequest {
     #[serde(default)]
     pub truncated_lists: bool,
 
+    /// Whether the merge request meets the `[ready]` rule, per [`MergeRequest::meets`]. Set by
+    /// the refresh worker, which holds the rule; always `false` without one.
+    #[serde(default)]
+    pub ready: bool,
+    /// When it became ready, reconstructed from its history by [`super::ready`]: the later of
+    /// the draft being lifted and each required label being added. `None` when not ready, or
+    /// when the lookup failed.
+    #[serde(default)]
+    pub ready_since: Option<Timestamp>,
+
     // Derived, see `recompute_derived`. Visible to the data layer so it can construct a
     // value, and to nothing else: outside `gitlab` these are readable only through the
     // accessors, so no caller can set one without the recompute that keeps it true.
@@ -387,6 +399,25 @@ impl MergeRequest {
         matches!(self.state, MrState::Merged | MrState::Closed)
     }
 
+    /// Whether it meets a `[ready]` rule: open, not a draft, carrying every required label, and,
+    /// when the rule asks for it, with a passing head pipeline.
+    ///
+    /// A degraded fetch drops labels, which reads here as "not ready": hiding a row from a
+    /// ready-only tab for one refresh is better than showing one that may not qualify.
+    pub fn meets(&self, rule: &ReadyRule) -> bool {
+        self.state == MrState::Opened
+            && !self.draft
+            && rule
+                .labels
+                .iter()
+                .all(|wanted| self.labels.iter().any(|l| l.title == *wanted))
+            && (!rule.pipeline
+                || self
+                    .pipeline
+                    .as_ref()
+                    .is_some_and(|p| p.status == PipelineStatus::Success))
+    }
+
     /// Whether the title should be rendered as a problem.
     pub const fn is_blocked(&self) -> bool {
         self.conflicts || self.merge_status.is_blocked()
@@ -457,6 +488,8 @@ pub(crate) mod fixtures {
                 finished_at: None,
             }),
             truncated_lists: false,
+            ready: false,
+            ready_since: None,
             approved_by_me: false,
             assigned_to_me: false,
             authored_by_me: false,
@@ -470,6 +503,52 @@ pub(crate) mod fixtures {
 mod tests {
     use super::fixtures::mr;
     use super::*;
+
+    #[test]
+    fn meets_requires_every_ready_condition() {
+        let rule = ReadyRule {
+            labels: vec!["sre-review::ask".to_owned()],
+            pipeline: true,
+        };
+        let passing = || {
+            let mut m = mr("gid://gitlab/MergeRequest/1", "asmith");
+            m.labels.push(Label {
+                title: "sre-review::ask".to_owned(),
+                color: None,
+            });
+            m.pipeline.as_mut().unwrap().status = PipelineStatus::Success;
+            m
+        };
+        assert!(passing().meets(&rule));
+
+        let mut draft = passing();
+        draft.draft = true;
+        assert!(!draft.meets(&rule), "a draft is not ready");
+
+        let mut unlabelled = passing();
+        unlabelled.labels.clear();
+        assert!(!unlabelled.meets(&rule), "the label is required");
+
+        let mut failing = passing();
+        failing.pipeline.as_mut().unwrap().status = PipelineStatus::Failed;
+        assert!(!failing.meets(&rule), "the pipeline must pass");
+
+        let mut no_pipeline = passing();
+        no_pipeline.pipeline = None;
+        assert!(
+            !no_pipeline.meets(&rule),
+            "no pipeline is not a passing one"
+        );
+        let lenient = ReadyRule {
+            pipeline: false,
+            ..rule.clone()
+        };
+        assert!(no_pipeline.meets(&lenient), "unless the rule waives it");
+
+        let mut merged = passing();
+        merged.state = MrState::Merged;
+        assert!(!merged.meets(&rule), "only open merge requests wait");
+    }
 
     #[test]
     fn derived_flags_are_computed_against_the_current_user() {

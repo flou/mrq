@@ -114,6 +114,27 @@ scope = "review_requested"
 sort = { column = "age", order = "desc" }
 ```
 
+## Build a READY review queue
+
+Say what READY means, then add a tab showing only those merge requests, longest-waiting first:
+
+```toml
+[ready]
+labels = ["sre-review::ask"]   # every one required
+pipeline = true                # and a passing head pipeline
+
+[[filter]]
+name = "SRE queue"
+scope = "group"
+path = "acme/platform"
+labels = ["sre-review::ask"]   # narrows the fetch; `ready` does the rest
+ready = true
+columns = ["author", "repo", "title", "pipeline", "ready", "updated"]
+sort = { column = "ready", order = "asc" }
+```
+
+The `ready` column shows how long each merge request has been READY: since its draft was lifted or the label was added, whichever came last. A pipeline re-run does not reset it.
+
 ## Choose which columns to show
 
 Set `columns` globally under `[ui]` or per filter. Add `:wide` to show a column only after pressing `w`:

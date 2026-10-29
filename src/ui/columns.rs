@@ -79,7 +79,7 @@ pub const ID_MIN: u16 = 4;
 pub const FIT_MAX: u16 = 30;
 
 /// The order columns are dropped in when the terminal is too narrow.
-const DROP_ORDER: [Column; 8] = [
+const DROP_ORDER: [Column; 9] = [
     Column::Id,
     Column::Age,
     Column::Assigned,
@@ -88,6 +88,7 @@ const DROP_ORDER: [Column; 8] = [
     Column::MergedBy,
     Column::Status,
     Column::Diff,
+    Column::Ready,
 ];
 
 /// Widths measured from the rows on screen, for columns that size to their content.
@@ -131,6 +132,7 @@ const fn keep_priority(column: Column) -> u8 {
         Column::Pipeline => 5,
         Column::Updated => 4,
         Column::Age => 3,
+        Column::Ready => 4,
         Column::Assigned => 2,
         Column::Approver => 2,
         Column::Reviewer => 2,
@@ -260,6 +262,11 @@ const fn rules(column: Column, fitted: Fitted) -> Rules {
         Column::Age => Rules {
             preferred: 6,
             minimum: 6,
+            flex: false,
+        },
+        Column::Ready => Rules {
+            preferred: 7,
+            minimum: 7,
             flex: false,
         },
         Column::Updated => Rules {

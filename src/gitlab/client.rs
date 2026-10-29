@@ -250,6 +250,38 @@ impl Client {
         })
     }
 
+    /// GET one REST (`/api/v4`) resource, for the history GraphQL does not expose.
+    ///
+    /// `path` is relative to `/api/v4` and carries its own query string. Failures are
+    /// classified exactly as [`Client::execute`] does, so a 429 or a revoked token reads the
+    /// same whichever API hit it.
+    pub async fn get_rest<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+        let url = format!(
+            "{}/api/v4/{}",
+            self.inner.instance,
+            path.trim_start_matches('/')
+        );
+        let response = self
+            .inner
+            .http
+            .get(&url)
+            .bearer_auth(self.inner.token.expose())
+            .send()
+            .await
+            .map_err(classify_transport)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(self.classify_status(&response));
+        }
+
+        response.json().await.map_err(|e| {
+            Error::Network(Box::new(std::io::Error::other(format!(
+                "GitLab returned a {status} response that is not REST JSON: {e}"
+            ))))
+        })
+    }
+
     fn classify_status(&self, response: &reqwest::Response) -> Error {
         let status = response.status().as_u16();
         let retry_after = parse_retry_after(response);

@@ -408,6 +408,12 @@ fn cell_text<'a>(
         Column::Status => Cow::Borrowed(status_label(mr)),
         Column::Age => Cow::Owned(relative_time(mr.created_at, now)),
         Column::Updated => Cow::Owned(relative_time(mr.updated_at, now)),
+        Column::Ready => match (mr.ready, mr.ready_since) {
+            (true, Some(since)) => Cow::Owned(relative_time(since, now)),
+            // Ready, but its history could not be read.
+            (true, None) => Cow::Borrowed("?"),
+            (false, _) => Cow::Borrowed(""),
+        },
         Column::Diff => Cow::Owned(diff_cell(mr)),
         Column::Branch => Cow::Borrowed(mr.source_branch.as_str()),
     }
@@ -478,6 +484,7 @@ const fn marks_me(mr: &MergeRequest, column: Column, modes: PeopleDisplayModes) 
         | Column::Status
         | Column::Age
         | Column::Updated
+        | Column::Ready
         | Column::Diff
         | Column::Branch => false,
     }
@@ -1401,6 +1408,26 @@ mod tests {
         let mut not_approved = m;
         not_approved.approved = false;
         assert!(approved_cell(&not_approved, &ascii).is_ascii());
+    }
+
+    #[test]
+    fn the_ready_cell_reads_age_unknown_or_blank() {
+        let cell = |m: &MergeRequest| {
+            cell_text(
+                m,
+                Column::Ready,
+                &theme(false),
+                now(),
+                PeopleDisplayModes::default(),
+            )
+            .into_owned()
+        };
+        let mut m = mr("a", "jdoe");
+        assert_eq!(cell(&m), "", "not ready");
+        m.ready = true;
+        assert_eq!(cell(&m), "?", "ready, history unknown");
+        m.ready_since = Some("2026-09-09T12:00:00Z".parse().unwrap());
+        assert_eq!(cell(&m), "2d");
     }
 
     #[test]

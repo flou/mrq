@@ -74,7 +74,7 @@ Unknown config keys are an error.
 Default `columns`:
 `approved, author, repo, id:wide, title, pipeline, assigned, approver:wide, reviewer:wide, age, updated, diff:wide`.
 
-Available columns: `approved`, `author`, `repo`, `id`, `title`, `pipeline`, `assigned`, `approver`, `reviewer`, `merged_by`, `status`, `age`, `updated`, `diff`, `branch`. Each may appear once. A `:wide` suffix shows it only in wide mode. `merged_by` is not in the default columns; once added, it only appears while a merge request merged by someone other than its author is listed, and is blank for a self-merge. `status` (`draft`, `open`, `merged`, `closed` or `locked`) is not in the default columns either.
+Available columns: `approved`, `author`, `repo`, `id`, `title`, `pipeline`, `assigned`, `approver`, `reviewer`, `merged_by`, `status`, `age`, `updated`, `ready`, `diff`, `branch`. Each may appear once. A `:wide` suffix shows it only in wide mode. `merged_by` is not in the default columns; once added, it only appears while a merge request merged by someone other than its author is listed, and is blank for a self-merge. `status` (`draft`, `open`, `merged`, `closed` or `locked`) is not in the default columns either. `ready` (time since the merge request became READY, see [`[ready]`](#ready)) is not in the default columns and needs a `[ready]` section.
 
 ## `[skin]`
 
@@ -94,7 +94,7 @@ Available columns: `approved`, `author`, `repo`, `id`, `title`, `pipeline`, `ass
 
 The sorted column's header is bold and followed by `▲` (ascending) or `▼` (descending); `^` and `v` with `ascii = true`.
 
-Merged and closed MRs are always grouped below the others. Ties break on `updated` descending, then id. `pipeline` sorts by severity: failed, running, pending, manual, canceled, skipped, success, none.
+Merged and closed MRs are always grouped below the others. With `column = "ready"`, rows with no READY age are always below the rest, in either order; `asc` puts the longest-waiting first. Ties break on `updated` descending, then id. `pipeline` sorts by severity: failed, running, pending, manual, canceled, skipped, success, none.
 
 ## `[notifications]`
 
@@ -116,6 +116,21 @@ Merged and closed MRs are always grouped below the others. Ties break on `update
 | Key | Default | Description |
 | --- | --- | --- |
 | `command` | empty | Empty means `open` on macOS and `xdg-open` on Linux. |
+
+## `[ready]`
+
+What makes a merge request READY. Unset by default; needed by the `ready` column and the filter `ready` key.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `labels` | | Required, at least one. Labels a merge request must all carry, e.g. `["sre-review::ask"]`. No `!` prefix. |
+| `pipeline` | `true` | Also require the head pipeline to have passed. |
+
+A merge request is READY when it is open, not a draft, carries every label in `labels` and, with `pipeline`, its head pipeline passed.
+
+Its READY age counts from the later of two events: the draft being lifted (the `marked this merge request as **ready**` system note) and each required label last being added. A merge request that was never a draft counts from its creation. The pipeline only gates READY: a re-run after a push hides the merge request until it passes again, but does not reset its age.
+
+The history comes from two REST calls per READY merge request (`resource_label_events` and `notes`), made during the refresh and repeated only when the merge request's `updated_at` changes. If they fail, the `ready` cell reads `?`. A degraded fetch drops labels, so it shows nothing as READY until the full query works again.
 
 ## `[[filter]]`
 
@@ -148,6 +163,7 @@ list or a single `group`/`project`/`instance` scope.
 | `columns` | all | Overrides `[ui].columns`. |
 | `sort` | all | Overrides `[sort]`: `{ column = "age", order = "asc" }`, either key optional. No `drafts_last`. |
 | `notify` | all | Overrides `[notifications].enabled`. |
+| `ready` | all | `true` shows only merge requests meeting `[ready]`, which must be set. Applied after the fetch; notifications still cover the whole fetched list. |
 | `max_results` | all | Overrides `[gitlab].max_results`: `{ open = 100, closed = 25 }`, either key optional. |
 | `path` | `group`, `project` | GitLab full path, e.g. `acme/platform`. No leading or trailing slash. |
 | `include_subgroups` | `group` | Default `true`. |
