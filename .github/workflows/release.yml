@@ -106,7 +106,7 @@ jobs:
       # Draft first: packslip records the digest of each final asset, and immutable
       # releases cannot take new assets once published.
       - run: gh release create "$TAG" --draft --verify-tag --generate-notes dist/*
-      - uses: jdx/packslip@b934a22ba187f1d3928441170b9413c5119360bf # v1.11.2
+      - uses: jdx/packslip@44e50e5f64551234b4a382d991bd7f7f7d021d06 # v1.11.3
         with:
           artifacts: dist/*.tar.gz
           bin: mrq
