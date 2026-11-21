@@ -61,7 +61,7 @@ jobs:
           targets: ${{ matrix.target }}
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
       - run: cargo build --release --locked --target "$TARGET"
       # Attribution for the crates in the binary: Apache-2.0 and friends require their
       # copyright notices to travel with what we distribute, so bundle the generated file
